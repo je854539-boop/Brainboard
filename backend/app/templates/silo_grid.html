@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Silo Intelligence Grid</h1>
+</div>
+
+<form
+  id="silo-filters"
+  class="tactical-panel p-3 mb-4 flex flex-wrap gap-3 items-center"
+  hx-get="/partials/silo-rows"
+  hx-target="#silo-rows-body"
+  hx-trigger="change"
+>
+  <div>
+    <label class="block text-[10px] uppercase tracking-widest text-[var(--text-dim)] mb-1">Silo</label>
+    <select name="silo" class="tactical-select min-w-[280px]">
+      <option value="">All 9 Silos</option>
+      {% for s in silos %}
+      <option value="{{ s.value }}">{{ s.value }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="block text-[10px] uppercase tracking-widest text-[var(--text-dim)] mb-1">Status</label>
+    <select name="status" class="tactical-select">
+      <option value="">All</option>
+      <option value="pending">Pending</option>
+      <option value="converted">Converted</option>
+      <option value="dismissed">Dismissed</option>
+    </select>
+  </div>
+  <div class="ml-auto text-[10px] uppercase tracking-widest text-[var(--text-dim)]">
+    <span class="htmx-indicator" id="silo-loading">Syncing...</span>
+  </div>
+</form>
+
+<div class="tactical-panel scroll-panel">
+  <table class="tactical-table">
+    <thead>
+      <tr>
+        <th>Candidate UID</th>
+        <th>Silo</th>
+        <th>Company (A)</th>
+        <th>Phone (C)</th>
+        <th>Source Ref (D)</th>
+        <th>Dossier (F)</th>
+        <th>Score (G)</th>
+        <th>Status (H)</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="silo-rows-body" hx-get="/partials/silo-rows" hx-trigger="load" hx-indicator="#silo-loading">
+      <tr><td colspan="9" class="text-center text-[var(--text-dim)] py-6">Loading silo candidates...</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Analytics & Hazard Deck</h1>
+  <button id="refresh-hazard-btn" class="tactical-select hover:border-[var(--amber)] hover:text-[var(--amber)]">Recompute Hazard Engine</button>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+  <div class="tactical-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-1">Kaplan-Meier Survival Curves S(t)</div>
+    <div class="text-[10px] text-[var(--text-dim)] mb-3">Crimson: attrition survival &middot; Green: cumulative funded-conversion</div>
+    <svg id="km-chart" viewBox="0 0 600 260" class="w-full h-64"></svg>
+  </div>
+  <div class="tactical-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-1">Deal Velocity Bottlenecks</div>
+    <div class="text-[10px] text-[var(--text-dim)] mb-3">Mean days spent in stage before transition</div>
+    <div id="velocity-chart" class="flex flex-col gap-1.5"></div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  <div class="tactical-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Markov Stage Transition Matrix</div>
+    <div class="scroll-panel overflow-x-auto">
+      <table id="transition-matrix" class="tactical-table"></table>
+    </div>
+  </div>
+  <div class="tactical-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-1">Macro-Silo Friction Correlation</div>
+    <div class="text-[10px] text-[var(--text-dim)] mb-3">Pending / converted / dismissed candidate mix per silo</div>
+    <div id="silo-friction-chart" class="flex flex-col gap-2"></div>
+  </div>
+</div>
+
+<script>
+const AMBER = "#ffb000", CRIMSON = "#ff3333", GREEN = "#4aff7a", DIM = "#6b7280", BORDER = "#2d333b";
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return res.json();
+}
+
+function buildPath(points, xMax, yMin, yMax, width, height, pad) {
+  if (!points.length) return "";
+  const xScale = t => pad + (t / (xMax || 1)) * (width - 2 * pad);
+  const yScale = v => height - pad - ((v - yMin) / ((yMax - yMin) || 1)) * (height - 2 * pad);
+  return points.map((p, i) => `${i === 0 ? "M" : "L"} ${xScale(p.t_days).toFixed(1)} ${yScale(p.survival_probability).toFixed(1)}`).join(" ");
+}
+
+async function renderKMChart() {
+  const svg = document.getElementById("km-chart");
+  const [attrition, funded] = await Promise.all([
+    fetchJSON("/api/analytics/survival-curve?kind=attrition"),
+    fetchJSON("/api/analytics/survival-curve?kind=funded"),
+  ]);
+  const width = 600, height = 260, pad = 34;
+  const funding_conversion = funded.map(p => ({ t_days: p.t_days, survival_probability: 1 - p.survival_probability }));
+  const allT = [...attrition, ...funding_conversion].map(p => p.t_days);
+  const xMax = Math.max(1, ...allT);
+
+  let svgContent = `<line x1="${pad}" y1="${height-pad}" x2="${width-pad}" y2="${height-pad}" stroke="${BORDER}" />`;
+  svgContent += `<line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height-pad}" stroke="${BORDER}" />`;
+  svgContent += `<text x="${pad}" y="14" fill="${DIM}" font-size="10">P=1.0</text>`;
+  svgContent += `<text x="${pad}" y="${height-pad+16}" fill="${DIM}" font-size="10">t=0d</text>`;
+  svgContent += `<text x="${width-pad-40}" y="${height-pad+16}" fill="${DIM}" font-size="10">t=${xMax.toFixed(0)}d</text>`;
+
+  if (attrition.length) {
+    svgContent += `<path d="${buildPath(attrition, xMax, 0, 1, width, height, pad)}" fill="none" stroke="${CRIMSON}" stroke-width="2" />`;
+  }
+  if (funding_conversion.length) {
+    svgContent += `<path d="${buildPath(funding_conversion, xMax, 0, 1, width, height, pad)}" fill="none" stroke="${GREEN}" stroke-width="2" />`;
+  }
+  if (!attrition.length && !funding_conversion.length) {
+    svgContent += `<text x="${width/2-90}" y="${height/2}" fill="${DIM}" font-size="12">INSUFFICIENT TELEMETRY -- NO CURVE FIT</text>`;
+  }
+  svg.innerHTML = svgContent;
+}
+
+async function renderVelocityChart() {
+  const data = await fetchJSON("/api/analytics/stage-velocity");
+  const container = document.getElementById("velocity-chart");
+  const entries = Object.entries(data).sort((a, b) => b[1] - a[1]);
+  const maxVal = Math.max(1, ...entries.map(e => e[1]));
+  container.innerHTML = entries.map(([status, days]) => `
+    <div class="flex items-center gap-2 text-[10px]">
+      <div class="w-40 truncate text-[var(--text-dim)] uppercase tracking-wide" title="${status}">${status}</div>
+      <div class="flex-1 bg-[#1a1e18] border border-[var(--panel-border)] h-3">
+        <div style="width:${(days / maxVal * 100).toFixed(1)}%; background:${AMBER}; height:100%;"></div>
+      </div>
+      <div class="w-14 text-right hud-value">${days.toFixed(1)}d</div>
+    </div>
+  `).join("");
+}
+
+async function renderTransitionMatrix() {
+  const data = await fetchJSON("/api/analytics/transition-matrix");
+  const table = document.getElementById("transition-matrix");
+  const statuses = data.statuses;
+  let html = "<thead><tr><th>From \\ To</th>" + statuses.map(s => `<th>${s}</th>`).join("") + "</tr></thead><tbody>";
+  data.matrix.forEach((row, i) => {
+    html += `<tr><th>${statuses[i]}</th>`;
+    row.forEach(p => {
+      const alpha = Math.max(0.04, p);
+      html += `<td style="background:rgba(255,176,0,${alpha.toFixed(2)}); color:${p > 0.4 ? '#121417' : '#c9cdd3'}">${(p*100).toFixed(0)}%</td>`;
+    });
+    html += "</tr>";
+  });
+  table.innerHTML = html + "</tbody>";
+}
+
+async function renderSiloFriction() {
+  const candidates = await fetchJSON("/api/silo?" + new URLSearchParams({}));
+  const bySilo = {};
+  candidates.forEach(c => {
+    bySilo[c.silo] ??= { pending: 0, converted: 0, dismissed: 0 };
+    bySilo[c.silo][c.status] += 1;
+  });
+  const container = document.getElementById("silo-friction-chart");
+  container.innerHTML = Object.entries(bySilo).map(([silo, counts]) => {
+    const total = counts.pending + counts.converted + counts.dismissed || 1;
+    return `
+      <div class="text-[10px]">
+        <div class="flex justify-between text-[var(--text-dim)] uppercase tracking-wide mb-0.5">
+          <span class="truncate">${silo}</span>
+          <span>${total} candidates</span>
+        </div>
+        <div class="flex h-3 border border-[var(--panel-border)] overflow-hidden">
+          <div style="width:${counts.converted/total*100}%; background:${GREEN}" title="Converted: ${counts.converted}"></div>
+          <div style="width:${counts.pending/total*100}%; background:${AMBER}" title="Pending: ${counts.pending}"></div>
+          <div style="width:${counts.dismissed/total*100}%; background:${CRIMSON}" title="Dismissed: ${counts.dismissed}"></div>
+        </div>
+      </div>`;
+  }).join("") || `<div class="text-[var(--text-dim)] text-[10px]">No silo candidates ingested yet.</div>`;
+}
+
+async function renderAll() {
+  await Promise.all([renderKMChart(), renderVelocityChart(), renderTransitionMatrix(), renderSiloFriction()]);
+}
+
+document.getElementById("refresh-hazard-btn").addEventListener("click", async () => {
+  await fetch("/api/analytics/refresh", { method: "POST" });
+  renderAll();
+});
+
+renderAll();
+</script>
+{% endblock %}

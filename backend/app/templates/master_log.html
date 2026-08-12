@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Master Log // Command View</h1>
+  <button
+    class="tactical-select hover:border-[var(--amber)] hover:text-[var(--amber)]"
+    x-data
+    @click="$refs.newLeadDialog.showModal()"
+  >+ New Lead</button>
+</div>
+
+<form
+  id="master-log-filters"
+  class="tactical-panel p-3 mb-4 flex flex-wrap gap-3 items-center"
+  hx-get="/partials/master-log-rows"
+  hx-target="#master-log-rows-body"
+  hx-trigger="change"
+>
+  <div>
+    <label class="block text-[10px] uppercase tracking-widest text-[var(--text-dim)] mb-1">Co-Broker</label>
+    <select name="co_broker" class="tactical-select">
+      <option value="">All</option>
+      {% for cb in co_brokers %}
+      <option value="{{ cb.value }}">{{ cb.value }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="block text-[10px] uppercase tracking-widest text-[var(--text-dim)] mb-1">Status</label>
+    <select name="status" class="tactical-select">
+      <option value="">All</option>
+      {% for s in statuses %}
+      <option value="{{ s.value }}">{{ s.value }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="ml-auto text-[10px] uppercase tracking-widest text-[var(--text-dim)]">
+    <span class="htmx-indicator" id="master-log-loading">Syncing...</span>
+  </div>
+</form>
+
+<div class="tactical-panel scroll-panel">
+  <table class="tactical-table">
+    <thead>
+      <tr>
+        <th>Lead UID</th>
+        <th>Business</th>
+        <th>Co-Broker</th>
+        <th>Status</th>
+        <th>Follow-Up (K)</th>
+        <th>Notes (L)</th>
+        <th>Dossier (X)</th>
+        <th>Survival S(t)</th>
+        <th>Days In Stage</th>
+        <th>Next-Stage P</th>
+      </tr>
+    </thead>
+    <tbody id="master-log-rows-body" hx-get="/partials/master-log-rows" hx-trigger="load" hx-indicator="#master-log-loading">
+      <tr><td colspan="10" class="text-center text-[var(--text-dim)] py-6">Loading pipeline telemetry...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<dialog x-ref="newLeadDialog" class="tactical-panel p-0 backdrop:bg-black/70" style="color: var(--text-primary); background-color: var(--panel-bg);">
+  <form
+    class="p-5 w-[420px] flex flex-col gap-3"
+    hx-post="/api/master-log"
+    hx-ext="json-enc"
+    hx-target="#master-log-rows-body"
+    hx-swap="none"
+    x-data
+    @htmx:after-request="if(event.detail.successful){ $root.closest('dialog').close(); htmx.trigger('#master-log-filters', 'change'); event.target.reset(); }"
+  >
+    <div class="stencil-header text-[var(--amber)] mb-2">Intake // New Lead</div>
+    <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">Business Name</label>
+    <input required name="business_name" class="tactical-select w-full" />
+    <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">Co-Broker</label>
+    <select required name="co_broker" class="tactical-select w-full">
+      {% for cb in co_brokers %}
+      <option value="{{ cb.value }}">{{ cb.value }}</option>
+      {% endfor %}
+    </select>
+    <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">Phone</label>
+    <input name="phone" class="tactical-select w-full" />
+    <div class="flex justify-end gap-2 mt-2">
+      <button type="button" class="tactical-select" @click="$root.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)]">Submit</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}

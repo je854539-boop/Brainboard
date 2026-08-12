@@ -1,0 +1,42 @@
+from fastapi import APIRouter, Request
+from fastapi.responses import RedirectResponse
+from fastapi.templating import Jinja2Templates
+
+from app.models.enums import CoBroker, MasterLogStatus, SiloName
+
+templates = Jinja2Templates(directory="app/templates")
+
+router = APIRouter(tags=["dashboard"])
+
+
+@router.get("/")
+def index():
+    return RedirectResponse(url="/master-log")
+
+
+@router.get("/master-log")
+def master_log_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "master_log.html",
+        {"co_brokers": list(CoBroker), "statuses": list(MasterLogStatus), "active_nav": "master-log"},
+    )
+
+
+@router.get("/silo-grid")
+def silo_grid_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "silo_grid.html",
+        {"silos": list(SiloName), "active_nav": "silo-grid"},
+    )
+
+
+@router.get("/analytics")
+def analytics_page(request: Request):
+    return templates.TemplateResponse(request, "analytics.html", {"active_nav": "analytics"})
+
+
+@router.get("/surveillance")
+def surveillance_page(request: Request):
+    return templates.TemplateResponse(request, "surveillance.html", {"active_nav": "surveillance"})

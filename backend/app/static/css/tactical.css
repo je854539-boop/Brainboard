@@ -1,0 +1,203 @@
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+}
+
+:root {
+  --bg-deep: #121417;
+  --bg-olive: #1a1e18;
+  --panel-bg: #16181b;
+  --panel-border: #2d333b;
+  --crimson: #ff3333;
+  --amber: #ffb000;
+  --green: #4aff7a;
+  --text-primary: #c9cdd3;
+  --text-dim: #6b7280;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", "Share Tech Mono", ui-monospace, monospace;
+  min-height: 100vh;
+}
+
+body {
+  position: relative;
+  background-image:
+    linear-gradient(var(--bg-olive) 1px, transparent 1px),
+    linear-gradient(90deg, var(--bg-olive) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: -1px -1px;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 999;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.12) 0,
+    rgba(0, 0, 0, 0.12) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  opacity: 0.35;
+}
+
+.warning-stripe {
+  height: 4px;
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--crimson) 0,
+    var(--crimson) 10px,
+    var(--amber) 10px,
+    var(--amber) 20px
+  );
+}
+
+.tactical-panel {
+  background-color: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+}
+
+.stencil-header {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 700;
+}
+
+.hud-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--amber);
+}
+
+.hud-value--hazard {
+  color: var(--crimson);
+}
+
+.hud-value--nominal {
+  color: var(--green);
+}
+
+.tactical-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.tactical-table th {
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--panel-border);
+  padding: 0.5rem 0.65rem;
+  white-space: nowrap;
+}
+
+.tactical-table td {
+  border-bottom: 1px solid var(--panel-border);
+  padding: 0.5rem 0.65rem;
+  white-space: nowrap;
+}
+
+.tactical-table tbody tr:hover {
+  background-color: rgba(255, 176, 0, 0.05);
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--panel-border);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.status-badge--attrition {
+  border-color: var(--crimson);
+  color: var(--crimson);
+}
+
+.status-badge--funded {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.status-badge--active {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.tactical-select {
+  background-color: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.35rem 0.5rem;
+}
+
+.tactical-nav-link {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.78rem;
+  padding: 0.6rem 0.9rem;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+}
+
+.tactical-nav-link.active {
+  color: var(--amber);
+  border-bottom: 2px solid var(--amber);
+}
+
+.scroll-panel {
+  max-height: 72vh;
+  overflow-y: auto;
+}
+
+.scroll-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scroll-panel::-webkit-scrollbar-thumb {
+  background-color: var(--panel-border);
+}
+
+.htmx-request.htmx-indicator {
+  display: inline;
+}
+
+.htmx-indicator {
+  display: none;
+  color: var(--amber);
+}

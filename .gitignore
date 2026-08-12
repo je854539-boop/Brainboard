@@ -1,0 +1,22 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Node (vendored output under app/static/{vendor,css,fonts} IS committed --
+# only the package manager cache/tree is ignored)
+backend/node_modules/
+
+# Env / secrets
+.env
+backend/secrets/
+*.pem
+*.p12
+
+# Editor / OS
+.DS_Store
+*.swp
+
+# Alembic
+backend/alembic/versions/__pycache__/

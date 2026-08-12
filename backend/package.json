@@ -1,0 +1,17 @@
+{
+  "name": "brainboard-backend",
+  "version": "1.0.0",
+  "description": "Static-asset build for the Brainboard command deck (Tailwind CSS build + vendored htmx/Alpine/fonts, no runtime CDN dependency).",
+  "private": true,
+  "scripts": {
+    "build-css": "tailwindcss -i app/static/css_src/tailwind_input.css -o app/static/css/tailwind.css --minify",
+    "vendor-assets": "node scripts/vendor-assets.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.1.1",
+    "alpinejs": "^3.14.1",
+    "htmx.org": "^1.9.12",
+    "tailwindcss": "^3.4.13"
+  }
+}

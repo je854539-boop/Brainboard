@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Surveillance & OCR Feed</h1>
+  <div class="flex items-center gap-2 text-[10px] uppercase tracking-widest text-[var(--text-dim)]">
+    <span class="inline-block w-2 h-2 rounded-full bg-[var(--green)] animate-pulse"></span>
+    Live // 5s poll
+  </div>
+</div>
+
+<form id="surveillance-filters" class="tactical-panel p-3 mb-4 flex flex-wrap gap-3 items-center" hx-get="/partials/surveillance-feed" hx-target="#surveillance-feed-body" hx-trigger="change">
+  <div>
+    <label class="block text-[10px] uppercase tracking-widest text-[var(--text-dim)] mb-1">Source</label>
+    <select name="source" class="tactical-select min-w-[220px]">
+      <option value="">All Sources</option>
+      <option value="cme_globex">CME Globex</option>
+      <option value="import_genius">Import Genius</option>
+      <option value="seavantage">SeaVantage</option>
+      <option value="ucc_filings">UCC Filings</option>
+      <option value="sos_registries">SOS Registries</option>
+      <option value="regrid">Regrid</option>
+      <option value="drive_ocr">Drive OCR</option>
+    </select>
+  </div>
+</form>
+
+<div
+  id="surveillance-feed-body"
+  class="tactical-panel scroll-panel p-4 font-mono text-[11px] leading-relaxed"
+  hx-get="/partials/surveillance-feed"
+  hx-trigger="load, every 5s"
+  hx-include="#surveillance-filters"
+>
+  <div class="text-[var(--text-dim)]">Establishing surveillance uplink...</div>
+</div>
+{% endblock %}

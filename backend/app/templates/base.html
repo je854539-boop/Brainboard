@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BRAINBOARD // COMMAND DECK</title>
+  <!-- All frontend dependencies are vendored under app/static/vendor -- no
+       runtime CDN calls, so the deck keeps working on a VPS with locked-down
+       egress. Rebuild app/static/css/tailwind.css via `npm run build-css`
+       after changing utility classes in app/templates/**. -->
+  <link rel="stylesheet" href="/static/css/tailwind.css" />
+  <link rel="stylesheet" href="/static/css/tactical.css" />
+  <script src="/static/vendor/htmx/htmx.min.js"></script>
+  <script src="/static/vendor/htmx/json-enc.js"></script>
+  <script defer src="/static/vendor/alpine/alpine.min.js"></script>
+</head>
+<body class="text-sm" hx-ext="json-enc">
+  <div class="warning-stripe"></div>
+  <header class="tactical-panel border-b border-[var(--panel-border)]">
+    <div class="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
+      <div>
+        <div class="stencil-header text-[var(--amber)] text-base">BRAINBOARD</div>
+        <div class="text-[10px] tracking-[0.2em] text-[var(--text-dim)] uppercase">Institutional Credit Arbitrage // Macro-Surveillance Grid</div>
+      </div>
+      <nav class="flex">
+        <a href="/master-log" class="tactical-nav-link {{ 'active' if active_nav == 'master-log' else '' }}">Master Log</a>
+        <a href="/silo-grid" class="tactical-nav-link {{ 'active' if active_nav == 'silo-grid' else '' }}">Silo Grid</a>
+        <a href="/analytics" class="tactical-nav-link {{ 'active' if active_nav == 'analytics' else '' }}">Analytics</a>
+        <a href="/surveillance" class="tactical-nav-link {{ 'active' if active_nav == 'surveillance' else '' }}">Surveillance</a>
+      </nav>
+      <div class="text-right text-[10px] text-[var(--text-dim)] uppercase tracking-widest" x-data="{ now: '' }" x-init="setInterval(() => now = new Date().toISOString().replace('T',' ').slice(0,19) + 'Z', 1000)">
+        <span x-text="now"></span>
+      </div>
+    </div>
+  </header>
+  <div class="warning-stripe"></div>
+
+  <main class="max-w-[1600px] mx-auto px-4 py-6">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

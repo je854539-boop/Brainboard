@@ -1,0 +1,13 @@
+{% if not events %}
+<div class="text-[var(--text-dim)]">No telemetry ingested yet. Configure provider API keys in .env to activate feeds.</div>
+{% endif %}
+{% for e in events %}
+<div class="flex gap-3 py-1 border-b border-[var(--panel-border)] items-start">
+  <span class="text-[var(--text-dim)] whitespace-nowrap">{{ e.ingested_at.strftime('%Y-%m-%d %H:%M:%S') }}Z</span>
+  <span class="whitespace-nowrap uppercase tracking-wide text-[var(--amber)]">[{{ e.source.value }}]</span>
+  <span class="text-[var(--text-primary)]">{{ e.title }}</span>
+  {% if e.entity_uid %}
+  <span class="text-[var(--text-dim)] whitespace-nowrap">uid:{{ e.entity_uid|string|truncate(8, True, '') }}</span>
+  {% endif %}
+</div>
+{% endfor %}

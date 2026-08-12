@@ -1,0 +1,33 @@
+{% if not entries %}
+<tr><td colspan="10" class="text-center text-[var(--text-dim)] py-6">No leads match current filter parameters.</td></tr>
+{% endif %}
+{% for e in entries %}
+<tr>
+  <td class="text-[var(--text-dim)]">{{ e.lead_uid|string|truncate(8, True, '') }}</td>
+  <td class="text-[var(--text-primary)] font-medium">{{ e.business_name }}</td>
+  <td>{{ e.co_broker.value }}</td>
+  <td>
+    {% if e.status.value == 'Funded' %}
+    <span class="status-badge status-badge--funded">{{ e.status.value }}</span>
+    {% elif e.status.value in ['Ghosted', 'Loss to Competitor', 'Dog Shit', 'Sold Deal Killed', 'Deal Stalled Proxy Pass'] %}
+    <span class="status-badge status-badge--attrition">{{ e.status.value }}</span>
+    {% else %}
+    <span class="status-badge status-badge--active">{{ e.status.value }}</span>
+    {% endif %}
+  </td>
+  <td>{{ e.follow_up_date.strftime('%Y-%m-%d') if e.follow_up_date else '—' }}</td>
+  <td class="max-w-[220px] truncate" title="{{ e.notes or '' }}">{{ e.notes or '—' }}</td>
+  <td>
+    {% if e.dossier_drive_link %}
+    <a href="{{ e.dossier_drive_link }}" target="_blank" class="text-[var(--amber)] hover:underline">DOSSIER ↗</a>
+    {% else %}—{% endif %}
+  </td>
+  <td class="hud-value {{ 'hud-value--hazard' if e.hazard_snapshot and e.hazard_snapshot.survival_probability < 0.5 else '' }}">
+    {{ '%.1f%%'|format(e.hazard_snapshot.survival_probability * 100) if e.hazard_snapshot else '—' }}
+  </td>
+  <td class="hud-value">{{ e.hazard_snapshot.days_in_stage if e.hazard_snapshot else '—' }}</td>
+  <td class="hud-value">
+    {{ '%.1f%%'|format(e.hazard_snapshot.next_stage_transition_probability * 100) if e.hazard_snapshot and e.hazard_snapshot.next_stage_transition_probability is not none else '—' }}
+  </td>
+</tr>
+{% endfor %}
