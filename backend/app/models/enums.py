@@ -194,3 +194,21 @@ class CallAnalysisStatus(str, Enum):
 class BrainMode(str, Enum):
     SHADOW = "shadow"
     LIVE = "live"
+
+
+class GeofenceEventType(str, Enum):
+    """A single vessel observation classified against a monitored waterway
+    zone -- see services/river_surveillance.py::WATERWAY_ZONES."""
+
+    ZONE_ENTRY = "zone_entry"
+    ZONE_EXIT = "zone_exit"
+    VELOCITY_ANOMALY = "velocity_anomaly"  # stationary/near-0kt beyond the idle threshold inside a restricted zone
+    LOCK_QUEUE_DELAY = "lock_queue_delay"  # AIS-proxy: idle vessel cluster at a lock, see telemetry/usace.py
+    LOCK_CLOSURE = "lock_closure"  # CWMS gate-change activity crossing the disruption threshold
+
+
+class WaterwayTriggerType(str, Enum):
+    """The two outputs of river_surveillance.py's trigger matrix."""
+
+    DISTRESS_SUPPLY_STARVATION = "distress_supply_starvation"
+    EXPANSION_THROUGHPUT_SPIKE = "expansion_throughput_spike"

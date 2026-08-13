@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
@@ -14,8 +16,19 @@ from app.routers import (
     surveillance,
     webhooks,
 )
+from app.services import river_surveillance
 
-app = FastAPI(title="Brainboard Command Deck")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # No-ops unless RIVER_SURVEILLANCE_ENABLED=true -- see
+    # river_surveillance.start_background_polling's docstring.
+    river_surveillance.start_background_polling()
+    yield
+    river_surveillance.stop_background_polling()
+
+
+app = FastAPI(title="Brainboard Command Deck", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 

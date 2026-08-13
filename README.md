@@ -25,6 +25,11 @@ backend/
                              telemetry providers (see "Silo Grid" below)
       enrichment_orchestrator.py   CSV lead import + per-lead enrichment runner
       call_analysis.py       Deepgram Nova post-call transcription/diarization/sentiment
+      river_surveillance.py  autonomous maritime/river telemetry engine -- USACE lock
+                             status/queue + Datalastic AIS polling, velocity-anomaly and
+                             zone-transition detection, friction-index scoring, and a
+                             distress/expansion trigger matrix that appends audit-trailed
+                             notes to matched leads (see "River Surveillance" below)
       telemetry/            15 macro-sweep adapters (CME Globex, Import Genius,
                              SeaVantage, UCC filings, SOS registries, Regrid,
                              HigherGov, openFDA, Datalastic, VesselFinder, GDELT,
@@ -116,6 +121,73 @@ apps_script/
   Every waterfall candidate's `notes` field records exactly which signal
   gated it in, which trade-data source identified it, and (for CME Macro
   Funnel) what the lending-appetite check found -- nothing is a black box.
+- **River Surveillance** (`app/services/river_surveillance.py`) -- an
+  autonomous background engine, separate from the Silo Grid's manual sweep
+  button, that polls USACE lock telemetry and Datalastic AIS positions on a
+  15-minute schedule (configurable) and runs a distress/expansion trigger
+  matrix against them. Off by default -- set `RIVER_SURVEILLANCE_ENABLED=true`
+  to activate; no background network polling starts without that explicit
+  opt-in. See `.env.example` for the rest of its config knobs.
+
+  **On the "LPMS" endpoints**: the spec that produced this engine named two
+  specific USACE Lock Performance Monitoring System endpoints ("Lock Queue
+  Flotilla Report", "Lock Status Report"). That exact REST surface isn't
+  confirmed against live docs -- this sandbox can't reach `*.usace.army.mil`
+  to check, and unlike the CWMS Data API (verified against USACE's own
+  https://github.com/USACE/cwms-data-api), there's no equivalent source to
+  verify "LPMS" against. Rather than guess a URL and label it real, lock
+  status/queue data is sourced from the same two verified channels already
+  in `telemetry/usace.py`: real CWMS gate-change activity (`LOCK_CLOSURE`)
+  and an AIS-proxy idle-vessel-cluster detector (`LOCK_QUEUE_DELAY`). Same
+  real-world signal, honestly-sourced plumbing -- swap in a real LPMS client
+  later if one turns out to exist; the rest of the engine doesn't need to
+  change.
+
+  **Zones monitored**: the Mississippi/Illinois locks from
+  `telemetry/usace.py::MONITORED_LOCKS`, plus McAlpine Locks (Ohio River),
+  Port Arthur/Sabine-Neches and Corpus Christi Ship Channel (Gulf
+  Intracoastal), and the Montreal/St. Lawrence Seaway -- see
+  `river_surveillance.py::WATERWAY_ZONES`.
+
+  **Observation & learning loop**:
+  - *Route pattern recognition* (`detect_zone_transitions`) -- tracks
+    vessel zone entries, cross-referencing Import Genius/SeaVantage cargo
+    data by MMSI/IMO to resolve the entity operating each vessel.
+  - *Friction index* (`compute_friction_index`) -- a 0-100 composite
+    congestion score per zone over a 48h window (closures weigh heaviest,
+    lock queues next, velocity anomalies least) -- a first-pass heuristic,
+    not a calibrated model; validate the weights against real
+    trigger-to-funded outcomes once live telemetry is flowing.
+  - *Baseline learning* (`learn_baseline_transit`) -- median historical
+    dwell duration per zone; returns `None` until at least 3 episodes
+    exist rather than fabricating a baseline from near-zero data, same
+    posture as the Brain's `MIN_TRAINING_EXAMPLES` gate.
+  - *Trigger matrix*: **Distress** (supply starvation) fires when an
+    inbound raw-material manifest matches a company AND that company's
+    vessel has been idle/queued >36h (`RIVER_SURVEILLANCE_DISTRESS_IDLE_HOURS`)
+    in a restricted zone. **Expansion** (throughput spike) fires when a
+    company's trailing 7-day dock-visit rate exceeds its 90-day rolling
+    baseline by 1.5x (`RIVER_SURVEILLANCE_EXPANSION_MULTIPLIER`). Both
+    dedupe against the same ongoing condition for 24h so an unresolved
+    delay doesn't refire every 15-minute sweep.
+
+  **Persistence & audit trail**: raw vessel/lock observations land in
+  `waterway_telemetry_snapshots`; classified events (zone entry/exit,
+  velocity anomaly, lock queue delay, lock closure) in `geofence_events`;
+  per-zone congestion scores in `waterway_friction_metrics`; trigger-matrix
+  firings in `waterway_triggers`. Every trigger that resolves to a real
+  lead (best-effort name match against Master Log V2, no shared entity ID
+  between vessel-cargo data and the pipeline) appends a source-attributed
+  audit line to that lead's `notes` via the same `pipeline.update_lead_fields`
+  path every other mutation uses -- so Sheet push, Calendar sync, and
+  activity logging all fire normally.
+
+  **Non-blocking by design**: the actual network/DB work for each 15-minute
+  sweep runs inside `asyncio.to_thread`, so a sweep in flight never blocks
+  the FastAPI event loop from serving requests. Run
+  `python3 scripts/verify_river_surveillance.py` to see this proven end to
+  end against mock USACE/Datalastic payloads and a concurrent event-loop
+  heartbeat, on a real Postgres instance.
 - **Enrichment** (`/enrichment`) -- CSV lead upload and per-lead enrichment
   against all 14 providers (Cobalt Intelligence, Interzoid, Apollo.io,
   openFDA, Deepgram Nova, CME Globex, Import Genius, SeaVantage, Regrid,

@@ -14,10 +14,12 @@ from app.models.enums import (
     BrainMode,
     CallAnalysisStatus,
     CoBroker,
+    GeofenceEventType,
     MasterLogStatus,
     SiloCandidateStatus,
     SiloName,
     TelemetrySource,
+    WaterwayTriggerType,
 )
 
 
@@ -282,3 +284,90 @@ class CallRecording(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WaterwayTelemetrySnapshot(Base):
+    """One raw per-poll observation from the river surveillance engine
+    (see services/river_surveillance.py) -- a USACE lock-status/queue
+    reading or a Datalastic vessel position. Typed columns for the fields
+    the friction-index and baseline-learning math actually queries/
+    aggregates on; everything else stays in `payload`, same split as
+    TelemetryEvent."""
+
+    __tablename__ = "waterway_telemetry_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source: Mapped[TelemetrySource] = mapped_column(_pg_enum(TelemetrySource, "telemetry_source"), nullable=False)
+    zone_name: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    mmsi: Mapped[str | None] = mapped_column(String(32), index=True)
+    imo: Mapped[str | None] = mapped_column(String(32), index=True)
+    vessel_name: Mapped[str | None] = mapped_column(String(256))
+    latitude: Mapped[float | None] = mapped_column(Numeric(9, 6))
+    longitude: Mapped[float | None] = mapped_column(Numeric(9, 6))
+    speed_knots: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    draft_meters: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class GeofenceEvent(Base):
+    """A classified event derived from WaterwayTelemetrySnapshot rows --
+    a vessel entering/exiting a monitored zone, going velocity-anomalous
+    inside a restricted channel, queuing at a lock (AIS proxy), or a real
+    CWMS gate-change closure. `entity_uid` is set only when cargo
+    cross-reference (Import Genius/SeaVantage) resolved a company for the
+    vessel -- see river_surveillance.py::_resolve_entity."""
+
+    __tablename__ = "geofence_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    zone_name: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    event_type: Mapped[GeofenceEventType] = mapped_column(_pg_enum(GeofenceEventType, "geofence_event_type"), nullable=False)
+    mmsi: Mapped[str | None] = mapped_column(String(32), index=True)
+    imo: Mapped[str | None] = mapped_column(String(32))
+    vessel_name: Mapped[str | None] = mapped_column(String(256))
+    speed_knots: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    stationary_minutes: Mapped[int | None] = mapped_column()
+    entity_uid: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    detail: Mapped[str | None] = mapped_column(Text)
+    source_reference: Mapped[str | None] = mapped_column(String(512))
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class WaterwayFrictionMetric(Base):
+    """A computed congestion/friction score for one monitored zone at one
+    point in time -- composite of USACE lock delay/closure activity and
+    Datalastic velocity-anomaly density, see
+    river_surveillance.py::compute_friction_index."""
+
+    __tablename__ = "waterway_friction_metrics"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    zone_name: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    friction_score: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
+    avg_lock_delay_hours: Mapped[float | None] = mapped_column(Numeric(8, 2))
+    active_queue_count: Mapped[int | None] = mapped_column()
+    velocity_anomaly_count: Mapped[int | None] = mapped_column()
+    baseline_transit_hours: Mapped[float | None] = mapped_column(Numeric(8, 2))
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class WaterwayTrigger(Base):
+    """One firing of the trigger matrix (distress or expansion). This is
+    the actionable output of the whole engine -- when `entity_uid`
+    resolves to a real lead, river_surveillance.py appends an audit-trail
+    line to that lead's notes via pipeline.update_lead_fields (same path
+    every other pipeline mutation uses, so Sheet push + Calendar sync +
+    activity logging all fire normally); when it doesn't resolve, the
+    trigger still gets recorded here so the signal isn't lost."""
+
+    __tablename__ = "waterway_triggers"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trigger_type: Mapped[WaterwayTriggerType] = mapped_column(_pg_enum(WaterwayTriggerType, "waterway_trigger_type"), nullable=False)
+    entity_uid: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    company_name_guess: Mapped[str | None] = mapped_column(String(256))
+    zone_name: Mapped[str | None] = mapped_column(String(256))
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    source_reference: Mapped[str | None] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

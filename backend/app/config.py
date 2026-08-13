@@ -50,6 +50,31 @@ class Settings(BaseSettings):
 
     brain_shadow_mode_lead_threshold: int = 1000
 
+    # River surveillance engine (app/services/river_surveillance.py) --
+    # off by default so no background network polling starts without an
+    # explicit opt-in. Reuses datalastic_api_key/vesselfinder_api_key/
+    # cwms_api_key/import_genius_api_key/seavantage_api_key above.
+    river_surveillance_enabled: bool = False
+    river_surveillance_poll_interval_seconds: int = 900  # 15 minutes per spec
+    # A vessel at/below this speed inside a restricted zone counts as
+    # "stationary" for velocity-anomaly detection.
+    river_surveillance_idle_speed_knots: float = 0.5
+    # Distress trigger: minimum stationary/queue duration before an
+    # inbound-manifest match is treated as supply starvation, not routine
+    # transit delay.
+    river_surveillance_distress_idle_hours: float = 36.0
+    # Velocity-anomaly trigger: minimum stationary duration in a
+    # restricted channel before it's flagged at all (independent of any
+    # cargo match) -- "> 4 hours" per spec.
+    river_surveillance_velocity_anomaly_hours: float = 4.0
+    # Expansion trigger: rolling window used to compute a company's
+    # baseline dock-visit/shipment frequency.
+    river_surveillance_baseline_window_days: int = 90
+    # Expansion trigger: current 7-day dock-visit rate must exceed the
+    # 90-day daily baseline rate by this multiple to flag a throughput
+    # spike.
+    river_surveillance_expansion_multiplier: float = 1.5
+
 
 @lru_cache
 def get_settings() -> Settings:
