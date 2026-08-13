@@ -25,6 +25,12 @@
   </div>
 </div>
 
+<div class="tactical-panel p-4 mb-4">
+  <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-2">Cognition Map // Geometric Growth</div>
+  <div id="brain-globe-container" style="width:100%; height:340px;"></div>
+  <div id="brain-globe-caption" class="text-center text-[10px] text-[var(--text-dim)] mt-2">—</div>
+</div>
+
 <p class="text-[10px] text-[var(--text-dim)] mb-4 max-w-3xl">
   The Brain fits a transparent logistic regression (deal terms + co-broker + activity engagement) on leads that have
   already resolved (Funded or attrited), then scores every lead's funded-probability on every refresh. In SHADOW mode
@@ -41,7 +47,9 @@
   </table>
 </div>
 
-<script>
+<script type="module">
+import * as THREE from '/static/vendor/three/three.module.min.js';
+
 const AMBER = "#00e0ff", CRIMSON = "#ff2b4d", GREEN = "#4aff7a";
 
 async function fetchJSON(url, opts) {
@@ -49,6 +57,79 @@ async function fetchJSON(url, opts) {
   if (!res.ok) throw new Error(`${url} -> ${res.status}`);
   return res.json();
 }
+
+// Geometric "cognition map" -- a low-poly icosahedron that grows in size
+// AND in facet detail as the Brain accumulates more resolved (Funded /
+// attrited) outcomes to train on. training_set_size is the real signal
+// here (not total_leads): it's literally how many labeled examples
+// scikit-learn's LogisticRegression has actually fit on, per
+// app/services/brain.py. Color tracks SHADOW (cyan) vs LIVE (green)
+// mode, same convention as the mode badge above.
+const bgContainer = document.getElementById('brain-globe-container');
+const bgScene = new THREE.Scene();
+bgScene.background = new THREE.Color(0x121417);
+const bgCamera = new THREE.PerspectiveCamera(45, bgContainer.clientWidth / bgContainer.clientHeight, 0.1, 100);
+bgCamera.position.set(0, 0, 6);
+const bgRenderer = new THREE.WebGLRenderer({ antialias: true });
+bgRenderer.setSize(bgContainer.clientWidth, bgContainer.clientHeight);
+bgContainer.appendChild(bgRenderer.domElement);
+
+const brainGroup = new THREE.Group();
+bgScene.add(brainGroup);
+
+// Mirrors app/services/brain.py::MIN_TRAINING_EXAMPLES -- below this the
+// model hasn't fit yet (baseline-insufficient-data), so it's still just
+// "forming", not genuinely smarter.
+const MIN_TRAINING_EXAMPLES_FALLBACK = 10;
+
+function stageForTrainingSize(n) {
+  if (n === 0) return { detail: 0, scale: 0.45, label: 'DORMANT -- no resolved outcomes yet' };
+  if (n < MIN_TRAINING_EXAMPLES_FALLBACK) return { detail: 0, scale: 0.7, label: 'FORMING -- accumulating outcomes, not yet fitting a real model' };
+  if (n < 50) return { detail: 1, scale: 0.95, label: 'LEARNING -- real logistic fit, still thin' };
+  if (n < 150) return { detail: 2, scale: 1.25, label: 'REFINING -- denser feature geometry' };
+  if (n < 500) return { detail: 3, scale: 1.55, label: 'SHARPENING -- high-resolution cognition' };
+  return { detail: 4, scale: 1.85, label: 'MATURE -- extensively trained' };
+}
+
+let brainVisuals = [];
+function clearBrainVisuals() {
+  for (const obj of brainVisuals) {
+    brainGroup.remove(obj);
+    obj.geometry.dispose();
+    obj.material.dispose();
+  }
+  brainVisuals = [];
+}
+
+function rebuildBrainMesh(stage, color) {
+  clearBrainVisuals();
+  const geometry = new THREE.IcosahedronGeometry(1.5 * stage.scale, stage.detail);
+
+  const wireGeometry = new THREE.WireframeGeometry(geometry);
+  const wireMaterial = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.85 });
+  const wire = new THREE.LineSegments(wireGeometry, wireMaterial);
+  brainGroup.add(wire);
+  brainVisuals.push(wire);
+
+  const coreMaterial = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.07 });
+  const core = new THREE.Mesh(geometry, coreMaterial);
+  brainGroup.add(core);
+  brainVisuals.push(core);
+}
+
+function animateBrainGlobe() {
+  requestAnimationFrame(animateBrainGlobe);
+  brainGroup.rotation.y += 0.004;
+  brainGroup.rotation.x += 0.0012;
+  bgRenderer.render(bgScene, bgCamera);
+}
+animateBrainGlobe();
+
+window.addEventListener('resize', () => {
+  bgCamera.aspect = bgContainer.clientWidth / bgContainer.clientHeight;
+  bgCamera.updateProjectionMatrix();
+  bgRenderer.setSize(bgContainer.clientWidth, bgContainer.clientHeight);
+});
 
 async function renderStatus() {
   const s = await fetchJSON("/api/brain/status");
@@ -66,6 +147,11 @@ async function renderStatus() {
     <div class="text-[var(--text-dim)] mt-1">trained on</div>
     <div class="hud-value">${s.training_set_size} outcomes</div>
   `;
+
+  const stage = stageForTrainingSize(s.training_set_size);
+  rebuildBrainMesh(stage, s.mode === "live" ? GREEN : AMBER);
+  document.getElementById("brain-globe-caption").textContent =
+    `${stage.label} — ${s.training_set_size} outcomes trained${s.mode === "live" ? " — LIVE" : ""}`;
 }
 
 async function renderScores() {
