@@ -175,30 +175,62 @@ def _laml(xml_body: str) -> Response:
 
 
 @router.api_route("/laml/outbound/{attempt_id}", methods=["GET", "POST"])
-async def outbound_laml(attempt_id: uuid.UUID, db: Session = Depends(get_db)):
-    """Fetched by SignalWire once the outbound call connects. Bridges to
-    the campaign's caller_connect_number when configured (the simple
-    "ring me when they pick up" flow) -- NOT the deferred live patch-in/
-    double-dial conferencing, which needs a second already-in-progress
-    call to bridge into and isn't built yet."""
+async def outbound_laml(attempt_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
+    """Fetched by SignalWire once the outbound call connects -- and fetched
+    a second time as the <Gather> action callback once the lead presses a
+    key (or times out), so this one endpoint handles both hits, told apart
+    by whether a `Digits` field is present.
+
+    With campaign.pitch_recording_url set: plays that recording (a real
+    recording of the broker pitching -- deliberately not synthetic/AI
+    voice, see the compliance discussion this was built from) and gathers
+    one keypress. "1" bridges the lead straight to caller_connect_number;
+    anything else, or no input before the timeout, ends the call politely
+    instead of leaving the lead stranded on a dead line.
+
+    Without a pitch_recording_url: legacy/simple mode, bridges immediately
+    on answer -- NOT the deferred live patch-in/double-dial conferencing,
+    which needs a second already-in-progress call to bridge into and isn't
+    built yet."""
     attempt = db.get(DialerCallAttempt, attempt_id)
     if attempt is None:
         return _laml("<Response><Say>Call record not found.</Say></Response>")
 
     campaign = db.get(DialerCampaign, attempt.campaign_id)
-    settings = get_settings()
-    status_url = f"{settings.dialer_public_base_url.rstrip('/')}/api/dialer/webhooks/status/{attempt.id}"
-
-    if campaign and campaign.caller_connect_number:
-        number = escape(campaign.caller_connect_number)
-        action = escape(status_url)
+    if campaign is None or not campaign.caller_connect_number:
         return _laml(
-            f'<Response><Dial record="record-from-answer" recordingStatusCallback="{action}" '
-            f'action="{action}"><Number>{number}</Number></Dial></Response>'
+            "<Response><Say>Thanks for picking up. No follow-up line is configured for this campaign yet.</Say></Response>"
         )
-    return _laml(
-        "<Response><Say>Thanks for picking up. No follow-up line is configured for this campaign yet.</Say></Response>"
+
+    settings = get_settings()
+    base = settings.dialer_public_base_url.rstrip("/")
+    status_url = escape(f"{base}/api/dialer/webhooks/status/{attempt.id}")
+    laml_url = escape(f"{base}/api/dialer/laml/outbound/{attempt.id}")
+    number = escape(campaign.caller_connect_number)
+    bridge = (
+        f'<Dial record="record-from-answer" recordingStatusCallback="{status_url}" '
+        f'action="{status_url}"><Number>{number}</Number></Dial>'
     )
+
+    form = await request.form() if request.method == "POST" else {}
+    digits = form.get("Digits") if "Digits" in form else request.query_params.get("Digits")
+
+    if digits is not None:
+        # Second hit: this is SignalWire posting back the <Gather> result.
+        if digits == "1":
+            return _laml(f"<Response>{bridge}</Response>")
+        return _laml("<Response><Say>Thanks for your time. Someone will follow up shortly. Goodbye.</Say></Response>")
+
+    if campaign.pitch_recording_url:
+        pitch_url = escape(campaign.pitch_recording_url)
+        return _laml(
+            f'<Response><Gather numDigits="1" timeout="8" action="{laml_url}" method="POST">'
+            f"<Play>{pitch_url}</Play></Gather>"
+            "<Say>We did not get your response. Goodbye.</Say></Response>"
+        )
+
+    # Legacy/simple mode: no pitch recording configured, bridge immediately.
+    return _laml(f"<Response>{bridge}</Response>")
 
 
 @router.post("/webhooks/status/{attempt_id}")

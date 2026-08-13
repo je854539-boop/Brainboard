@@ -226,8 +226,15 @@ apps_script/
     (`lead_filter` JSONB on `DialerCampaign`) -- see
     `dialer.py::build_dial_queue`.
   - Placing a call picks a caller-ID number local to the lead's area
-    code where possible, and bridges an answered call straight to the
-    campaign's configured follow-up number (`caller_connect_number`).
+    code where possible. With a `pitch_recording_url` set on the campaign
+    (a real recording of the broker pitching -- deliberately not a
+    synthetic/AI voice, see below), an answered call plays it and gathers
+    one keypress: "1" bridges straight to that campaign's follow-up
+    number (`caller_connect_number`); anything else, or no input, ends
+    the call politely instead of leaving the lead stranded. No recording
+    configured = bridges immediately on answer (legacy/simple mode). Run
+    several campaigns with different `caller_connect_number` values to
+    work multiple phone lines at once.
   - After each call, mark it **Advance** or **Purge** from the dashboard
     -- this routes through the *same* `pipeline.convert_or_update_silo_candidate`
     / `pipeline.update_lead_status` calls the Targets grid's manual
@@ -236,12 +243,24 @@ apps_script/
     mutation came from a click or a call outcome. Nothing here infers a
     disposition automatically from call audio/sentiment -- that's a
     human decision made from the dashboard, not a built NLU pipeline.
+  - The press-1 pitch recording is deliberately a real recording of the
+    broker, not a synthetic/AI voice -- this sidesteps the AI-voice
+    disclosure laws several states have now enacted (e.g. California,
+    Colorado, Utah), though general prerecorded-message telemarketing
+    consent rules under the TCPA still apply regardless of AI. That law
+    is genuinely in flux right now (a February 2026 Fifth Circuit ruling
+    split with the FCC's own long-standing consent rule) -- this isn't
+    legal advice, confirm your actual exposure with a TCPA attorney
+    before running this at volume.
   - **Explicitly deferred to a follow-up phase, not silently dropped:**
-    live patch-in/double-dial (bridging your own in-progress
-    "company dialer" call to a live-answered lead, so you're on both at
-    once), concurrent inbound campaigns, SMS/10DLC campaigns, and a real
-    predictive volume-pacing/optimization algorithm -- "max calls per
-    run" on a campaign is a manual batch-size cap, not automatic pacing.
+    bridging into a *separate* phone system you're already on a call in
+    (e.g. a company softphone/dialer) isn't buildable at all -- SignalWire
+    has no visibility into a call it didn't place, so this app never
+    attempts it. What's deferred instead: concurrent inbound campaigns,
+    SMS/10DLC campaigns (including an AI agent trained on your own text
+    history/voice, which needs SMS built first), and a real predictive
+    volume-pacing/optimization algorithm -- "max calls per run" on a
+    campaign is a manual batch-size cap, not automatic pacing.
   - SignalWire's REST API is a documented Twilio-compatible
     "Compatibility API" (same auth scheme, same `Calls.json` resource
     shape, same LaML/cXML call-control markup) -- verified against

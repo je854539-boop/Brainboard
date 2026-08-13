@@ -455,6 +455,15 @@ class DialerCampaign(Base):
     number_pool_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("dialer_number_pools.id", ondelete="SET NULL"))
     lead_filter: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     caller_connect_number: Mapped[str | None] = mapped_column(String(32))
+    # A publicly reachable URL to a real recording of the broker pitching
+    # (not a synthetic/AI voice -- deliberately, see routers/dialer.py's
+    # outbound_laml docstring). When set, an answered call plays this and
+    # gathers a keypress before bridging; when unset, an answered call
+    # bridges straight to caller_connect_number as before (legacy/simple
+    # mode). Brainboard doesn't host/upload this file -- paste a link to
+    # one already hosted (Drive shareable link, S3, etc.), same "URL, not
+    # upload" pattern as CallFromUrlRequest.
+    pitch_recording_url: Mapped[str | None] = mapped_column(String(1024))
     max_attempts_per_lead: Mapped[int] = mapped_column(nullable=False, default=3)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

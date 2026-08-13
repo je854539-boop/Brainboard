@@ -7,12 +7,15 @@
 
 <p class="text-[10px] text-[var(--text-dim)] mb-4 max-w-4xl leading-relaxed">
   Phase 1: outbound calling only. A campaign dials calendar leads / filtered Sheet leads / pending silo candidates from a
-  local-presence number pool; when a lead answers they're bridged straight to the campaign's follow-up number. After each
-  call, mark it <b class="text-[var(--green)]">Advance</b> (converts a silo candidate into Master Log V2, or moves an
-  existing lead forward) or <b class="text-[var(--crimson)]">Purge</b> (dismisses/ghosts it) -- same disposition path the
-  Targets grid's Convert/Dismiss buttons already use. Not yet built (deferred, not silently skipped): live patch-in /
-  double-dial into your company-dialer call, concurrent inbound campaigns, SMS/10DLC, and real predictive volume pacing --
-  "max calls per run" below is a manual batch cap, not an optimizer.
+  local-presence number pool. With a pitch recording set, an answered call plays it and waits for a keypress: "1" bridges
+  straight to that campaign's follow-up number, anything else ends the call politely. No pitch recording set = bridges
+  immediately on answer. The recording is a real recording of you pitching, not a synthetic/AI voice -- deliberate, see
+  the compliance notes this was built from. After each call, mark it <b class="text-[var(--green)]">Advance</b> (converts
+  a silo candidate into Master Log V2, or moves an existing lead forward) or <b class="text-[var(--crimson)]">Purge</b>
+  (dismisses/ghosts it) -- same disposition path the Targets grid's Convert/Dismiss buttons already use. Not yet built
+  (deferred, not silently skipped): concurrent inbound campaigns, SMS/10DLC, and real predictive volume pacing -- "max
+  calls per run" below is a manual batch cap, not an optimizer. Run several campaigns with different caller_connect_number
+  values (your different phones) to work multiple lines at once.
 </p>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
@@ -46,6 +49,7 @@
         <option value="">— no pool (no local presence) —</option>
       </select>
       <input name="caller_connect_number" placeholder="Bridge answered calls to (+1...)" class="tactical-select w-full" />
+      <input name="pitch_recording_url" placeholder="Pitch recording URL (optional -- real voice, not AI)" class="tactical-select w-full" />
       <input name="max_attempts_per_lead" type="number" min="1" value="3" class="tactical-select w-full" />
       <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)] flex items-center gap-2 mt-1">
         <input type="checkbox" name="calendar" /> Include calendar-due leads
@@ -268,6 +272,7 @@ document.getElementById("campaign-form").addEventListener("submit", async (e) =>
       name: form.get("name"),
       number_pool_id: form.get("number_pool_id") || null,
       caller_connect_number: form.get("caller_connect_number") || null,
+      pitch_recording_url: form.get("pitch_recording_url") || null,
       max_attempts_per_lead: parseInt(form.get("max_attempts_per_lead"), 10) || 3,
       lead_filter: leadFilter,
     }),

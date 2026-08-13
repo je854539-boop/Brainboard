@@ -234,6 +234,7 @@ class DialerCampaignOut(BaseModel):
     number_pool_id: uuid.UUID | None
     lead_filter: dict
     caller_connect_number: str | None
+    pitch_recording_url: str | None
     max_attempts_per_lead: int
     is_active: bool
     created_at: datetime
@@ -246,6 +247,7 @@ class DialerCampaignCreate(BaseModel):
     number_pool_id: uuid.UUID | None = None
     lead_filter: dict = {}
     caller_connect_number: str | None = None
+    pitch_recording_url: str | None = None
     max_attempts_per_lead: int = 3
 
 
@@ -254,6 +256,7 @@ class DialerCampaignUpdate(BaseModel):
     number_pool_id: uuid.UUID | None = None
     lead_filter: dict | None = None
     caller_connect_number: str | None = None
+    pitch_recording_url: str | None = None
     max_attempts_per_lead: int | None = None
     is_active: bool | None = None
 
