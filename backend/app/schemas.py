@@ -295,6 +295,16 @@ class DialerQueuePreviewEntry(BaseModel):
     attempts_so_far: int
 
 
+class DialerCallNowRequest(BaseModel):
+    """Ad hoc, single-target call triggered by a click-to-call button
+    (Master Log row / globe entity panel) rather than a campaign sweep --
+    exactly one of these two must be set. Reuses the target campaign's
+    number pool / caller_connect_number / pitch_recording_url as-is."""
+
+    lead_uid: uuid.UUID | None = None
+    silo_candidate_uid: uuid.UUID | None = None
+
+
 class DialerCallStatusWebhook(BaseModel):
     """Shape of SignalWire's Twilio-compatible call-status callback --
     only the fields the dialer actually consumes; SignalWire posts more

@@ -589,6 +589,7 @@ function showInfoPanel(entity) {
         <div class="text-[var(--amber)] uppercase text-[9px] mb-1">Notes / Audit Trail</div>
         <div class="whitespace-pre-wrap">${props.notes || '(none)'}</div>
       </div>
+      ${props.lead_uid ? `<button class="tactical-select text-[10px] py-1 mt-2 border-[var(--amber)] text-[var(--amber)]" onclick="brainboardCallNow('lead', '${props.lead_uid}')">☎ Call via active line</button>` : ''}
     `;
   } else if (props.kind === 'vessel') {
     title.textContent = props.vessel_name || `MMSI ${props.mmsi}`;
@@ -608,6 +609,7 @@ function showInfoPanel(entity) {
       <div class="mb-1"><span class="text-[var(--text-dim)]">Score:</span> ${props.score != null ? props.score : '--'}</div>
       <div class="mb-1"><span class="text-[var(--text-dim)]">Source:</span> ${props.source_reference || '--'}</div>
       ${props.converted_lead_uid ? `<div class="mt-2 pt-2 border-t border-[var(--panel-border)] text-[var(--amber)]">Converted -- now tracked in Master Log V2 (see the connecting thread on the globe).</div>` : ''}
+      ${props.candidate_uid ? `<button class="tactical-select text-[10px] py-1 mt-2 border-[var(--amber)] text-[var(--amber)]" onclick="brainboardCallNow('silo_candidate', '${props.candidate_uid}')">☎ Call via active line</button>` : ''}
     `;
   } else if (props.kind === 'reference-point') {
     title.textContent = props.name;

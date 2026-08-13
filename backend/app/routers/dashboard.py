@@ -6,6 +6,11 @@ from app.config import get_settings
 from app.models.enums import CoBroker, MasterLogStatus, SiloName
 
 templates = Jinja2Templates(directory="app/templates")
+# Every page below extends base.html, which needs the co-broker list for
+# the global screen-pop widget's "Advance" disposition (picking who a
+# converted silo candidate becomes assigned to) -- set once as a Jinja
+# global instead of threading co_brokers through every route's context.
+templates.env.globals["CO_BROKERS"] = [cb.value for cb in CoBroker]
 
 router = APIRouter(tags=["dashboard"])
 

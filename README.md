@@ -266,6 +266,22 @@ apps_script/
     history/voice, which needs SMS built first), and a real predictive
     volume-pacing/optimization algorithm -- "max calls per run" on a
     campaign is a manual batch-size cap, not automatic pacing.
+  - **Click-to-call + live screen pop, dashboard-wide.** An "active line"
+    selector in the header (persisted in localStorage, populated from
+    your campaigns) drives `window.brainboardCallNow(kind, entityUid)` --
+    wired to phone numbers in the Master Log grid and to lead/silo-
+    candidate entities on the globe. Clicking one places a real ad hoc
+    call via `POST /api/dialer/campaigns/{id}/call-now`
+    (`app/services/dialer.py::place_outbound_call` reused directly,
+    outside any queue sweep). Once SignalWire's status webhook reports
+    that call as in-progress, a background poll
+    (`GET /api/dialer/attempts/active`, every 3s) catches it and floats a
+    panel -- present on every page, not just where you clicked -- pulling
+    that lead's notes, recent activity ledger, and enrichment results in
+    one call (`GET /api/dialer/screen-pop/{entity_uid}`), with Advance/
+    Purge buttons right there so you can disposition the call without
+    leaving whatever page you were on. No websockets -- a phone actually
+    ringing gives enough slack that a few-second poll is invisible.
   - SignalWire's REST API is a documented Twilio-compatible
     "Compatibility API" (same auth scheme, same `Calls.json` resource
     shape, same LaML/cXML call-control markup) -- verified against

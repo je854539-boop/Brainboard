@@ -1,10 +1,19 @@
 {% if not entries %}
-<tr><td colspan="10" class="text-center text-[var(--text-dim)] py-6">No leads match current filter parameters.</td></tr>
+<tr><td colspan="11" class="text-center text-[var(--text-dim)] py-6">No leads match current filter parameters.</td></tr>
 {% endif %}
 {% for e in entries %}
 <tr>
   <td class="text-[var(--text-dim)]">{{ e.lead_uid|string|truncate(8, True, '') }}</td>
   <td class="text-[var(--text-primary)] font-medium">{{ e.business_name }}</td>
+  <td>
+    {% if e.phone %}
+    <button
+      class="text-[var(--amber)] hover:underline"
+      onclick="brainboardCallNow('lead', '{{ e.lead_uid }}')"
+      title="Click to call via the active line"
+    >{{ e.phone }} ☎</button>
+    {% else %}—{% endif %}
+  </td>
   <td>{{ e.co_broker.value }}</td>
   <td>
     {% if e.status.value == 'Funded' %}

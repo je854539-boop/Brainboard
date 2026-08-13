@@ -9,18 +9,29 @@ otherwise, see that function's docstring for what's confirmed vs assumed).
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models.enums import ActivitySource, DialerDisposition
-from app.models.orm import DialerCallAttempt, DialerCampaign, DialerNumber, DialerNumberPool
+from app.models.enums import ActivitySource, DialerCallStatus, DialerDisposition
+from app.models.orm import (
+    DialerCallAttempt,
+    DialerCampaign,
+    DialerNumber,
+    DialerNumberPool,
+    EnrichmentResult,
+    LeadActivityEvent,
+    MasterLogEntry,
+    SiloCandidate,
+)
 from app.schemas import (
     DialerCallAttemptOut,
+    DialerCallNowRequest,
     DialerCampaignCreate,
     DialerCampaignOut,
     DialerCampaignUpdate,
@@ -142,6 +153,142 @@ def run_campaign(campaign_id: uuid.UUID, max_calls: int = 10, db: Session = Depe
         return dialer.run_campaign(db, campaign, max_calls=min(max_calls, 100))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/campaigns/{campaign_id}/call-now", response_model=DialerCallAttemptOut)
+def call_now(campaign_id: uuid.UUID, payload: DialerCallNowRequest, db: Session = Depends(get_db)):
+    """Click-to-call: places one ad hoc call right now, outside any queue
+    sweep, reusing campaign_id's number pool / caller_connect_number /
+    pitch_recording_url as-is -- this is what the "active line" selector
+    in the header points at. Ignores max_attempts_per_lead, since a
+    deliberate manual dial isn't something the pacing cap should block."""
+    campaign = db.get(DialerCampaign, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    if bool(payload.lead_uid) == bool(payload.silo_candidate_uid):
+        raise HTTPException(status_code=422, detail="exactly one of lead_uid or silo_candidate_uid is required")
+
+    if payload.lead_uid:
+        lead = db.get(MasterLogEntry, payload.lead_uid)
+        if lead is None:
+            raise HTTPException(status_code=404, detail="lead not found")
+        if not lead.phone:
+            raise HTTPException(status_code=422, detail="lead has no phone number on file")
+        source, entity_uid, company_name, to_number = "sheet_lead", lead.lead_uid, lead.business_name, lead.phone
+        count_filter = DialerCallAttempt.lead_uid == entity_uid
+    else:
+        candidate = db.get(SiloCandidate, payload.silo_candidate_uid)
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="silo candidate not found")
+        if not candidate.phone:
+            raise HTTPException(status_code=422, detail="candidate has no phone number on file")
+        source, entity_uid, company_name, to_number = (
+            "silo_candidate", candidate.candidate_uid, candidate.company_name, candidate.phone,
+        )
+        count_filter = DialerCallAttempt.silo_candidate_uid == entity_uid
+
+    prior_attempts = db.execute(select(func.count()).select_from(DialerCallAttempt).where(count_filter)).scalar_one()
+    entry = dialer.DialQueueEntry(source, entity_uid, company_name, to_number, prior_attempts)
+    return dialer.place_outbound_call(db, campaign, entry)
+
+
+@router.get("/attempts/active")
+def active_attempts(db: Session = Depends(get_db)):
+    """Polled by the header's screen-pop widget every few seconds --
+    returns call attempts from the last 10 minutes still in a live state
+    (queued/ringing/in-progress), so the widget can catch one flipping to
+    in-progress and trigger the notes/enrichment pop for that lead."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    query = (
+        select(DialerCallAttempt)
+        .where(
+            DialerCallAttempt.created_at >= cutoff,
+            DialerCallAttempt.status.in_(
+                [DialerCallStatus.QUEUED, DialerCallStatus.RINGING, DialerCallStatus.IN_PROGRESS]
+            ),
+        )
+        .order_by(DialerCallAttempt.created_at.desc())
+    )
+    attempts = db.execute(query).scalars().all()
+    return [
+        {
+            "id": str(a.id),
+            "status": a.status.value,
+            "to_number": a.to_number,
+            "lead_uid": str(a.lead_uid) if a.lead_uid else None,
+            "silo_candidate_uid": str(a.silo_candidate_uid) if a.silo_candidate_uid else None,
+            "created_at": a.created_at.isoformat(),
+        }
+        for a in attempts
+    ]
+
+
+@router.get("/screen-pop/{entity_uid}")
+def screen_pop(entity_uid: uuid.UUID, db: Session = Depends(get_db)):
+    """Notes + recent activity + enrichment for one lead or silo candidate
+    in a single call -- what the floating screen-pop panel renders once
+    the active-attempts poll catches a call going live."""
+    lead = db.get(MasterLogEntry, entity_uid)
+    if lead is not None:
+        activity = db.execute(
+            select(LeadActivityEvent)
+            .where(LeadActivityEvent.lead_uid == entity_uid)
+            .order_by(LeadActivityEvent.occurred_at.desc())
+            .limit(15)
+        ).scalars().all()
+        enrichment = db.execute(
+            select(EnrichmentResult).where(EnrichmentResult.entity_uid == entity_uid).order_by(EnrichmentResult.created_at.desc())
+        ).scalars().all()
+        return {
+            "kind": "lead",
+            "entity_uid": str(entity_uid),
+            "company_name": lead.business_name,
+            "contact_name": lead.contact_name,
+            "phone": lead.phone,
+            "email": lead.email,
+            "status": lead.status.value,
+            "notes": lead.notes,
+            "loan_amount_requested": float(lead.loan_amount_requested) if lead.loan_amount_requested is not None else None,
+            "activity": [
+                {
+                    "event_type": a.event_type.value,
+                    "field_name": a.field_name,
+                    "old_value": a.old_value,
+                    "new_value": a.new_value,
+                    "occurred_at": a.occurred_at.isoformat(),
+                }
+                for a in activity
+            ],
+            "enrichment": [
+                {"source": r.source.value, "payload": r.payload, "confidence": float(r.confidence) if r.confidence is not None else None}
+                for r in enrichment
+            ],
+        }
+
+    candidate = db.get(SiloCandidate, entity_uid)
+    if candidate is not None:
+        enrichment = db.execute(
+            select(EnrichmentResult).where(EnrichmentResult.entity_uid == entity_uid).order_by(EnrichmentResult.created_at.desc())
+        ).scalars().all()
+        return {
+            "kind": "silo_candidate",
+            "entity_uid": str(entity_uid),
+            "company_name": candidate.company_name,
+            "contact_name": candidate.contact_name,
+            "phone": candidate.phone,
+            "email": candidate.email,
+            "silo": candidate.silo.value,
+            "status": candidate.status.value,
+            "notes": candidate.notes,
+            "score": float(candidate.score) if candidate.score is not None else None,
+            "activity": [],
+            "enrichment": [
+                {"source": r.source.value, "payload": r.payload, "confidence": float(r.confidence) if r.confidence is not None else None}
+                for r in enrichment
+            ],
+        }
+
+    raise HTTPException(status_code=404, detail="entity not found")
 
 
 @router.get("/campaigns/{campaign_id}/attempts", response_model=list[DialerCallAttemptOut])
