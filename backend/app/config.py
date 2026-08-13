@@ -89,6 +89,26 @@ class Settings(BaseSettings):
     # port zone this many days after its last recorded zone entry.
     river_surveillance_port_dwell_days: float = 10.0
 
+    # SignalWire dialer (services/signalwire_adapter.py, services/dialer.py,
+    # routers/dialer.py). Inert until project_id/api_token/space_url are all
+    # set, same "no key -> no-op" pattern as every other adapter here.
+    # SignalWire's REST API is Twilio-compatible
+    # (https://developer.signalwire.com/rest/compatibility-api), reachable at
+    # https://<space_url>/api/laml/2010-04-01/Accounts/<project_id>/... using
+    # HTTP Basic auth (project_id as username, api_token as password).
+    signalwire_project_id: str = ""
+    signalwire_api_token: str = ""
+    signalwire_space_url: str = ""  # e.g. "yourspace.signalwire.com" -- no scheme, no trailing slash
+    # Validates inbound status-callback signatures (X-Twilio-Signature
+    # compatible HMAC scheme) -- see routers/dialer.py's webhook handlers.
+    # Leave unset only for local testing against a tunnel you control.
+    signalwire_webhook_signing_key: str = ""
+    # Publicly reachable base URL SignalWire calls back to for call-status
+    # and SWML webhooks (e.g. your ngrok tunnel or production domain).
+    # Required before any real outbound call can be placed -- the dialer
+    # adapter refuses to place a call without it, see signalwire_adapter.py.
+    dialer_public_base_url: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

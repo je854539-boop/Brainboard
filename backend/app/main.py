@@ -8,6 +8,7 @@ from app.routers import (
     brain,
     calls,
     dashboard,
+    dialer,
     enrichment,
     globe,
     master_log,
@@ -44,6 +45,7 @@ app.include_router(enrichment.router)
 app.include_router(brain.router)
 app.include_router(globe.router)
 app.include_router(calls.router)
+app.include_router(dialer.router)
 app.include_router(river_surveillance_router.router)
 
 

@@ -72,3 +72,12 @@ def globe_page(request: Request):
 @router.get("/calls")
 def calls_page(request: Request):
     return templates.TemplateResponse(request, "calls.html", {"active_nav": "calls"})
+
+
+@router.get("/dialer")
+def dialer_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "dialer.html",
+        {"active_nav": "dialer", "co_brokers": list(CoBroker), "statuses": list(MasterLogStatus), "silos": list(SiloName)},
+    )

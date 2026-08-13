@@ -1,10 +1,11 @@
 """Deepgram Nova transcription adapter.
 
-Transcribes an already-recorded audio file (e.g. a voicemail or call
-recording already sitting in a lead's Drive dossier) via Deepgram's Nova
-model (https://api.deepgram.com/v1/listen?model=nova-2). This is a
-transcription utility only -- it does not place or receive calls, and
-Brainboard has no telephony integration.
+Transcribes an already-recorded audio file (e.g. a voicemail, a SignalWire
+dialer recording, or a call recording already sitting in a lead's Drive
+dossier) via Deepgram's Nova model
+(https://api.deepgram.com/v1/listen?model=nova-2). This is a transcription
+utility only -- it does not itself place or receive calls; that live path
+is services/signalwire_adapter.py + services/dialer.py.
 """
 
 import httpx

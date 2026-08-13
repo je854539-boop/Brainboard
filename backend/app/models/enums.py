@@ -212,3 +212,46 @@ class WaterwayTriggerType(str, Enum):
 
     DISTRESS_SUPPLY_STARVATION = "distress_supply_starvation"
     EXPANSION_THROUGHPUT_SPIKE = "expansion_throughput_spike"
+
+
+class DialerCampaignType(str, Enum):
+    """SignalWire dialer campaign types (services/dialer.py). Phase 1 only
+    implements OUTBOUND (queue-building + call placement + local-presence
+    caller ID). Concurrent inbound *campaigns* and live patch-in/double-dial
+    conferencing are deferred -- SignalWire numbers can still receive calls
+    (see routers/dialer.py's inbound webhook), there just isn't campaign
+    orchestration around it yet."""
+
+    OUTBOUND = "outbound"
+
+
+class DialerCallStatus(str, Enum):
+    """Raw technical call-progress status from SignalWire's status-callback
+    webhook (Twilio-compatible values) -- purely mechanical (did the call
+    connect), not a judgment about lead quality. See DialerDisposition for
+    the human decision that drives the pipeline purge/advance."""
+
+    QUEUED = "queued"
+    RINGING = "ringing"
+    IN_PROGRESS = "in-progress"
+    COMPLETED = "completed"
+    BUSY = "busy"
+    NO_ANSWER = "no-answer"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+class DialerDisposition(str, Enum):
+    """The human call-outcome decision made from the campaign dashboard
+    after a call attempt -- mirrors the existing silo Convert/Dismiss
+    pattern (see pipeline.convert_or_update_silo_candidate). Set once per
+    DialerCallAttempt; nothing here is inferred automatically from call
+    audio/sentiment -- that would require live NLU this phase doesn't
+    build. ADVANCE either converts a silo candidate into a Master Log V2
+    lead or advances an existing Master Log lead's status; PURGE dismisses
+    a silo candidate or marks a Master Log lead attrited, exactly like the
+    manual buttons already do."""
+
+    UNSET = "unset"
+    ADVANCE = "advance"
+    PURGE = "purge"

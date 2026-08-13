@@ -3,7 +3,17 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.enums import CallAnalysisStatus, CoBroker, MasterLogStatus, SiloCandidateStatus, SiloName, TelemetrySource
+from app.models.enums import (
+    CallAnalysisStatus,
+    CoBroker,
+    DialerCallStatus,
+    DialerCampaignType,
+    DialerDisposition,
+    MasterLogStatus,
+    SiloCandidateStatus,
+    SiloName,
+    TelemetrySource,
+)
 
 
 class HazardSnapshotOut(BaseModel):
@@ -177,3 +187,117 @@ class CallFromUrlRequest(BaseModel):
     audio_url: str
     lead_uid: uuid.UUID | None = None
     source_label: str | None = None
+
+
+class DialerNumberOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    pool_id: uuid.UUID
+    phone_number: str
+    area_code: str | None
+    label: str | None
+    signalwire_number_sid: str | None
+    is_active: bool
+    created_at: datetime
+
+
+class DialerNumberCreate(BaseModel):
+    pool_id: uuid.UUID
+    phone_number: str
+    area_code: str | None = None
+    label: str | None = None
+    signalwire_number_sid: str | None = None
+
+
+class DialerNumberPoolOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: str | None
+    created_at: datetime
+    numbers: list[DialerNumberOut] = []
+
+
+class DialerNumberPoolCreate(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class DialerCampaignOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    campaign_type: DialerCampaignType
+    number_pool_id: uuid.UUID | None
+    lead_filter: dict
+    caller_connect_number: str | None
+    max_attempts_per_lead: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class DialerCampaignCreate(BaseModel):
+    name: str
+    campaign_type: DialerCampaignType = DialerCampaignType.OUTBOUND
+    number_pool_id: uuid.UUID | None = None
+    lead_filter: dict = {}
+    caller_connect_number: str | None = None
+    max_attempts_per_lead: int = 3
+
+
+class DialerCampaignUpdate(BaseModel):
+    name: str | None = None
+    number_pool_id: uuid.UUID | None = None
+    lead_filter: dict | None = None
+    caller_connect_number: str | None = None
+    max_attempts_per_lead: int | None = None
+    is_active: bool | None = None
+
+
+class DialerCallAttemptOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    campaign_id: uuid.UUID
+    lead_uid: uuid.UUID | None
+    silo_candidate_uid: uuid.UUID | None
+    from_number_id: uuid.UUID | None
+    to_number: str
+    attempt_number: int
+    signalwire_call_sid: str | None
+    status: DialerCallStatus
+    recording_url: str | None
+    duration_seconds: float | None
+    disposition: DialerDisposition
+    error: str | None
+    placed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DialerDispositionUpdate(BaseModel):
+    disposition: DialerDisposition
+    co_broker: CoBroker | None = None  # required only when disposition=advance on a silo candidate
+
+
+class DialerQueuePreviewEntry(BaseModel):
+    lead_source: str  # "calendar" | "sheet_lead" | "silo_candidate"
+    entity_uid: uuid.UUID
+    company_name: str
+    to_number: str | None
+    attempts_so_far: int
+
+
+class DialerCallStatusWebhook(BaseModel):
+    """Shape of SignalWire's Twilio-compatible call-status callback --
+    only the fields the dialer actually consumes; SignalWire posts more
+    that we don't need. See routers/dialer.py."""
+
+    CallSid: str
+    CallStatus: str
+    CallDuration: str | None = None
+    RecordingUrl: str | None = None

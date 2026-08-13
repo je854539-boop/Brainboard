@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Dialer // SignalWire Campaigns</h1>
+  <div id="provider-status" class="text-[10px]"></div>
+</div>
+
+<p class="text-[10px] text-[var(--text-dim)] mb-4 max-w-4xl leading-relaxed">
+  Phase 1: outbound calling only. A campaign dials calendar leads / filtered Sheet leads / pending silo candidates from a
+  local-presence number pool; when a lead answers they're bridged straight to the campaign's follow-up number. After each
+  call, mark it <b class="text-[var(--green)]">Advance</b> (converts a silo candidate into Master Log V2, or moves an
+  existing lead forward) or <b class="text-[var(--crimson)]">Purge</b> (dismisses/ghosts it) -- same disposition path the
+  Targets grid's Convert/Dismiss buttons already use. Not yet built (deferred, not silently skipped): live patch-in /
+  double-dial into your company-dialer call, concurrent inbound campaigns, SMS/10DLC, and real predictive volume pacing --
+  "max calls per run" below is a manual batch cap, not an optimizer.
+</p>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+  <div class="tactical-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Number Pools</div>
+    <form id="pool-form" class="flex flex-col gap-2 mb-3">
+      <input name="name" required placeholder="Pool name (e.g. NY Merchant Follow-up)" class="tactical-select w-full" />
+      <input name="description" placeholder="Description (optional)" class="tactical-select w-full" />
+      <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)]">Create Pool</button>
+    </form>
+    <div id="pool-list" class="text-[10px] flex flex-col gap-2 max-h-[220px] overflow-y-auto"></div>
+  </div>
+
+  <div class="tactical-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Add Number to Pool</div>
+    <form id="number-form" class="flex flex-col gap-2">
+      <select name="pool_id" id="number-pool-select" required class="tactical-select w-full"></select>
+      <input name="phone_number" required placeholder="+19175551234" class="tactical-select w-full" />
+      <input name="area_code" placeholder="Area code (e.g. 917) -- for local-presence matching" class="tactical-select w-full" />
+      <input name="label" placeholder="Label (e.g. Program B pitch line)" class="tactical-select w-full" />
+      <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)]">Add Number</button>
+    </form>
+    <div id="number-result" class="mt-2 text-[10px]"></div>
+  </div>
+
+  <div class="tactical-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">New Campaign</div>
+    <form id="campaign-form" class="flex flex-col gap-2">
+      <input name="name" required placeholder="Campaign name" class="tactical-select w-full" />
+      <select name="number_pool_id" id="campaign-pool-select" class="tactical-select w-full">
+        <option value="">— no pool (no local presence) —</option>
+      </select>
+      <input name="caller_connect_number" placeholder="Bridge answered calls to (+1...)" class="tactical-select w-full" />
+      <input name="max_attempts_per_lead" type="number" min="1" value="3" class="tactical-select w-full" />
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)] flex items-center gap-2 mt-1">
+        <input type="checkbox" name="calendar" /> Include calendar-due leads
+      </label>
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">Sheet lead statuses (ctrl/cmd-click multi)</label>
+      <select name="master_log_statuses" id="campaign-status-select" multiple class="tactical-select w-full h-20">
+        {% for s in statuses %}<option value="{{ s.value }}">{{ s.value }}</option>{% endfor %}
+      </select>
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">Co-brokers (optional filter)</label>
+      <select name="co_brokers" id="campaign-broker-select" multiple class="tactical-select w-full h-20">
+        {% for cb in co_brokers %}<option value="{{ cb.value }}">{{ cb.value }}</option>{% endfor %}
+      </select>
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">Silos (pending candidates)</label>
+      <select name="silos" id="campaign-silo-select" multiple class="tactical-select w-full h-20">
+        {% for s in silos %}<option value="{{ s.value }}">{{ s.value }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)] mt-1">Create Campaign</button>
+    </form>
+  </div>
+</div>
+
+<div class="tactical-panel p-4 mb-4">
+  <div class="stencil-header text-[var(--amber)] text-xs mb-3">Campaigns</div>
+  <table class="tactical-table">
+    <thead><tr><th>Name</th><th>Pool</th><th>Queue</th><th>Max Attempts</th><th>Active</th><th>Action</th></tr></thead>
+    <tbody id="campaigns-body"><tr><td colspan="6" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<div class="tactical-panel scroll-panel">
+  <div class="stencil-header text-[var(--amber)] text-xs p-4 pb-2" id="attempts-header">Call Attempts</div>
+  <table class="tactical-table">
+    <thead><tr><th>To</th><th>From</th><th>Attempt</th><th>Status</th><th>Duration</th><th>Recording</th><th>Disposition</th></tr></thead>
+    <tbody id="attempts-body"><tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">Select a campaign above.</td></tr></tbody>
+  </table>
+</div>
+
+<script>
+let poolsCache = [], campaignsCache = [], numbersById = {}, selectedCampaignId = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : `${url} -> ${res.status}`);
+  return data;
+}
+
+async function renderProviderStatus() {
+  const s = await fetchJSON("/api/dialer/status");
+  document.getElementById("provider-status").innerHTML = `
+    <div class="tactical-panel px-2 py-1.5 flex items-center gap-3">
+      <span class="uppercase tracking-wide">signalwire</span>
+      <span class="status-badge ${s.signalwire_enabled ? 'status-badge--funded' : 'status-badge--attrition'}">${s.signalwire_enabled ? 'LIVE' : 'OFF'}</span>
+      <span class="uppercase tracking-wide">callback url</span>
+      <span class="status-badge ${s.callback_base_url_configured ? 'status-badge--funded' : 'status-badge--attrition'}">${s.callback_base_url_configured ? 'SET' : 'UNSET'}</span>
+    </div>`;
+}
+
+async function renderPools() {
+  poolsCache = await fetchJSON("/api/dialer/pools");
+  numbersById = {};
+  poolsCache.forEach(p => p.numbers.forEach(n => numbersById[n.id] = n));
+
+  document.getElementById("pool-list").innerHTML = poolsCache.map(p => `
+    <div class="tactical-panel p-2">
+      <div class="font-medium text-[var(--amber)]">${p.name}</div>
+      <div class="text-[var(--text-dim)]">${p.numbers.length} number(s): ${p.numbers.map(n => `${n.phone_number}${n.label ? ' ('+n.label+')' : ''}`).join(', ') || '—'}</div>
+    </div>`).join("") || `<div class="text-[var(--text-dim)]">No pools yet.</div>`;
+
+  const options = poolsCache.map(p => `<option value="${p.id}">${p.name}</option>`).join("");
+  document.getElementById("number-pool-select").innerHTML = options || '<option value="">— create a pool first —</option>';
+  document.getElementById("campaign-pool-select").innerHTML = '<option value="">— no pool (no local presence) —</option>' + options;
+}
+
+function queueBadge(count) {
+  const color = count > 0 ? 'status-badge--active' : 'status-badge--attrition';
+  return `<span class="status-badge ${color}">${count}</span>`;
+}
+
+async function renderCampaigns() {
+  campaignsCache = await fetchJSON("/api/dialer/campaigns");
+  const rows = await Promise.all(campaignsCache.map(async c => {
+    let queueSize = "—";
+    try {
+      const q = await fetchJSON(`/api/dialer/campaigns/${c.id}/queue-preview`);
+      queueSize = queueBadge(q.length);
+    } catch (e) { queueSize = "err"; }
+    const pool = poolsCache.find(p => p.id === c.number_pool_id);
+    return `
+      <tr class="cursor-pointer" onclick="selectCampaign('${c.id}')">
+        <td class="text-[var(--text-primary)] font-medium">${c.name}</td>
+        <td>${pool ? pool.name : '—'}</td>
+        <td>${queueSize}</td>
+        <td class="hud-value">${c.max_attempts_per_lead}</td>
+        <td><span class="status-badge ${c.is_active ? 'status-badge--funded' : 'status-badge--attrition'}">${c.is_active ? 'active' : 'paused'}</span></td>
+        <td class="flex items-center gap-1" onclick="event.stopPropagation()">
+          <input type="number" min="1" value="10" class="tactical-select text-[10px] py-1 w-16" id="max-calls-${c.id}" />
+          <button class="tactical-select text-[10px] py-1 border-[var(--green)] text-[var(--green)]" onclick="runCampaign('${c.id}')">Run</button>
+        </td>
+      </tr>`;
+  }));
+  document.getElementById("campaigns-body").innerHTML = rows.join("") || `<tr><td colspan="6" class="text-center text-[var(--text-dim)] py-6">No campaigns yet.</td></tr>`;
+}
+
+function dispositionButtons(attempt) {
+  if (attempt.disposition !== "unset") {
+    return `<span class="status-badge ${attempt.disposition === 'advance' ? 'status-badge--funded' : 'status-badge--attrition'}">${attempt.disposition}</span>`;
+  }
+  const needsBroker = !!attempt.silo_candidate_uid;
+  return `
+    <div class="flex items-center gap-1" x-data>
+      ${needsBroker ? `<select x-ref="broker" id="broker-${attempt.id}" class="tactical-select text-[10px] py-1">
+        {% for cb in co_brokers %}<option value="{{ cb.value }}">{{ cb.value }}</option>{% endfor %}
+      </select>` : ''}
+      <button class="tactical-select text-[10px] py-1 border-[var(--green)] text-[var(--green)]" onclick="disposition('${attempt.id}','advance',${needsBroker})">Advance</button>
+      <button class="tactical-select text-[10px] py-1 border-[var(--crimson)] text-[var(--crimson)]" onclick="disposition('${attempt.id}','purge',${needsBroker})">Purge</button>
+    </div>`;
+}
+
+async function renderAttempts(campaignId) {
+  const attempts = await fetchJSON(`/api/dialer/campaigns/${campaignId}/attempts`);
+  document.getElementById("attempts-body").innerHTML = attempts.map(a => {
+    const from = a.from_number_id && numbersById[a.from_number_id] ? numbersById[a.from_number_id].phone_number : '—';
+    const statusColor = a.status === "completed" ? "status-badge--funded" : a.status === "failed" ? "status-badge--attrition" : "status-badge--active";
+    return `
+      <tr id="attempt-row-${a.id}">
+        <td>${a.to_number}</td>
+        <td>${from}</td>
+        <td class="hud-value">${a.attempt_number}</td>
+        <td><span class="status-badge ${statusColor}" title="${a.error || ''}">${a.status}</span></td>
+        <td class="hud-value">${a.duration_seconds ? a.duration_seconds.toFixed(0) + 's' : '—'}</td>
+        <td>${a.recording_url ? `<a href="${a.recording_url}" target="_blank" class="text-[var(--amber)] hover:underline">REC ↗</a>` : '—'}</td>
+        <td>${dispositionButtons(a)}</td>
+      </tr>`;
+  }).join("") || `<tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">No call attempts yet for this campaign.</td></tr>`;
+}
+
+window.selectCampaign = async (id) => {
+  selectedCampaignId = id;
+  const c = campaignsCache.find(x => x.id === id);
+  document.getElementById("attempts-header").textContent = `Call Attempts // ${c ? c.name : id}`;
+  await renderAttempts(id);
+};
+
+window.runCampaign = async (id) => {
+  const maxCalls = document.getElementById(`max-calls-${id}`).value || 10;
+  try {
+    await fetchJSON(`/api/dialer/campaigns/${id}/run?max_calls=${maxCalls}`, { method: "POST" });
+  } catch (err) {
+    alert("Run failed: " + err.message);
+  }
+  await renderCampaigns();
+  if (selectedCampaignId === id) await renderAttempts(id);
+};
+
+window.disposition = async (attemptId, disposition, needsBroker) => {
+  const payload = { disposition };
+  if (needsBroker) {
+    const select = document.getElementById(`broker-${attemptId}`);
+    payload.co_broker = select ? select.value : null;
+  }
+  try {
+    await fetchJSON(`/api/dialer/attempts/${attemptId}/disposition`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (selectedCampaignId) await renderAttempts(selectedCampaignId);
+    await renderCampaigns();
+  } catch (err) {
+    alert("Disposition failed: " + err.message);
+  }
+};
+
+document.getElementById("pool-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  await fetchJSON("/api/dialer/pools", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: form.get("name"), description: form.get("description") || null }),
+  });
+  e.target.reset();
+  await renderPools();
+});
+
+document.getElementById("number-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const resultDiv = document.getElementById("number-result");
+  try {
+    await fetchJSON("/api/dialer/numbers", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pool_id: form.get("pool_id"), phone_number: form.get("phone_number"),
+        area_code: form.get("area_code") || null, label: form.get("label") || null,
+      }),
+    });
+    resultDiv.innerHTML = `<span class="hud-value--nominal">Number added.</span>`;
+    e.target.reset();
+    await renderPools();
+  } catch (err) {
+    resultDiv.innerHTML = `<span class="hud-value--hazard">${err.message}</span>`;
+  }
+});
+
+document.getElementById("campaign-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const selected = (id) => Array.from(document.getElementById(id).selectedOptions).map(o => o.value);
+  const leadFilter = {};
+  if (form.get("calendar")) leadFilter.calendar = true;
+  const statuses = selected("campaign-status-select");
+  if (statuses.length) leadFilter.master_log_statuses = statuses;
+  const brokers = selected("campaign-broker-select");
+  if (brokers.length) leadFilter.co_brokers = brokers;
+  const silos = selected("campaign-silo-select");
+  if (silos.length) leadFilter.silos = silos;
+
+  await fetchJSON("/api/dialer/campaigns", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: form.get("name"),
+      number_pool_id: form.get("number_pool_id") || null,
+      caller_connect_number: form.get("caller_connect_number") || null,
+      max_attempts_per_lead: parseInt(form.get("max_attempts_per_lead"), 10) || 3,
+      lead_filter: leadFilter,
+    }),
+  });
+  e.target.reset();
+  await renderCampaigns();
+});
+
+(async () => {
+  await renderProviderStatus();
+  await renderPools();
+  await renderCampaigns();
+})();
+</script>
+{% endblock %}

@@ -4,7 +4,8 @@ Institutional alternative credit arbitrage dashboard and macro-surveillance
 intelligence grid. FastAPI + PostgreSQL(pgvector) backend, Tailwind CSS +
 HTMX + Alpine.js frontend, bidirectional Google Sheets/Calendar/Drive sync.
 
-No telephony/SignalWire integration is included by design.
+Includes a SignalWire outbound dialer (`/dialer`) -- see the Dialer section
+below for what's built vs. explicitly deferred to a follow-up phase.
 
 ## Architecture
 
@@ -208,9 +209,49 @@ apps_script/
   caveats flagged directly in the result payload.
 - **Calls** (`/calls`) -- upload a recorded call (or paste a URL to one
   already hosted) and Deepgram Nova transcribes, diarizes, summarizes, and
-  sentiment-scores it. Analyzes recordings after the fact only -- no
-  telephony integration, it doesn't place/receive/route calls. Optionally
-  tag a call with a lead so it lands on that lead's activity ledger.
+  sentiment-scores it. Analyzes recordings after the fact only -- this
+  page itself doesn't place/receive/route calls; that's the Dialer below.
+  Optionally tag a call with a lead so it lands on that lead's activity
+  ledger.
+- **Dialer** (`/dialer`) -- SignalWire outbound calling campaigns
+  (`app/services/signalwire_adapter.py`, `app/services/dialer.py`,
+  `app/routers/dialer.py`). **Phase 1 scope only:**
+  - Create number pools + SignalWire numbers (with area codes) so
+    different campaigns dial out from different local-presence lines --
+    e.g. one pool for following up with an existing merchant list, a
+    separate pool/campaign for pitching a different program to a
+    different list.
+  - Campaigns pull their dial queue from calendar-due leads, filtered
+    Sheet leads (by status/co-broker), and/or pending silo candidates
+    (`lead_filter` JSONB on `DialerCampaign`) -- see
+    `dialer.py::build_dial_queue`.
+  - Placing a call picks a caller-ID number local to the lead's area
+    code where possible, and bridges an answered call straight to the
+    campaign's configured follow-up number (`caller_connect_number`).
+  - After each call, mark it **Advance** or **Purge** from the dashboard
+    -- this routes through the *same* `pipeline.convert_or_update_silo_candidate`
+    / `pipeline.update_lead_status` calls the Targets grid's manual
+    Convert/Dismiss buttons already use, so Sheet push / Calendar sync /
+    activity logging all fire normally regardless of whether the
+    mutation came from a click or a call outcome. Nothing here infers a
+    disposition automatically from call audio/sentiment -- that's a
+    human decision made from the dashboard, not a built NLU pipeline.
+  - **Explicitly deferred to a follow-up phase, not silently dropped:**
+    live patch-in/double-dial (bridging your own in-progress
+    "company dialer" call to a live-answered lead, so you're on both at
+    once), concurrent inbound campaigns, SMS/10DLC campaigns, and a real
+    predictive volume-pacing/optimization algorithm -- "max calls per
+    run" on a campaign is a manual batch-size cap, not automatic pacing.
+  - SignalWire's REST API is a documented Twilio-compatible
+    "Compatibility API" (same auth scheme, same `Calls.json` resource
+    shape, same LaML/cXML call-control markup) -- verified against
+    SignalWire's own docs/search results before writing the adapter, not
+    guessed. The one *unconfirmed* piece, flagged rather than presented
+    as fact: the exact webhook-signature construction
+    (`signalwire_adapter.py::verify_webhook_signature` assumes Twilio's
+    X-Twilio-Signature scheme since SignalWire's docs describe accepting
+    "the same webhooks" Twilio does) -- confirm against SignalWire's
+    current docs before relying on it for anything security-sensitive.
 - **Brain** (`/brain`) -- the shadow-mode scoring engine (see below).
 - **Globe** (`/globe`) -- a true 3D globe rendered with **CesiumJS**
   (vendored locally like everything else, no runtime CDN), replacing the
@@ -489,6 +530,20 @@ Everything is inert (no-ops, not errors) until configured:
   GDELT's GEO 2.0 API (conflict-zone events) is free and keyless, so it's
   live by default with no configuration -- `GDELT_API_KEY` is reserved
   for future use only.
+- **SignalWire dialer**: set `SIGNALWIRE_PROJECT_ID`, `SIGNALWIRE_API_TOKEN`,
+  `SIGNALWIRE_SPACE_URL` (from your SignalWire Space dashboard), and
+  `DIALER_PUBLIC_BASE_URL` (a publicly reachable URL SignalWire can call
+  back into, e.g. an ngrok tunnel in dev or your real domain in
+  production -- the dialer refuses to place a call without it).
+  `SIGNALWIRE_WEBHOOK_SIGNING_KEY` is optional but recommended once
+  you're past local testing (see the Dialer section above for what its
+  signature validation does and doesn't confirm). Then, from `/dialer`:
+  create a number pool, add the SignalWire numbers you've purchased to it
+  (with their area codes, for local-presence matching), and create a
+  campaign pointing at that pool with a `lead_filter`. Numbers themselves
+  still need to be purchased/provisioned in your SignalWire dashboard or
+  via their API first -- this UI only tracks which ones Brainboard is
+  allowed to dial from, it doesn't buy them for you.
 - **Apps Script**: open the Master Log V2 spreadsheet's Apps Script editor,
   paste in `apps_script/Code.gs`, set Script Properties `BACKEND_BASE_URL`
   and `WEBHOOK_SHARED_SECRET` (must match the backend's

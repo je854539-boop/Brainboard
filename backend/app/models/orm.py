@@ -14,6 +14,9 @@ from app.models.enums import (
     BrainMode,
     CallAnalysisStatus,
     CoBroker,
+    DialerCallStatus,
+    DialerCampaignType,
+    DialerDisposition,
     GeofenceEventType,
     MasterLogStatus,
     SiloCandidateStatus,
@@ -275,10 +278,12 @@ class GlobeSignal(Base):
 class CallRecording(Base):
     """A post-call analysis run via Deepgram Nova on an already-recorded
     call (uploaded file or a URL to one already hosted, e.g. in a Drive
-    dossier). This analyzes recordings after the fact -- it does not
-    place, receive, or route calls; Brainboard has no telephony
-    integration. `lead_uid` is nullable because a call may get analyzed
-    before the lead is formally intaken off the dialer."""
+    dossier, or a SignalWire dialer recording -- see DialerCallAttempt).
+    This model only analyzes recordings after the fact; it does not itself
+    place, receive, or route calls -- that live telephony path is
+    DialerCampaign/DialerCallAttempt via services/signalwire_adapter.py.
+    `lead_uid` is nullable because a call may get analyzed before the lead
+    is formally intaken off the dialer."""
 
     __tablename__ = "call_recordings"
 
@@ -386,3 +391,118 @@ class WaterwayTrigger(Base):
     detail: Mapped[str] = mapped_column(Text, nullable=False)
     source_reference: Mapped[str | None] = mapped_column(String(512))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class DialerNumberPool(Base):
+    """A named group of SignalWire numbers assigned to campaigns as caller
+    ID -- e.g. one pool of local-presence numbers for merchant follow-up,
+    a separate pool for pitching a different program, per the request."""
+
+    __tablename__ = "dialer_number_pools"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    numbers: Mapped[list["DialerNumber"]] = relationship(back_populates="pool", cascade="all, delete-orphan")
+
+
+class DialerNumber(Base):
+    """One SignalWire phone number available for outbound caller ID.
+    `area_code` drives local-presence selection in services/dialer.py
+    (match the lead's own area code where possible); `label` is a free-text
+    tag for what the number is used for (e.g. "NY merchant follow-up" vs
+    "Program B pitch line") -- numbers themselves are still provisioned in
+    the SignalWire dashboard/API, this table just tracks which ones
+    Brainboard is allowed to dial out from and why."""
+
+    __tablename__ = "dialer_numbers"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pool_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dialer_number_pools.id", ondelete="CASCADE"), nullable=False)
+    phone_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)  # E.164, e.g. +19175551234
+    area_code: Mapped[str | None] = mapped_column(String(8), index=True)
+    label: Mapped[str | None] = mapped_column(String(256))
+    signalwire_number_sid: Mapped[str | None] = mapped_column(String(64))
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    pool: Mapped["DialerNumberPool"] = relationship(back_populates="numbers")
+
+
+class DialerCampaign(Base):
+    """A SignalWire outbound calling campaign. `lead_filter` selects which
+    leads populate the dial queue (services/dialer.py::build_dial_queue) --
+    e.g. {"calendar": true, "silos": ["CME Macro Funnel"], "master_log_statuses":
+    ["New lead"]} -- kept as JSONB rather than a fixed set of columns since
+    the source mix (calendar leads / specific Sheet leads / silo-assigned
+    candidates) is exactly the kind of ad hoc, evolving filter every other
+    JSONB payload/extra_columns field in this schema already exists for.
+    `caller_connect_number` is the simple "ring me when the lead answers"
+    number -- bridging one outbound call leg to the user's own phone. This
+    is NOT the deferred live patch-in/double-dial (bridging a *second*,
+    already-in-progress company-dialer call) -- that needs SignalWire
+    conferencing and is explicitly a follow-up phase."""
+
+    __tablename__ = "dialer_campaigns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    campaign_type: Mapped[DialerCampaignType] = mapped_column(
+        _pg_enum(DialerCampaignType, "dialer_campaign_type"), nullable=False, default=DialerCampaignType.OUTBOUND
+    )
+    number_pool_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("dialer_number_pools.id", ondelete="SET NULL"))
+    lead_filter: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    caller_connect_number: Mapped[str | None] = mapped_column(String(32))
+    max_attempts_per_lead: Mapped[int] = mapped_column(nullable=False, default=3)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    number_pool: Mapped["DialerNumberPool | None"] = relationship()
+    attempts: Mapped[list["DialerCallAttempt"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
+
+
+class DialerCallAttempt(Base):
+    """One placed (or attempted) outbound call. `status` is the raw
+    SignalWire call-progress webhook value; `disposition` is the human
+    purge/advance decision made from the campaign dashboard afterward --
+    see DialerDisposition. Advancing/purging routes through the existing
+    pipeline.convert_or_update_silo_candidate / update_lead_status, same
+    as the manual silo Convert/Dismiss buttons, so Sheet push + Calendar
+    sync + activity logging all fire normally regardless of whether the
+    mutation originated from a click or a call outcome."""
+
+    __tablename__ = "dialer_call_attempts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dialer_campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    lead_uid: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("master_log_entries.lead_uid", ondelete="SET NULL"), index=True
+    )
+    silo_candidate_uid: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("silo_candidates.candidate_uid", ondelete="SET NULL"), index=True
+    )
+    from_number_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("dialer_numbers.id", ondelete="SET NULL"))
+    to_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(nullable=False, default=1)
+    signalwire_call_sid: Mapped[str | None] = mapped_column(String(64), index=True)
+    status: Mapped[DialerCallStatus] = mapped_column(
+        _pg_enum(DialerCallStatus, "dialer_call_status"), nullable=False, default=DialerCallStatus.QUEUED
+    )
+    recording_url: Mapped[str | None] = mapped_column(String(1024))
+    duration_seconds: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    disposition: Mapped[DialerDisposition] = mapped_column(
+        _pg_enum(DialerDisposition, "dialer_disposition"), nullable=False, default=DialerDisposition.UNSET
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    campaign: Mapped["DialerCampaign"] = relationship(back_populates="attempts")
