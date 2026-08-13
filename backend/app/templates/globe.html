@@ -10,22 +10,31 @@
     <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-2">Sources</div>
     <div id="source-status" class="flex flex-col gap-1.5 text-[10px]"></div>
   </div>
-  <div class="tactical-panel p-3 lg:col-span-3 flex items-center gap-6">
+  <div class="tactical-panel p-3 lg:col-span-3 flex items-center gap-6 flex-wrap">
     <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Signals Tracked</div><div id="signal-count" class="hud-value text-lg">0</div></div>
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--amber)"></span> GFW 4Wings (marine traffic)</div>
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--crimson)"></span> GDELT (conflict zones, last 24h)</div>
+    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--green)"></span> Major trade corridors (static reference)</div>
+    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--green)"></span> Major ports (hover for name)</div>
   </div>
 </div>
 
 <div id="globe-status" class="text-[10px] text-[var(--text-dim)] mb-2"></div>
+<div class="text-[10px] text-[var(--text-dim)] mb-2">
+  Sea routes and ports are a static geographic reference layer (real port
+  locations, corridors chained through known chokepoints/canals) -- not
+  live AIS-routed shipping data. Live vessel activity is the amber GFW
+  4Wings signal dots above.
+</div>
 <div class="tactical-panel" style="height:600px; position:relative;">
   <div id="globe-container" style="width:100%; height:100%;"></div>
+  <div id="port-tooltip" class="hidden" style="position:absolute; pointer-events:none; background:var(--panel-bg); border:1px solid var(--green); color:var(--green); padding:2px 6px; font-size:10px; z-index:10; white-space:nowrap;"></div>
 </div>
 
 <script type="module">
 import * as THREE from '/static/vendor/three/three.module.min.js';
 
-const AMBER = 0xffb000, CRIMSON = 0xff3333, PANEL_BORDER = 0x2d333b, BG = 0x121417;
+const AMBER = 0xffb000, CRIMSON = 0xff3333, GREEN = 0x4aff7a, PANEL_BORDER = 0x2d333b, BG = 0x121417;
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, opts);
@@ -94,6 +103,47 @@ async function renderCountryBorders() {
   globeGroup.add(new THREE.LineSegments(geometry, material));
 }
 
+// Major trade route corridors -- multi-hop great-circle arcs through real
+// chokepoints (Malacca, Suez, Hormuz, Panama, Gibraltar, Cape of Good
+// Hope), pre-computed at build time by scripts/build-globe-extras.js.
+// Static reference layer, not live-routed shipping data (see caption
+// above the globe).
+async function renderSeaRoutes() {
+  const routes = await fetchJSON('/static/data/sea-routes.json');
+  const r = 2.003;
+  const positions = [];
+  for (const route of routes) {
+    for (let i = 0; i < route.length - 1; i++) {
+      const [lon1, lat1] = route[i];
+      const [lon2, lat2] = route[i + 1];
+      const p1 = latLonToVec3(lat1, lon1, r);
+      const p2 = latLonToVec3(lat2, lon2, r);
+      positions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const material = new THREE.LineBasicMaterial({ color: GREEN, transparent: true, opacity: 0.35 });
+  globeGroup.add(new THREE.LineSegments(geometry, material));
+}
+
+// Major world container ports -- static reference points, hoverable for
+// name lookup via the raycaster wired up below.
+const portMeshes = new THREE.Group();
+globeGroup.add(portMeshes);
+
+async function renderMajorPorts() {
+  const ports = await fetchJSON('/static/data/major-ports.json');
+  const dotGeometry = new THREE.SphereGeometry(0.03, 8, 8);
+  const material = new THREE.MeshBasicMaterial({ color: GREEN });
+  for (const p of ports) {
+    const dot = new THREE.Mesh(dotGeometry, material);
+    dot.position.copy(latLonToVec3(p.lat, p.lon, 2.02));
+    dot.userData.portName = p.name;
+    portMeshes.add(dot);
+  }
+}
+
 const signalMeshes = new THREE.Group();
 globeGroup.add(signalMeshes);
 
@@ -150,6 +200,27 @@ window.addEventListener('pointermove', (e) => {
   lastX = e.clientX; lastY = e.clientY;
 });
 
+// Hover a major port to see its name.
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+const tooltip = document.getElementById('port-tooltip');
+renderer.domElement.addEventListener('pointermove', (e) => {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(pointerNDC, camera);
+  const hit = raycaster.intersectObjects(portMeshes.children)[0];
+  if (hit) {
+    tooltip.textContent = hit.object.userData.portName;
+    tooltip.style.left = (e.clientX - rect.left + 12) + 'px';
+    tooltip.style.top = (e.clientY - rect.top + 12) + 'px';
+    tooltip.classList.remove('hidden');
+  } else {
+    tooltip.classList.add('hidden');
+  }
+});
+renderer.domElement.addEventListener('pointerleave', () => tooltip.classList.add('hidden'));
+
 function animate() {
   requestAnimationFrame(animate);
   if (!dragging) rotY += 0.0015;
@@ -165,6 +236,8 @@ window.addEventListener('resize', () => {
 });
 
 renderCountryBorders();
+renderSeaRoutes();
+renderMajorPorts();
 renderSourceStatus();
 renderSignals();
 animate();

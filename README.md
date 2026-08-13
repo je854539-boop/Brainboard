@@ -72,7 +72,12 @@ apps_script/
   tag a call with a lead so it lands on that lead's activity ledger.
 - **Brain** (`/brain`) -- the shadow-mode scoring engine (see below).
 - **Globe** (`/globe`) -- a spinning 3D globe (vendored Three.js) plotting
-  GFW 4Wings marine traffic and GDELT conflict-zone events (last 24h).
+  GFW 4Wings marine traffic and GDELT conflict-zone events (last 24h), with
+  country border outlines (Natural Earth 50m via `world-atlas`), major
+  global trade corridors, and ~40 major world container ports (hoverable
+  for name). The borders/routes/ports layers are static reference geometry
+  pre-flattened at build time -- see "Frontend dependencies" below -- not
+  live-routed AIS shipping data (that's what the GFW signal dots are for).
 - **Analytics** (`/analytics`) -- Kaplan-Meier curves, Markov transition
   matrix, deal-velocity bottlenecks, silo friction correlation, and the
   time-varying Cox engagement-hazard panel.
@@ -114,9 +119,16 @@ vendored version:
 ```
 cd backend
 npm install
-npm run vendor-assets   # re-copies htmx/Alpine/fonts from node_modules
-npm run build-css       # rebuilds app/static/css/tailwind.css
+npm run vendor-assets      # re-copies htmx/Alpine/fonts from node_modules
+npm run build-css          # rebuilds app/static/css/tailwind.css
+npm run build-geo          # rebuilds app/static/data/country-borders.json
+npm run build-globe-extras # rebuilds sea-routes.json + major-ports.json
 ```
+
+`build-geo` and `build-globe-extras` only need to be re-run if you bump the
+`world-atlas` resolution or edit the corridor/port lists in
+`scripts/build-globe-extras.js` -- the generated JSON is committed, so a
+fresh clone doesn't need Node at deploy time for the globe to work.
 
 ## Local development
 

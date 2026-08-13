@@ -6,7 +6,8 @@
   "scripts": {
     "build-css": "tailwindcss -i app/static/css_src/tailwind_input.css -o app/static/css/tailwind.css --minify",
     "vendor-assets": "node scripts/vendor-assets.js",
-    "build-geo": "node scripts/build-country-borders.js"
+    "build-geo": "node scripts/build-country-borders.js",
+    "build-globe-extras": "node scripts/build-globe-extras.js"
   },
   "license": "UNLICENSED",
   "dependencies": {
