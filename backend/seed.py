@@ -242,7 +242,7 @@ def seed_globe(db) -> None:
     for lat, lon, label in GFW_DEMO_POINTS:
         db.add(GlobeSignal(
             source=TelemetrySource.GFW_4WINGS, latitude=lat, longitude=lon,
-            intensity=round(random.uniform(2, 20), 1), title=f"Vessel presence, {label} [DEMO SEED DATA]",
+            intensity=round(random.uniform(2, 20), 1), title=f"Marine traffic, {label} [DEMO SEED DATA]",
             payload={"demo": True}, observed_at=NOW - dt.timedelta(hours=random.uniform(0, 72)),
         ))
     for lat, lon, label in GDELT_DEMO_POINTS:

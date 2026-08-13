@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     regrid_api_key: str = ""
     highergov_api_key: str = ""
     gfw_api_key: str = ""  # Global Fishing Watch API token, powers the 4Wings globe layer
+    # Which GFW 4Wings dataset to pull. Defaults to their best-known public
+    # fishing-effort dataset; swap for a broader AIS marine-traffic dataset
+    # ID per your GFW API plan -- see app/services/globe/gfw_4wings.py.
+    gfw_dataset: str = "public-global-fishing-effort:latest"
     gdelt_api_key: str = ""  # optional -- GDELT's GEO 2.0 API is free/keyless at normal volume
 
     cobalt_intelligence_api_key: str = ""

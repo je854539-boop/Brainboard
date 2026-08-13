@@ -1,29 +1,44 @@
-"""Global Fishing Watch 4Wings adapter.
+"""Global Fishing Watch 4Wings adapter -- marine traffic layer.
 
 GFW's 4Wings API (https://globalfishingwatch.org/our-apis/) reports
-gridded vessel-activity ("apparent fishing effort" / AIS presence) for a
-bounding box and date range, via
-`POST https://gateway.api.globalfishingwatch.org/v3/4wings/report`
-with a Bearer API token. Each returned grid cell becomes one globe ping.
-Set the bbox/date-range/dataset for your actual surveillance area (Oil &
-Gas / logistics maritime corridors) before enabling.
+gridded AIS-derived vessel activity for a bounding box and date range, via
+`POST https://gateway.api.globalfishingwatch.org/v3/4wings/report` with a
+Bearer API token. Each returned grid cell becomes one globe ping.
+
+Which vessels show up is entirely a function of `dataset` below, not
+anything this code filters:
+
+  - "public-global-fishing-effort:latest" (the default) is GFW's
+    best-known public dataset, but it's fishing-vessel-specific.
+  - GFW's broader ocean-transparency product line also covers non-fishing
+    AIS traffic (carriers, tankers, etc.) and SAR-based "dark vessel"
+    detection, but I don't have high enough confidence in the exact
+    dataset ID for that from memory to hardcode it without risking a
+    silent wrong-ID failure. Check your GFW API plan/docs for the dataset
+    ID that matches your access tier, then set GFW_DATASET in .env --
+    no code change needed, this adapter reads it straight from settings.
+
+Set the bbox/date-range for your actual surveillance area (Oil & Gas /
+logistics maritime corridors) before enabling -- it currently pulls a
+global low-resolution sweep over the last 7 days.
 """
 
 import datetime as dt
 
 import httpx
 
+from app.config import get_settings
 from app.models.enums import TelemetrySource
 from app.services.globe.base import GlobeAdapter, RawGlobeSignal
 
 BASE_URL = "https://gateway.api.globalfishingwatch.org/v3"
-DEFAULT_DATASET = "public-global-fishing-effort:latest"
 
 
 class GFW4WingsAdapter(GlobeAdapter):
     source = TelemetrySource.GFW_4WINGS
 
     def fetch_signals(self) -> list[RawGlobeSignal]:
+        dataset = get_settings().gfw_dataset
         end = dt.date.today()
         start = end - dt.timedelta(days=7)
 
@@ -33,7 +48,7 @@ class GFW4WingsAdapter(GlobeAdapter):
             response = client.post(
                 "/4wings/report",
                 params={"date-range": f"{start.isoformat()},{end.isoformat()}", "spatial-resolution": "low"},
-                json={"dataset": DEFAULT_DATASET},
+                json={"dataset": dataset},
             )
             response.raise_for_status()
             payload = response.json()
@@ -48,7 +63,7 @@ class GFW4WingsAdapter(GlobeAdapter):
                     RawGlobeSignal(
                         latitude=lat,
                         longitude=lon,
-                        title="GFW 4Wings vessel presence",
+                        title="Marine traffic (GFW AIS)",
                         intensity=cell.get("value"),
                         payload=cell,
                     )
