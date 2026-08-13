@@ -62,18 +62,33 @@ apps_script/
 - **Master Log** (`/master-log`) -- the pipeline command view.
 - **Silo Grid** (`/silo-grid`) -- the 9 macro silos, plus a "Run Lead-Gen
   Sweep" button that runs every configured telemetry adapter and derives
-  new SiloCandidate rows from what it ingests. **CME Macro Funnel** is
-  the widest-fed silo by design -- "Chicago commodities market swings and
-  crashes" per spec -- drawing on CME Globex (direct futures-price feed)
-  plus 11 leading-indicator sources that tend to move ahead of the price
-  itself: GDELT (conflict/supply-chain-shock news), GFW 4Wings/Datalastic/
-  VesselFinder (AIS vessel traffic on grain-export corridors), SeaVantage
-  (vessel/port-call activity), Import Genius (import/export flow), USACE
-  (gate-change activity + AIS barge queuing at Mississippi/Illinois
-  Waterway locks -- see below), Regrid (agricultural land data), and
-  Cobalt Intelligence/Apollo.io (company status and commodities-adjacent
-  business discovery). See `app/services/silo_leadgen.py::SOURCE_TO_SILOS`
-  for the full mapping.
+  new SiloCandidate rows from what it ingests. 8 of the 9 silos use a flat
+  1-event-to-1-candidate mapping (`app/services/silo_leadgen.py::SOURCE_TO_SILOS`)
+  -- the right model when one provider's record IS the lead signal (a UCC
+  filing, an SOS status change, an openFDA recall).
+
+  **CME Macro Funnel** is not flat -- it's a genuine sequential waterfall
+  (`run_cme_macro_funnel_waterfall()`), because "Chicago commodities market
+  swings and crashes" is a dependency chain, not one signal:
+  1. **Signal** -- CME Globex price-shock (>=2% intraday move on the CBOT
+     grain/oilseed complex) + GDELT commodity-shock news + GFW 4Wings ocean/
+     vessel-traffic anomalies. No active signal = the waterfall stops here,
+     zero candidates created.
+  2. **Identify** -- Import Genius customs manifests + Regrid parcel
+     ownership turn the signal into actual company names, corroborated (not
+     identified) by fresh SeaVantage/Datalastic/VesselFinder/USACE vessel
+     and barge activity in the same window -- USACE covers Midwest
+     river-port-dependent businesses specifically (gate-change activity +
+     AIS barge queuing at Mississippi/Illinois Waterway locks, see below).
+  3. **Filter** -- Cobalt Intelligence SOS standing: a company in suspended/
+     dissolved standing is dismissed here regardless of signal strength,
+     since it isn't fundable no matter how loud the macro signal is.
+  4. **Contact** -- Apollo.io org search attaches phone/contact info to
+     whatever survives the filter.
+
+  Every CME Macro Funnel candidate's `notes` field records exactly which
+  signal gated it in, which trade-data source identified it, and what the
+  lending-appetite check found -- nothing is a black box.
 - **Enrichment** (`/enrichment`) -- CSV lead upload and per-lead enrichment
   against all 14 providers (Cobalt Intelligence, Interzoid, Apollo.io,
   openFDA, Deepgram Nova, CME Globex, Import Genius, SeaVantage, Regrid,
