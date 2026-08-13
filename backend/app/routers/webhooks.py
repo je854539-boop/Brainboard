@@ -2,22 +2,23 @@
 apps_script/Code.gs): doPost-style lead intake, onMasterLogEdit (Column
 K/L -> Calendar sync), and onSiloStatusEdit (convert/dismiss candidates).
 All routes require the `X-Webhook-Secret` header to match
-WEBHOOK_SHARED_SECRET."""
+WEBHOOK_SHARED_SECRET.
 
-import logging
+Every mutation here is tagged ActivitySource.WEBHOOK_SHEET so
+pipeline.push_to_sheet skips writing back to the Sheet for changes that
+originated FROM the Sheet -- otherwise a Sheet edit would round-trip back
+into an infinite Sheet<->Postgres sync loop.
+"""
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import verify_webhook_secret
+from app.models.enums import ActivitySource
 from app.models.orm import MasterLogEntry, SiloCandidate
 from app.schemas import MasterLogEditWebhook, MasterLogEntryOut, MasterLogEntryUpdate, SiloCandidateOut, SiloStatusEditWebhook
 from app.services import pipeline
-from app.services.google import auth as google_auth
-from app.services.google import calendar_sync
-
-logger = logging.getLogger("brainboard.webhooks")
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"], dependencies=[Depends(verify_webhook_secret)])
 
@@ -33,6 +34,7 @@ def lead_intake(payload: MasterLogEntryUpdate, db: Session = Depends(get_db)):
         db,
         business_name=payload.business_name,
         co_broker=payload.co_broker,
+        source=ActivitySource.WEBHOOK_SHEET,
         **payload.model_dump(exclude={"business_name", "co_broker"}, exclude_none=True),
     )
 
@@ -46,25 +48,13 @@ def master_log_edit(payload: MasterLogEditWebhook, db: Session = Depends(get_db)
     if entry is None:
         raise HTTPException(status_code=404, detail="lead not found")
 
+    updates = {}
     if payload.follow_up_date is not None:
-        entry.follow_up_date = payload.follow_up_date
+        updates["follow_up_date"] = payload.follow_up_date
     if payload.notes is not None:
-        entry.notes = payload.notes
-    db.commit()
-    db.refresh(entry)
+        updates["notes"] = payload.notes
 
-    if google_auth.is_configured():
-        try:
-            event_id = calendar_sync.upsert_follow_up_event(google_auth.calendar_service(), entry)
-            entry.calendar_event_id = event_id
-            db.commit()
-            db.refresh(entry)
-        except Exception:
-            logger.exception("Calendar sync failed for lead %s", entry.lead_uid)
-    else:
-        logger.info("Google sync not configured -- skipping Calendar push for lead %s", entry.lead_uid)
-
-    return entry
+    return pipeline.update_lead_fields(db, entry, updates, source=ActivitySource.WEBHOOK_SHEET)
 
 
 @router.post("/silo-status-edit", response_model=SiloCandidateOut)
@@ -77,6 +67,8 @@ def silo_status_edit(payload: SiloStatusEditWebhook, db: Session = Depends(get_d
         raise HTTPException(status_code=404, detail="candidate not found")
 
     try:
-        return pipeline.convert_or_update_silo_candidate(db, candidate, payload.status, payload.co_broker)
+        return pipeline.convert_or_update_silo_candidate(
+            db, candidate, payload.status, payload.co_broker, source=ActivitySource.WEBHOOK_SHEET
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

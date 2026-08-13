@@ -16,12 +16,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import pandas as pd
-from lifelines import KaplanMeierFitter
+from lifelines import CoxTimeVaryingFitter, KaplanMeierFitter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.enums import TERMINAL_ATTRITION_STATUSES, TERMINAL_STATUSES, MasterLogStatus
-from app.models.orm import HazardSnapshot, MasterLogEntry, StatusHistory
+from app.models.enums import TERMINAL_ATTRITION_STATUSES, TERMINAL_STATUSES, ActivityEventType, MasterLogStatus
+from app.models.orm import HazardSnapshot, LeadActivityEvent, MasterLogEntry, StatusHistory
 
 ALL_STATUSES: list[MasterLogStatus] = list(MasterLogStatus)
 
@@ -182,3 +182,112 @@ def refresh_hazard_snapshots(db: Session) -> int:
 
     db.commit()
     return refreshed
+
+
+def fit_cox_time_varying(db: Session) -> dict:
+    """Fits a Cox proportional-hazards model with time-varying covariates
+    over the LeadActivityEvent ledger -- the same append-only log that
+    "every click, every calendar change, every note change" writes to.
+    Complements the static Kaplan-Meier curve above by letting engagement
+    intensity itself modulate funded-hazard over a lead's lifetime, not
+    just elapsed time. A hazard ratio > 1 for a covariate means more of
+    that activity is associated with a HIGHER instantaneous chance of
+    funding at that moment; < 1 means the opposite.
+
+    Reports "insufficient data" rather than raising when there aren't
+    enough resolved leads with recorded activity to fit reliably --
+    small pipelines will see this until enough leads accumulate.
+    """
+    leads = db.execute(select(MasterLogEntry)).scalars().all()
+    activity = db.execute(
+        select(LeadActivityEvent).order_by(LeadActivityEvent.lead_uid, LeadActivityEvent.occurred_at)
+    ).scalars().all()
+
+    activity_by_lead: dict[object, list[LeadActivityEvent]] = {}
+    for event in activity:
+        activity_by_lead.setdefault(event.lead_uid, []).append(event)
+
+    episodes = []
+    for lead in leads:
+        events = activity_by_lead.get(lead.lead_uid, [])
+        t0 = lead.created_at
+        is_funded = lead.status == MasterLogStatus.FUNDED
+        stop_at = lead.updated_at if lead.status in TERMINAL_STATUSES else _now()
+        if stop_at <= t0:
+            continue
+
+        breakpoints = sorted({e.occurred_at for e in events if t0 < e.occurred_at < stop_at})
+        boundaries = [t0] + breakpoints + [stop_at]
+
+        # Two boundaries that differ by a fraction of a second are distinct
+        # in raw float terms but can round to the same day value, which
+        # lifelines' CoxTimeVaryingFitter rejects as a zero-length episode
+        # (start == stop). Rather than just dropping the degenerate episode
+        # (which would silently discard the terminal funded/attrited event
+        # whenever it lands on the same rounded day as the prior
+        # breakpoint), collapse same-day boundaries into one, keeping the
+        # later timestamp so stop_at's identity survives the merge.
+        merged_boundaries = [boundaries[0]]
+        merged_days = [0.0]
+        for b in boundaries[1:]:
+            day = round((b - t0).total_seconds() / 86400.0, 4)
+            if day == merged_days[-1]:
+                merged_boundaries[-1] = b  # later timestamp wins, so stop_at is never the one dropped
+                merged_days[-1] = day
+            else:
+                merged_boundaries.append(b)
+                merged_days.append(day)
+        boundaries = merged_boundaries
+
+        total_count = note_count = calendar_count = 0
+        idx = 0
+        for start, stop in zip(boundaries, boundaries[1:]):
+            start_day = round((start - t0).total_seconds() / 86400.0, 4)
+            stop_day = round((stop - t0).total_seconds() / 86400.0, 4)
+            while idx < len(events) and events[idx].occurred_at <= start:
+                total_count += 1
+                if events[idx].event_type == ActivityEventType.NOTE_CHANGE:
+                    note_count += 1
+                if events[idx].event_type == ActivityEventType.CALENDAR_SYNC:
+                    calendar_count += 1
+                idx += 1
+            episodes.append(
+                {
+                    "id": str(lead.lead_uid),
+                    "start": start_day,
+                    "stop": stop_day,
+                    "event": 1 if (stop == stop_at and is_funded) else 0,
+                    "activity_count": total_count,
+                    "note_changes": note_count,
+                    "calendar_syncs": calendar_count,
+                }
+            )
+
+    n_events = sum(e["event"] for e in episodes)
+    if len(episodes) < 20 or n_events < 5:
+        return {
+            "fitted": False,
+            "reason": f"insufficient data ({len(episodes)} episodes, {n_events} funded outcomes -- need >=20 episodes and >=5 outcomes)",
+            "n_episodes": len(episodes),
+            "n_leads": len(leads),
+        }
+
+    df = pd.DataFrame(episodes)
+    try:
+        ctv = CoxTimeVaryingFitter()
+        ctv.fit(df, id_col="id", start_col="start", stop_col="stop", event_col="event")
+    except Exception as exc:  # noqa: BLE001 -- a non-convergent fit must degrade gracefully, not 500 the dashboard
+        return {
+            "fitted": False,
+            "reason": f"model did not converge: {exc}",
+            "n_episodes": len(episodes),
+            "n_leads": len(leads),
+        }
+
+    return {
+        "fitted": True,
+        "n_episodes": len(episodes),
+        "n_leads": len(leads),
+        "n_events": int(n_events),
+        "hazard_ratios": {cov: round(float(hr), 4) for cov, hr in ctv.hazard_ratios_.items()},
+    }

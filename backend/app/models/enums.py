@@ -81,6 +81,11 @@ class SiloCandidateStatus(str, Enum):
 
 
 class TelemetrySource(str, Enum):
+    """Every external data provider, used both for passive macro-silo
+    telemetry sweeps (TelemetryEvent) and targeted per-lead lookups
+    (EnrichmentResult) -- the vendor is the same either way, only the
+    query mode differs."""
+
     CME_GLOBEX = "cme_globex"
     IMPORT_GENIUS = "import_genius"
     SEAVANTAGE = "seavantage"
@@ -88,3 +93,70 @@ class TelemetrySource(str, Enum):
     SOS_REGISTRIES = "sos_registries"
     REGRID = "regrid"
     DRIVE_OCR = "drive_ocr"
+    COBALT_INTELLIGENCE = "cobalt_intelligence"
+    INTERZOID = "interzoid"
+    APOLLO = "apollo"
+    OPENFDA = "openfda"
+    DEEPGRAM_NOVA = "deepgram_nova"
+    HIGHERGOV = "highergov"
+    GFW_4WINGS = "gfw_4wings"
+    GLED = "gled"
+
+
+# Sources meant for targeted, per-lead enrichment lookups (uploaded leads).
+ENRICHMENT_SOURCES: frozenset[TelemetrySource] = frozenset(
+    {
+        TelemetrySource.COBALT_INTELLIGENCE,
+        TelemetrySource.INTERZOID,
+        TelemetrySource.APOLLO,
+        TelemetrySource.OPENFDA,
+        TelemetrySource.DEEPGRAM_NOVA,
+        TelemetrySource.REGRID,
+        TelemetrySource.SOS_REGISTRIES,
+        TelemetrySource.UCC_FILINGS,
+    }
+)
+
+# Sources meant for passive macro-silo surveillance sweeps.
+MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
+    {
+        TelemetrySource.CME_GLOBEX,
+        TelemetrySource.IMPORT_GENIUS,
+        TelemetrySource.SEAVANTAGE,
+        TelemetrySource.UCC_FILINGS,
+        TelemetrySource.SOS_REGISTRIES,
+        TelemetrySource.REGRID,
+        TelemetrySource.HIGHERGOV,
+    }
+)
+
+# Geospatial sources plotted on the 3D globe.
+GLOBE_SOURCES: frozenset[TelemetrySource] = frozenset({TelemetrySource.GFW_4WINGS, TelemetrySource.GLED})
+
+
+class ActivityEventType(str, Enum):
+    """Every lead-lifecycle event the hazard engine can eventually treat
+    as a covariate -- "every click, every calendar change, every note
+    change" per spec."""
+
+    CREATED = "created"
+    NOTE_CHANGE = "note_change"
+    FOLLOW_UP_CHANGE = "follow_up_change"
+    STATUS_CHANGE = "status_change"
+    FIELD_CHANGE = "field_change"
+    CALENDAR_SYNC = "calendar_sync"
+    CLICK = "click"
+    ENRICHMENT = "enrichment"
+    SHEET_SYNC = "sheet_sync"
+
+
+class ActivitySource(str, Enum):
+    UI = "ui"
+    API = "api"
+    WEBHOOK_SHEET = "webhook_sheet"
+    SYSTEM = "system"
+
+
+class BrainMode(str, Enum):
+    SHADOW = "shadow"
+    LIVE = "live"

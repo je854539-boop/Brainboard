@@ -22,9 +22,13 @@
         <div class="stencil-header text-[var(--amber)] text-base">BRAINBOARD</div>
         <div class="text-[10px] tracking-[0.2em] text-[var(--text-dim)] uppercase">Institutional Credit Arbitrage // Macro-Surveillance Grid</div>
       </div>
-      <nav class="flex">
+      <nav class="flex flex-wrap justify-end">
+        <a href="/intake" class="tactical-nav-link {{ 'active' if active_nav == 'intake' else '' }}">Intake</a>
         <a href="/master-log" class="tactical-nav-link {{ 'active' if active_nav == 'master-log' else '' }}">Master Log</a>
         <a href="/silo-grid" class="tactical-nav-link {{ 'active' if active_nav == 'silo-grid' else '' }}">Silo Grid</a>
+        <a href="/enrichment" class="tactical-nav-link {{ 'active' if active_nav == 'enrichment' else '' }}">Enrichment</a>
+        <a href="/brain" class="tactical-nav-link {{ 'active' if active_nav == 'brain' else '' }}">Brain</a>
+        <a href="/globe" class="tactical-nav-link {{ 'active' if active_nav == 'globe' else '' }}">Globe</a>
         <a href="/analytics" class="tactical-nav-link {{ 'active' if active_nav == 'analytics' else '' }}">Analytics</a>
         <a href="/surveillance" class="tactical-nav-link {{ 'active' if active_nav == 'surveillance' else '' }}">Surveillance</a>
       </nav>

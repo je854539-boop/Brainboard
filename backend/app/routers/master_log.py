@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import parse_optional_enum
-from app.models.enums import CoBroker, MasterLogStatus
+from app.models.enums import ActivityEventType, ActivitySource, CoBroker, MasterLogStatus
 from app.models.orm import MasterLogEntry
-from app.schemas import MasterLogEntryOut, MasterLogEntryUpdate
+from app.schemas import ClickEvent, MasterLogEntryOut, MasterLogEntryUpdate
 from app.services import pipeline
 
 router = APIRouter(prefix="/api/master-log", tags=["master-log"])
@@ -49,6 +49,7 @@ def create_master_log_entry(payload: MasterLogEntryUpdate, db: Session = Depends
         db,
         business_name=payload.business_name,
         co_broker=payload.co_broker,
+        source=ActivitySource.UI,
         **payload.model_dump(exclude={"business_name", "co_broker"}, exclude_none=True),
     )
 
@@ -59,15 +60,16 @@ def update_master_log_entry(lead_uid: uuid.UUID, payload: MasterLogEntryUpdate, 
     if entry is None:
         raise HTTPException(status_code=404, detail="lead not found")
 
-    updates = payload.model_dump(exclude_unset=True)
-    new_status = updates.pop("status", None)
+    updates = payload.model_dump(exclude_unset=True, exclude={"lead_uid"})
+    return pipeline.update_lead_fields(db, entry, updates, source=ActivitySource.UI)
 
-    for field, value in updates.items():
-        setattr(entry, field, value)
+
+@router.post("/{lead_uid}/activity", status_code=204)
+def log_click(lead_uid: uuid.UUID, payload: ClickEvent, db: Session = Depends(get_db)):
+    """Fire-and-forget UI instrumentation ('every click') -- the dashboard
+    beacons here on dossier-link opens, row expansions, etc."""
+    entry = db.get(MasterLogEntry, lead_uid)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="lead not found")
+    pipeline.log_activity(db, lead_uid, ActivityEventType.CLICK, ActivitySource.UI, field_name=payload.label)
     db.commit()
-
-    if new_status is not None:
-        pipeline.update_lead_status(db, entry, new_status)
-
-    db.refresh(entry)
-    return entry

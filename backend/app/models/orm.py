@@ -8,7 +8,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.database import Base
-from app.models.enums import CoBroker, MasterLogStatus, SiloCandidateStatus, SiloName, TelemetrySource
+from app.models.enums import (
+    ActivityEventType,
+    ActivitySource,
+    BrainMode,
+    CoBroker,
+    MasterLogStatus,
+    SiloCandidateStatus,
+    SiloName,
+    TelemetrySource,
+)
 
 
 def _pg_enum(enum_cls, name: str) -> SAEnum:
@@ -48,6 +57,16 @@ class MasterLogEntry(Base):
 
     loan_amount_requested: Mapped[float | None] = mapped_column(Numeric(14, 2))
 
+    # MCA intake fields (from the lead intake terminal)
+    state: Mapped[str | None] = mapped_column(String(64))
+    annual_revenue: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    lender: Mapped[str | None] = mapped_column(String(256))
+    payment_amt: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    payment_freq: Mapped[str | None] = mapped_column(String(64))
+    current_balance: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    open_positions: Mapped[int | None] = mapped_column()
+    credit_score: Mapped[int | None] = mapped_column()
+
     follow_up_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # Column K
     notes: Mapped[str | None] = mapped_column(Text)  # Column L
     dossier_drive_link: Mapped[str | None] = mapped_column(String(1024))  # Column X
@@ -65,6 +84,9 @@ class MasterLogEntry(Base):
     )
     hazard_snapshot: Mapped["HazardSnapshot"] = relationship(
         back_populates="lead", uselist=False, cascade="all, delete-orphan"
+    )
+    activity_events: Mapped[list["LeadActivityEvent"]] = relationship(
+        back_populates="lead", cascade="all, delete-orphan"
     )
 
 
@@ -158,3 +180,75 @@ class HazardSnapshot(Base):
     )
 
     lead: Mapped["MasterLogEntry"] = relationship(back_populates="hazard_snapshot")
+
+
+class LeadActivityEvent(Base):
+    """Append-only ledger of every lead-lifecycle event -- note edits,
+    follow-up/Column K changes, status transitions, Calendar syncs, UI
+    clicks, enrichment runs, inbound Sheet edits. This is the covariate
+    stream the time-varying hazard model (hazard_engine.fit_cox_time_varying)
+    consumes; StatusHistory alone only captures stage transitions."""
+
+    __tablename__ = "lead_activity_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_uid: Mapped[uuid.UUID] = mapped_column(ForeignKey("master_log_entries.lead_uid", ondelete="CASCADE"), index=True)
+    event_type: Mapped[ActivityEventType] = mapped_column(_pg_enum(ActivityEventType, "activity_event_type"), nullable=False)
+    source: Mapped[ActivitySource] = mapped_column(_pg_enum(ActivitySource, "activity_source"), nullable=False)
+    field_name: Mapped[str | None] = mapped_column(String(128))
+    old_value: Mapped[str | None] = mapped_column(Text)
+    new_value: Mapped[str | None] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    lead: Mapped["MasterLogEntry"] = relationship(back_populates="activity_events")
+
+
+class EnrichmentResult(Base):
+    """Targeted per-lead/per-candidate enrichment lookup result (as
+    opposed to TelemetryEvent's passive macro-silo sweeps). `entity_uid`
+    matches a lead_uid or candidate_uid -- whichever was enriched."""
+
+    __tablename__ = "enrichment_results"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entity_uid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True, nullable=False)
+    source: Mapped[TelemetrySource] = mapped_column(_pg_enum(TelemetrySource, "telemetry_source"), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    confidence: Mapped[float | None] = mapped_column(Numeric(5, 4))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ShadowScore(Base):
+    """A logged prediction from the Brain scoring engine. Every lead gets
+    scored on every recompute regardless of mode; `mode` records whether
+    the Brain was still in SHADOW (silent, pre-1000-lead) or LIVE
+    (surfaced as a recommendation) at the time of that prediction, so
+    shadow-era predictions can be back-tested once outcomes land."""
+
+    __tablename__ = "shadow_scores"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_uid: Mapped[uuid.UUID] = mapped_column(ForeignKey("master_log_entries.lead_uid", ondelete="CASCADE"), index=True)
+    predicted_funded_probability: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    mode: Mapped[BrainMode] = mapped_column(_pg_enum(BrainMode, "brain_mode"), nullable=False)
+    training_set_size: Mapped[int] = mapped_column(nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class GlobeSignal(Base):
+    """A geolocated ping plotted on the 3D globe -- Global Fishing Watch
+    4Wings vessel-activity tiles, GLED alerts, etc."""
+
+    __tablename__ = "globe_signals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source: Mapped[TelemetrySource] = mapped_column(_pg_enum(TelemetrySource, "telemetry_source"), nullable=False)
+    latitude: Mapped[float] = mapped_column(Numeric(9, 6), nullable=False)
+    longitude: Mapped[float] = mapped_column(Numeric(9, 6), nullable=False)
+    intensity: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    entity_uid: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

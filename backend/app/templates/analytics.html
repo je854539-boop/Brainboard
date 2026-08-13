@@ -32,6 +32,15 @@
   </div>
 </div>
 
+<div class="tactical-panel p-4 mt-4">
+  <div class="stencil-header text-[var(--amber)] text-xs mb-1">Time-Varying Cox Model // Engagement Hazard</div>
+  <div class="text-[10px] text-[var(--text-dim)] mb-3">
+    Hazard ratios from every click, note change, and Calendar sync in the activity ledger (LeadActivityEvent), fit as
+    time-varying covariates against funded-hazard. &gt;1 = associated with higher instantaneous funding hazard; &lt;1 = lower.
+  </div>
+  <div id="cox-panel" class="text-[10px]"></div>
+</div>
+
 <script>
 const AMBER = "#ffb000", CRIMSON = "#ff3333", GREEN = "#4aff7a", DIM = "#6b7280", BORDER = "#2d333b";
 
@@ -134,8 +143,29 @@ async function renderSiloFriction() {
   }).join("") || `<div class="text-[var(--text-dim)] text-[10px]">No silo candidates ingested yet.</div>`;
 }
 
+async function renderCoxPanel() {
+  const data = await fetchJSON("/api/analytics/cox-time-varying");
+  const panel = document.getElementById("cox-panel");
+  if (!data.fitted) {
+    panel.innerHTML = `<div class="text-[var(--text-dim)]">Not yet fitted -- ${data.reason}. (${data.n_leads} leads in pipeline)</div>`;
+    return;
+  }
+  const rows = Object.entries(data.hazard_ratios).map(([cov, hr]) => `
+    <div class="flex items-center gap-3">
+      <div class="w-40 text-[var(--text-dim)] uppercase tracking-wide">${cov}</div>
+      <div class="flex-1 bg-[#1a1e18] border border-[var(--panel-border)] h-3 relative">
+        <div class="absolute top-0 bottom-0" style="left:50%; width:1px; background:${DIM}"></div>
+        <div style="width:${Math.min(100, Math.abs(hr - 1) * 50)}%; margin-left:${hr >= 1 ? '50%' : (50 - Math.min(50, Math.abs(hr-1)*50)) + '%'}; background:${hr >= 1 ? GREEN : CRIMSON}; height:100%;"></div>
+      </div>
+      <div class="w-16 text-right hud-value">${hr.toFixed(3)}x</div>
+    </div>`).join("");
+  panel.innerHTML = `
+    <div class="text-[var(--text-dim)] mb-2">Fit on ${data.n_episodes} episodes across ${data.n_leads} leads (${data.n_events} funded outcomes).</div>
+    <div class="flex flex-col gap-1.5">${rows}</div>`;
+}
+
 async function renderAll() {
-  await Promise.all([renderKMChart(), renderVelocityChart(), renderTransitionMatrix(), renderSiloFriction()]);
+  await Promise.all([renderKMChart(), renderVelocityChart(), renderTransitionMatrix(), renderSiloFriction(), renderCoxPanel()]);
 }
 
 document.getElementById("refresh-hazard-btn").addEventListener("click", async () => {

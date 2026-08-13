@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Lead Enrichment</h1>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+  <div class="tactical-panel p-4 lg:col-span-1">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Upload Leads (CSV)</div>
+    <p class="text-[10px] text-[var(--text-dim)] mb-3">Required columns: business_name, co_broker. Optional: contact_name, phone, email, state, annual_revenue, loan_amount_requested.</p>
+    <form id="upload-form" class="flex flex-col gap-2">
+      <input type="file" name="file" accept=".csv" required class="tactical-select w-full" />
+      <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)]">Upload &amp; Ingest</button>
+    </form>
+    <div id="upload-result" class="mt-3 text-[10px] leading-relaxed"></div>
+  </div>
+
+  <div class="tactical-panel p-4 lg:col-span-2">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Enrichment Provider Status</div>
+    <div id="source-status" class="grid grid-cols-2 md:grid-cols-3 gap-2 text-[10px]"></div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  <div class="tactical-panel scroll-panel">
+    <div class="stencil-header text-[var(--amber)] text-xs p-4 pb-2">Leads // Run Enrichment</div>
+    <table class="tactical-table">
+      <thead><tr><th>Business</th><th>State</th><th>Co-Broker</th><th>Action</th></tr></thead>
+      <tbody id="leads-body"><tr><td colspan="4" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="tactical-panel scroll-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Recent Enrichment Results</div>
+    <div id="results-feed" class="flex flex-col gap-2 text-[10px]"></div>
+  </div>
+</div>
+
+<script>
+const AMBER = "#ffb000", CRIMSON = "#ff3333", GREEN = "#4aff7a", DIM = "#6b7280";
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return res.json();
+}
+
+async function renderSourceStatus() {
+  const sources = await fetchJSON("/api/enrichment/sources");
+  document.getElementById("source-status").innerHTML = sources.map(s => `
+    <div class="tactical-panel px-2 py-1.5 flex items-center justify-between">
+      <span class="uppercase tracking-wide">${s.source}</span>
+      <span class="status-badge ${s.enabled ? 'status-badge--funded' : 'status-badge--attrition'}">${s.enabled ? 'LIVE' : 'OFF'}</span>
+    </div>
+  `).join("");
+}
+
+async function renderLeads() {
+  const leads = await fetchJSON("/api/master-log");
+  document.getElementById("leads-body").innerHTML = leads.slice(0, 30).map(l => `
+    <tr>
+      <td class="font-medium">${l.business_name}</td>
+      <td>${l.state || "—"}</td>
+      <td>${l.co_broker}</td>
+      <td><button class="tactical-select text-[10px] py-1 border-[var(--amber)] text-[var(--amber)]" onclick="runEnrichment('${l.lead_uid}', this)">Run Enrichment</button></td>
+    </tr>
+  `).join("") || `<tr><td colspan="4" class="text-center text-[var(--text-dim)] py-6">No leads yet -- upload a CSV or use Intake.</td></tr>`;
+}
+
+async function renderResultsFeed() {
+  const results = await fetchJSON("/api/enrichment/results");
+  document.getElementById("results-feed").innerHTML = results.map(r => `
+    <div class="border-b border-[var(--panel-border)] pb-2">
+      <div class="flex justify-between">
+        <span class="text-[var(--amber)] uppercase">[${r.source}]</span>
+        <span class="text-[var(--text-dim)]">${new Date(r.created_at).toISOString().slice(0,19)}Z</span>
+      </div>
+      <div class="text-[var(--text-dim)]">uid:${r.entity_uid.slice(0,8)}</div>
+      ${r.error ? `<div class="text-[var(--crimson)]">${r.error}</div>` : `<div class="text-[var(--text-primary)] truncate">${JSON.stringify(r.payload).slice(0, 160)}</div>`}
+    </div>
+  `).join("") || `<div class="text-[var(--text-dim)]">No enrichment runs yet.</div>`;
+}
+
+async function runEnrichment(leadUid, btn) {
+  btn.disabled = true;
+  btn.textContent = "Running...";
+  try {
+    await fetchJSON(`/api/enrichment/run/${leadUid}`, { method: "POST" });
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Run Enrichment";
+    renderResultsFeed();
+  }
+}
+
+document.getElementById("upload-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const formData = new FormData(e.target);
+  const resultDiv = document.getElementById("upload-result");
+  resultDiv.textContent = "Uploading...";
+  try {
+    const res = await fetch("/api/enrichment/upload", { method: "POST", body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "upload failed");
+    resultDiv.innerHTML = `
+      <div class="hud-value">Created: ${data.created}</div>
+      <div class="${data.skipped ? 'hud-value--hazard' : ''}">Skipped: ${data.skipped}</div>
+      ${data.errors.length ? `<div class="text-[var(--crimson)] mt-1">${data.errors.slice(0,5).join('<br>')}</div>` : ''}
+    `;
+    renderLeads();
+  } catch (err) {
+    resultDiv.innerHTML = `<div class="text-[var(--crimson)]">${err.message}</div>`;
+  }
+});
+
+renderSourceStatus();
+renderLeads();
+renderResultsFeed();
+</script>
+{% endblock %}

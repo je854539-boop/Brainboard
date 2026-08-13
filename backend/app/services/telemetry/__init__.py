@@ -1,6 +1,7 @@
 from app.config import get_settings
 from app.services.telemetry.base import RawTelemetryRecord, TelemetryAdapter
 from app.services.telemetry.cme_globex import CMEGlobexAdapter
+from app.services.telemetry.highergov import HigherGovAdapter
 from app.services.telemetry.import_genius import ImportGeniusAdapter
 from app.services.telemetry.regrid import RegridAdapter
 from app.services.telemetry.seavantage import SeaVantageAdapter
@@ -17,6 +18,7 @@ def all_adapters() -> list[TelemetryAdapter]:
         UCCFilingsAdapter(),
         SOSRegistriesAdapter(),
         RegridAdapter(api_key=settings.regrid_api_key),
+        HigherGovAdapter(api_key=settings.highergov_api_key),
     ]
 
 
@@ -29,5 +31,6 @@ __all__ = [
     "UCCFilingsAdapter",
     "SOSRegistriesAdapter",
     "RegridAdapter",
+    "HigherGovAdapter",
     "all_adapters",
 ]

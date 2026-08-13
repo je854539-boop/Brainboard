@@ -43,12 +43,29 @@ const MASTER_LOG_STATUSES = [
   "Ghosted", "Loss to Competitor", "Dog Shit",
 ];
 
-// Master Log V2 column indices (1-based, A=1)
+// Master Log V2 column indices (1-based, A=1). Only K, L, and X are fixed
+// by spec -- the rest (including the MCA fields at I/J/M-R) follow the
+// lead-intake terminal's field order and should be verified against the
+// live sheet's header row. See app/services/google/sheets_sync.py for the
+// matching backend-side mapping (MASTER_LOG_COLUMN_FIELDS).
 const ML_COL_UID = 1; // A
+const ML_COL_BUSINESS = 2; // B
+const ML_COL_CONTACT = 3; // C
+const ML_COL_PHONE = 4; // D
+const ML_COL_EMAIL = 5; // E
 const ML_COL_COBROKER = 6; // F
 const ML_COL_STATUS = 7; // G
+const ML_COL_LOAN_AMOUNT = 8; // H
+const ML_COL_STATE = 9; // I
+const ML_COL_REVENUE = 10; // J
 const ML_COL_FOLLOWUP = 11; // K
 const ML_COL_NOTES = 12; // L
+const ML_COL_LENDER = 13; // M
+const ML_COL_PAYMENT_AMT = 14; // N
+const ML_COL_PAYMENT_FREQ = 15; // O
+const ML_COL_CURRENT_BALANCE = 16; // P
+const ML_COL_OPEN_POSITIONS = 17; // Q
+const ML_COL_CREDIT_SCORE = 18; // R
 const ML_COL_DOSSIER = 24; // X
 
 // Silo tab column indices (1-based, A=1) -- 8-column schema
@@ -182,11 +199,18 @@ function onSiloStatusEdit(e) {
 }
 
 /**
- * doPost webhook -- inbound lead intake (e.g. a web form). Appends a row
- * to Master Log V2 and forwards the lead to the backend.
+ * doPost webhook -- inbound lead intake (e.g. the Tactical Ops Console
+ * intake terminal). Appends a row to Master Log V2 and forwards the lead
+ * to the backend, keyed on the same UUID in both places.
  *
- * Expected JSON body: { business_name, co_broker, contact_name?, phone?,
- * email?, loan_amount_requested? }
+ * Expected JSON body (all but business_name/co_broker are optional):
+ *   { business_name, co_broker, contact_name?/owner?, phone?, email?,
+ *     state?, revenue?, loan_amount_requested?, status?, followUp?,
+ *     notes?, lender?, paymentAmt?, paymentFreq?, currentBalance?,
+ *     openPositions?, creditScore? }
+ * Both the intake terminal's original field names (owner, revenue,
+ * followUp, paymentAmt, paymentFreq, currentBalance, openPositions,
+ * creditScore) and the backend's snake_case names are accepted.
  */
 function doPost(e) {
   const respond = (statusCode, body) =>
@@ -205,26 +229,62 @@ function doPost(e) {
   if (CO_BROKERS.indexOf(data.co_broker) === -1) {
     return respond(422, { error: `invalid co_broker: ${data.co_broker}` });
   }
+  const status = data.status || "New lead";
+  if (MASTER_LOG_STATUSES.indexOf(status) === -1) {
+    return respond(422, { error: `invalid status: ${status}` });
+  }
+
+  const contactName = data.contact_name || data.owner || "";
+  const revenue = data.revenue != null ? data.revenue : data.annual_revenue;
+  const paymentAmt = data.paymentAmt != null ? data.paymentAmt : data.payment_amt;
+  const paymentFreq = data.paymentFreq || data.payment_freq || "";
+  const currentBalance = data.currentBalance != null ? data.currentBalance : data.current_balance;
+  const openPositions = data.openPositions != null ? data.openPositions : data.open_positions;
+  const creditScore = data.creditScore != null ? data.creditScore : data.credit_score;
+  const followUp = data.followUp || data.follow_up_date || "";
 
   const leadUid = Utilities.getUuid();
   const sheet = SpreadsheetApp.getActive().getSheetByName(MASTER_LOG_SHEET_NAME);
   const row = new Array(24).fill("");
   row[ML_COL_UID - 1] = leadUid;
-  row[1] = data.business_name;
-  row[2] = data.contact_name || "";
-  row[3] = data.phone || "";
-  row[4] = data.email || "";
+  row[ML_COL_BUSINESS - 1] = data.business_name;
+  row[ML_COL_CONTACT - 1] = contactName;
+  row[ML_COL_PHONE - 1] = data.phone || "";
+  row[ML_COL_EMAIL - 1] = data.email || "";
   row[ML_COL_COBROKER - 1] = data.co_broker;
-  row[ML_COL_STATUS - 1] = "New lead";
+  row[ML_COL_STATUS - 1] = status;
+  row[ML_COL_LOAN_AMOUNT - 1] = data.loan_amount_requested || "";
+  row[ML_COL_STATE - 1] = data.state || "";
+  row[ML_COL_REVENUE - 1] = revenue || "";
+  if (followUp) row[ML_COL_FOLLOWUP - 1] = followUp;
+  row[ML_COL_NOTES - 1] = data.notes || "";
+  row[ML_COL_LENDER - 1] = data.lender || "";
+  row[ML_COL_PAYMENT_AMT - 1] = paymentAmt || "";
+  row[ML_COL_PAYMENT_FREQ - 1] = paymentFreq;
+  row[ML_COL_CURRENT_BALANCE - 1] = currentBalance || "";
+  row[ML_COL_OPEN_POSITIONS - 1] = openPositions || "";
+  row[ML_COL_CREDIT_SCORE - 1] = creditScore || "";
   sheet.appendRow(row);
 
   postToBackend_("/webhooks/lead-intake", {
     lead_uid: leadUid, // keep Sheets Column A and Postgres keyed on the same UUID
     business_name: data.business_name,
     co_broker: data.co_broker,
-    contact_name: data.contact_name || null,
+    status: status,
+    contact_name: contactName || null,
     phone: data.phone || null,
     email: data.email || null,
+    state: data.state || null,
+    annual_revenue: revenue != null ? revenue : null,
+    loan_amount_requested: data.loan_amount_requested != null ? data.loan_amount_requested : null,
+    notes: data.notes || null,
+    lender: data.lender || null,
+    payment_amt: paymentAmt != null ? paymentAmt : null,
+    payment_freq: paymentFreq || null,
+    current_balance: currentBalance != null ? currentBalance : null,
+    open_positions: openPositions != null ? openPositions : null,
+    credit_score: creditScore != null ? creditScore : null,
+    follow_up_date: followUp || null,
   });
 
   return respond(201, { lead_uid: leadUid });

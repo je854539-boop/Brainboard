@@ -6,12 +6,20 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import parse_optional_enum
-from app.models.enums import SiloCandidateStatus, SiloName
+from app.models.enums import ActivitySource, SiloCandidateStatus, SiloName
 from app.models.orm import SiloCandidate
 from app.schemas import SiloCandidateOut, SiloCandidateUpdate
-from app.services import pipeline
+from app.services import pipeline, silo_leadgen
 
 router = APIRouter(prefix="/api/silo", tags=["silo"])
+
+
+@router.post("/leadgen/run")
+def run_leadgen_sweep(db: Session = Depends(get_db)):
+    """'The brain does lead gen through the silos': runs every configured
+    macro telemetry adapter and derives SiloCandidate rows from what it
+    ingests. Safe no-op for any source without an API key configured."""
+    return silo_leadgen.run_silo_leadgen(db)
 
 
 @router.get("", response_model=list[SiloCandidateOut])
@@ -47,6 +55,8 @@ def update_silo_candidate(candidate_uid: uuid.UUID, payload: SiloCandidateUpdate
         raise HTTPException(status_code=404, detail="candidate not found")
 
     try:
-        return pipeline.convert_or_update_silo_candidate(db, candidate, payload.status, payload.co_broker)
+        return pipeline.convert_or_update_silo_candidate(
+            db, candidate, payload.status, payload.co_broker, source=ActivitySource.UI
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

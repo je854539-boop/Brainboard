@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Brain // Shadow-Mode Scoring Engine</h1>
+  <button id="refresh-brain-btn" class="tactical-select hover:border-[var(--amber)] hover:text-[var(--amber)]">Recompute Scores</button>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4">
+  <div class="tactical-panel p-4 lg:col-span-1">
+    <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-1">Mode</div>
+    <div id="mode-badge" class="text-2xl font-bold">—</div>
+  </div>
+  <div class="tactical-panel p-4 lg:col-span-2">
+    <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-2">Leads Toward Live Threshold</div>
+    <div class="flex items-center gap-2">
+      <div class="flex-1 bg-[#1a1e18] border border-[var(--panel-border)] h-4">
+        <div id="threshold-bar" style="width:0%; background:var(--amber); height:100%;"></div>
+      </div>
+      <div id="threshold-label" class="hud-value whitespace-nowrap text-xs">—</div>
+    </div>
+  </div>
+  <div class="tactical-panel p-4 lg:col-span-1">
+    <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-1">Model</div>
+    <div id="model-info" class="text-xs leading-relaxed"></div>
+  </div>
+</div>
+
+<p class="text-[10px] text-[var(--text-dim)] mb-4 max-w-3xl">
+  The Brain fits a transparent logistic regression (deal terms + co-broker + activity engagement) on leads that have
+  already resolved (Funded or attrited), then scores every lead's funded-probability on every refresh. In SHADOW mode
+  these predictions are logged only -- nothing here changes pipeline behavior -- until the pipeline crosses the lead
+  threshold shown above, at which point the Brain switches to LIVE.
+</p>
+
+<div class="tactical-panel scroll-panel">
+  <table class="tactical-table">
+    <thead>
+      <tr><th>Business</th><th>Current Status</th><th>Predicted P(Funded)</th><th>Model</th><th>Scored At</th></tr>
+    </thead>
+    <tbody id="scores-body"><tr><td colspan="5" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<script>
+const AMBER = "#ffb000", CRIMSON = "#ff3333", GREEN = "#4aff7a";
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return res.json();
+}
+
+async function renderStatus() {
+  const s = await fetchJSON("/api/brain/status");
+  const badge = document.getElementById("mode-badge");
+  badge.textContent = s.mode.toUpperCase();
+  badge.style.color = s.mode === "live" ? GREEN : AMBER;
+
+  const pct = Math.min(100, (s.total_leads / s.threshold) * 100);
+  document.getElementById("threshold-bar").style.width = pct + "%";
+  document.getElementById("threshold-label").textContent = `${s.total_leads} / ${s.threshold}`;
+
+  document.getElementById("model-info").innerHTML = `
+    <div class="text-[var(--text-dim)]">version</div>
+    <div class="hud-value">${s.model_version || "—"}</div>
+    <div class="text-[var(--text-dim)] mt-1">trained on</div>
+    <div class="hud-value">${s.training_set_size} outcomes</div>
+  `;
+}
+
+async function renderScores() {
+  const scores = await fetchJSON("/api/brain/scores");
+  document.getElementById("scores-body").innerHTML = scores.map(s => {
+    const pct = (s.predicted_funded_probability * 100).toFixed(1);
+    const color = s.predicted_funded_probability >= 0.5 ? GREEN : CRIMSON;
+    return `
+      <tr>
+        <td class="font-medium">${s.business_name}</td>
+        <td>${s.status}</td>
+        <td class="hud-value" style="color:${color}">${pct}%</td>
+        <td class="text-[var(--text-dim)]">${s.model_version}</td>
+        <td class="text-[var(--text-dim)]">${new Date(s.computed_at).toISOString().slice(0,19)}Z</td>
+      </tr>`;
+  }).join("") || `<tr><td colspan="5" class="text-center text-[var(--text-dim)] py-6">No scores yet -- click Recompute Scores.</td></tr>`;
+}
+
+document.getElementById("refresh-brain-btn").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = "Scoring...";
+  try {
+    await fetchJSON("/api/brain/refresh", { method: "POST" });
+    await Promise.all([renderStatus(), renderScores()]);
+  } finally {
+    e.target.disabled = false;
+    e.target.textContent = "Recompute Scores";
+  }
+});
+
+renderStatus();
+renderScores();
+</script>
+{% endblock %}

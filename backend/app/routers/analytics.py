@@ -30,3 +30,8 @@ def stage_velocity(db: Session = Depends(get_db)):
 def refresh_hazard(db: Session = Depends(get_db)):
     refreshed = hazard_engine.refresh_hazard_snapshots(db)
     return {"refreshed": refreshed}
+
+
+@router.get("/cox-time-varying")
+def cox_time_varying(db: Session = Depends(get_db)):
+    return hazard_engine.fit_cox_time_varying(db)

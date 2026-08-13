@@ -14,6 +14,15 @@ def index():
     return RedirectResponse(url="/master-log")
 
 
+@router.get("/intake")
+def intake_page(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "intake.html",
+        {"co_brokers": list(CoBroker), "statuses": list(MasterLogStatus), "active_nav": "intake"},
+    )
+
+
 @router.get("/master-log")
 def master_log_page(request: Request):
     return templates.TemplateResponse(
@@ -40,3 +49,18 @@ def analytics_page(request: Request):
 @router.get("/surveillance")
 def surveillance_page(request: Request):
     return templates.TemplateResponse(request, "surveillance.html", {"active_nav": "surveillance"})
+
+
+@router.get("/enrichment")
+def enrichment_page(request: Request):
+    return templates.TemplateResponse(request, "enrichment.html", {"active_nav": "enrichment"})
+
+
+@router.get("/brain")
+def brain_page(request: Request):
+    return templates.TemplateResponse(request, "brain.html", {"active_nav": "brain"})
+
+
+@router.get("/globe")
+def globe_page(request: Request):
+    return templates.TemplateResponse(request, "globe.html", {"active_nav": "globe"})

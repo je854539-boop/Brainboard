@@ -26,6 +26,14 @@ class MasterLogEntryOut(BaseModel):
     co_broker: CoBroker
     status: MasterLogStatus
     loan_amount_requested: float | None
+    state: str | None
+    annual_revenue: float | None
+    lender: str | None
+    payment_amt: float | None
+    payment_freq: str | None
+    current_balance: float | None
+    open_positions: int | None
+    credit_score: int | None
     follow_up_date: datetime | None
     notes: str | None
     dossier_drive_link: str | None
@@ -44,6 +52,14 @@ class MasterLogEntryUpdate(BaseModel):
     co_broker: CoBroker | None = None
     status: MasterLogStatus | None = None
     loan_amount_requested: float | None = None
+    state: str | None = None
+    annual_revenue: float | None = None
+    lender: str | None = None
+    payment_amt: float | None = None
+    payment_freq: str | None = None
+    current_balance: float | None = None
+    open_positions: int | None = None
+    credit_score: int | None = None
     follow_up_date: datetime | None = None
     notes: str | None = None
     dossier_drive_link: str | None = None
@@ -98,3 +114,39 @@ class SiloStatusEditWebhook(BaseModel):
     candidate_uid: uuid.UUID
     status: SiloCandidateStatus
     co_broker: CoBroker | None = None
+
+
+class ClickEvent(BaseModel):
+    label: str  # e.g. "dossier_link_opened", "row_expanded", "hazard_tooltip_viewed"
+
+
+class EnrichmentResultOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    entity_uid: uuid.UUID
+    source: TelemetrySource
+    payload: dict
+    confidence: float | None
+    error: str | None
+    created_at: datetime
+
+
+class CSVImportSummary(BaseModel):
+    created: int
+    skipped: int
+    errors: list[str]
+
+
+class GlobeSignalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    source: TelemetrySource
+    latitude: float
+    longitude: float
+    intensity: float | None
+    title: str
+    payload: dict
+    entity_uid: uuid.UUID | None
+    observed_at: datetime

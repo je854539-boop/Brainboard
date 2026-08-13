@@ -21,6 +21,17 @@ class Settings(BaseSettings):
     import_genius_api_key: str = ""
     seavantage_api_key: str = ""
     regrid_api_key: str = ""
+    highergov_api_key: str = ""
+    gfw_api_key: str = ""  # Global Fishing Watch API token, powers the 4Wings globe layer
+    gled_api_key: str = ""  # unconfirmed provider -- see app/services/globe/gled.py
+
+    cobalt_intelligence_api_key: str = ""
+    interzoid_api_key: str = ""
+    apollo_api_key: str = ""
+    openfda_api_key: str = ""  # optional -- openFDA works unauthenticated at low volume
+    deepgram_api_key: str = ""
+
+    brain_shadow_mode_lead_threshold: int = 1000
 
 
 @lru_cache

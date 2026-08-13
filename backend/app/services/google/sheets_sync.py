@@ -4,19 +4,27 @@
 Column layout below is the default mapping and MUST be confirmed against
 the live spreadsheet's header row before going to production -- only
 Column K (follow-up date), Column L (notes), and Column X (dossier link)
-are fixed by the stated spec; the remaining Master Log V2 columns are a
-reasonable default that ops should verify. Column A is used on both sheets
-as the anchor UUID column so rows can be matched between Sheets and
-Postgres without relying on row position.
+are fixed by the stated spec. The MCA intake fields (state, revenue,
+lender, payment terms, balance, open positions, credit score) are placed
+at I/J/M-R following the field order of the lead-intake terminal, which is
+a stronger signal than a blind guess since that terminal posts straight to
+the real Master Log V2 sheet -- but it's still an inference, not a
+confirmed header read, so verify column-by-column before relying on it.
+Column A is used on both sheets as the anchor UUID column so rows can be
+matched between Sheets and Postgres without relying on row position.
 """
 
 import datetime as dt
+import logging
 import uuid
 
 from sqlalchemy.orm import Session
 
-from app.models.enums import CoBroker, MasterLogStatus, SiloCandidateStatus, SiloName
+from app.models.enums import ActivitySource, CoBroker, MasterLogStatus, SiloCandidateStatus, SiloName
 from app.models.orm import MasterLogEntry, SiloCandidate
+from app.services import pipeline
+
+logger = logging.getLogger("brainboard.sheets_sync")
 
 MASTER_LOG_SHEET_NAME = "Master Log V2"
 MASTER_LOG_RANGE = f"{MASTER_LOG_SHEET_NAME}!A2:X"
@@ -32,11 +40,21 @@ MASTER_LOG_COLUMN_FIELDS: dict[int, str] = {
     5: "co_broker",  # F
     6: "status",  # G
     7: "loan_amount_requested",  # H
+    8: "state",  # I
+    9: "annual_revenue",  # J
     10: "follow_up_date",  # K
     11: "notes",  # L
+    12: "lender",  # M
+    13: "payment_amt",  # N
+    14: "payment_freq",  # O
+    15: "current_balance",  # P
+    16: "open_positions",  # Q
+    17: "credit_score",  # R
     23: "dossier_drive_link",  # X
 }
 MASTER_LOG_COLUMN_COUNT = 24  # A..X
+_FLOAT_FIELDS = {"loan_amount_requested", "annual_revenue", "payment_amt", "current_balance"}
+_INT_FIELDS = {"open_positions", "credit_score"}
 
 SILO_RANGE_SUFFIX = "!A2:H"
 SILO_COLUMN_FIELDS: dict[int, str] = {
@@ -84,8 +102,10 @@ def row_to_master_log_fields(row: list[str]) -> dict:
             fields["status"] = MasterLogStatus(value) if value else MasterLogStatus.NEW_LEAD
         elif field_name == "follow_up_date":
             fields["follow_up_date"] = _parse_date(value)
-        elif field_name == "loan_amount_requested":
-            fields["loan_amount_requested"] = float(value) if value else None
+        elif field_name in _FLOAT_FIELDS:
+            fields[field_name] = float(value.replace(",", "").replace("$", "")) if value else None
+        elif field_name in _INT_FIELDS:
+            fields[field_name] = int(float(value)) if value else None
         else:
             fields[field_name] = value or None
     return fields
@@ -101,8 +121,16 @@ def master_log_entry_to_row(entry: MasterLogEntry) -> list[str]:
     row[5] = entry.co_broker.value if entry.co_broker else ""
     row[6] = entry.status.value if entry.status else ""
     row[7] = str(entry.loan_amount_requested) if entry.loan_amount_requested is not None else ""
+    row[8] = entry.state or ""
+    row[9] = str(entry.annual_revenue) if entry.annual_revenue is not None else ""
     row[10] = entry.follow_up_date.strftime("%Y-%m-%d") if entry.follow_up_date else ""
     row[11] = entry.notes or ""
+    row[12] = entry.lender or ""
+    row[13] = str(entry.payment_amt) if entry.payment_amt is not None else ""
+    row[14] = entry.payment_freq or ""
+    row[15] = str(entry.current_balance) if entry.current_balance is not None else ""
+    row[16] = str(entry.open_positions) if entry.open_positions is not None else ""
+    row[17] = str(entry.credit_score) if entry.credit_score is not None else ""
     row[23] = entry.dossier_drive_link or ""
     for letter, value in (entry.extra_columns or {}).items():
         index = ord(letter.upper()) - ord("A")
@@ -141,8 +169,13 @@ def silo_candidate_to_row(candidate: SiloCandidate) -> list[str]:
 
 
 def pull_master_log(db: Session, service, sheet_id: str) -> int:
-    """Upsert MasterLogEntry rows from the sheet into Postgres. Rows
-    missing a UUID in Column A are assigned one and written back."""
+    """Upsert MasterLogEntry rows from the sheet into Postgres, routed
+    through pipeline.create_lead / update_lead_fields (source=
+    WEBHOOK_SHEET) so a full-sheet pull gets the same activity logging,
+    StatusHistory, and Calendar sync as a single-row onMasterLogEdit
+    webhook -- the Sheet is the source of truth regardless of which sync
+    path picked up the change. Rows missing a UUID in Column A are
+    assigned one and written back."""
     result = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=MASTER_LOG_RANGE).execute()
     rows = result.get("values", [])
 
@@ -158,15 +191,22 @@ def pull_master_log(db: Session, service, sheet_id: str) -> int:
         fields = row_to_master_log_fields(row)
         lead_uid = fields.pop("lead_uid")
         entry = db.get(MasterLogEntry, lead_uid)
-        if entry is None:
-            entry = MasterLogEntry(lead_uid=lead_uid, business_name=fields.get("business_name") or "(unnamed)")
-            db.add(entry)
-        for key, value in fields.items():
-            if value is not None or key == "extra_columns":
-                setattr(entry, key, value)
-        synced += 1
 
-    db.commit()
+        if entry is None:
+            business_name = fields.pop("business_name", None) or "(unnamed)"
+            co_broker = fields.pop("co_broker", None)
+            if co_broker is None:
+                logger.warning("Skipping new sheet row for %r -- co_broker cell is blank", business_name)
+                continue
+            pipeline.create_lead(
+                db, business_name=business_name, co_broker=co_broker, lead_uid=lead_uid,
+                source=ActivitySource.WEBHOOK_SHEET,
+                **{k: v for k, v in fields.items() if v is not None or k == "extra_columns"},
+            )
+        else:
+            updates = {k: v for k, v in fields.items() if v is not None or k == "extra_columns"}
+            pipeline.update_lead_fields(db, entry, updates, source=ActivitySource.WEBHOOK_SHEET)
+        synced += 1
 
     for row_number, new_uid in updates_needed:
         service.spreadsheets().values().update(

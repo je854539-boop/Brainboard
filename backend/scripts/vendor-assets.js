@@ -24,6 +24,10 @@ copy(
   path.join(ROOT, "node_modules/alpinejs/dist/cdn.min.js"),
   path.join(ROOT, "app/static/vendor/alpine/alpine.min.js")
 );
+copy(
+  path.join(ROOT, "node_modules/three/build/three.module.min.js"),
+  path.join(ROOT, "app/static/vendor/three/three.module.min.js")
+);
 
 const fontWeights = ["400", "500", "700"];
 for (const weight of fontWeights) {

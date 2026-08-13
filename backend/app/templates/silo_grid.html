@@ -2,7 +2,9 @@
 {% block content %}
 <div class="flex items-center justify-between mb-4">
   <h1 class="stencil-header text-lg text-[var(--amber)]">Silo Intelligence Grid</h1>
+  <button id="leadgen-btn" class="tactical-select hover:border-[var(--amber)] hover:text-[var(--amber)]">Run Lead-Gen Sweep</button>
 </div>
+<div id="leadgen-result" class="text-[10px] text-[var(--text-dim)] mb-3"></div>
 
 <form
   id="silo-filters"
@@ -54,4 +56,25 @@
     </tbody>
   </table>
 </div>
+
+<script>
+document.getElementById("leadgen-btn").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = "Sweeping...";
+  const resultDiv = document.getElementById("leadgen-result");
+  try {
+    const res = await fetch("/api/silo/leadgen/run", { method: "POST" });
+    const data = await res.json();
+    const ingested = Object.entries(data.telemetry_ingested).map(([s, n]) => `${s}:${n}`).join(", ");
+    const created = Object.entries(data.candidates_created).filter(([, n]) => n > 0).map(([s, n]) => `${s}:+${n}`).join(", ");
+    resultDiv.textContent = `Telemetry ingested -- ${ingested}. Candidates created -- ${created || "(none -- no sources configured or nothing new)"}`;
+    htmx.trigger("#silo-filters", "change");
+  } catch (err) {
+    resultDiv.textContent = "Sweep failed: " + err.message;
+  } finally {
+    e.target.disabled = false;
+    e.target.textContent = "Run Lead-Gen Sweep";
+  }
+});
+</script>
 {% endblock %}
