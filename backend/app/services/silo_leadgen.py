@@ -22,7 +22,10 @@ price move alone isn't a lead:
                    USACE vessel & barge activity in the same window.
     3. FILTER   -- Cobalt Intelligence SOS standing dismisses companies
                    that aren't fundable regardless of signal strength.
-    4. CONTACT  -- Apollo.io org search attaches phone/contact info to
+    4. CONTACT  -- Apollo.io org search (primary) + Cobalt Intelligence
+                   SOS records (checked defensively -- it's a standing
+                   check, not fundamentally a contact database, but used
+                   if it happens to carry one) attach phone/email to
                    whatever survives the filter.
 
   AGRICULTURE & GRAIN HANDLING (run_agriculture_grain_handling_waterfall)
@@ -408,25 +411,76 @@ def _stage3_lending_appetite(db: Session, company_name: str) -> tuple[float, boo
     )
 
 
-def _stage4_contact_lookup(db: Session, company_name: str) -> tuple[str | None, str]:
-    """Name match against fresh Apollo.io org-search events via
-    entity_matching.names_match (Interzoid fuzzy scoring when configured,
-    substring fallback otherwise) -- same matching utility as stage 3.
-    Returns (phone, note)."""
+_PHONE_KEYS = ("phone", "phone_number", "primary_phone", "company_phone", "registered_agent_phone")
+_EMAIL_KEYS = ("email", "email_address", "company_email", "contact_email", "registered_agent_email")
+
+
+def _extract_contact_fields(payload: dict) -> tuple[str | None, str | None]:
+    """Defensive multi-key extraction, same posture as every other
+    unconfirmed-schema field elsewhere in this project. Checks several
+    plausible key names rather than assuming one and silently missing a
+    real value; a nested {"number": ...} phone object (Apollo's
+    documented primary_phone shape) is handled specially."""
+    phone = None
+    for key in _PHONE_KEYS:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            value = value.get("number")
+        if value:
+            phone = str(value)
+            break
+
+    email = None
+    for key in _EMAIL_KEYS:
+        value = payload.get(key)
+        if value:
+            email = str(value)
+            break
+
+    return phone, email
+
+
+def _stage4_contact_enrichment(db: Session, company_name: str) -> tuple[str | None, str | None, str]:
+    """Contact enrichment against fresh Apollo.io org-search AND Cobalt
+    Intelligence SOS events, name-matched via entity_matching.names_match
+    (same utility as stage 3). Apollo is the primary source here -- its
+    org-search payload documents a `primary_phone` field, though note
+    this is company-level data (an org search), not a specific person's
+    direct line; a true per-contact phone/email would need Apollo's
+    People/Contact Search endpoint, which isn't wired here. Cobalt
+    Intelligence's real product is SOS business-registry data (name,
+    standing, registered agent) -- it isn't fundamentally a contact
+    database the way Apollo is, so it's checked defensively for a
+    phone/email field rather than assumed to always have one; when it
+    does (e.g. a registered-agent contact), it's used too.
+
+    Returns (phone, email, note)."""
     if not company_name.strip():
-        return None, "contact enrichment skipped -- no company name to match"
+        return None, None, "contact enrichment skipped -- no company name to match"
 
     interzoid_key = get_settings().interzoid_api_key
-    for event in _fresh_events(db, TelemetrySource.APOLLO, limit=100):
-        matched_name = event.payload.get("name")
-        if not entity_matching.names_match(interzoid_key, company_name, matched_name):
-            continue
-        phone_field = event.payload.get("primary_phone")
-        phone = phone_field.get("number") if isinstance(phone_field, dict) else event.payload.get("phone")
-        return phone, f"Apollo.io org match: '{event.payload.get('name')}'"
+    found_phone, found_email = None, None
+    matched_sources = []
 
-    return None, (
-        "contact enrichment pending -- no Apollo.io org match yet; "
+    for source in (TelemetrySource.APOLLO, TelemetrySource.COBALT_INTELLIGENCE):
+        for event in _fresh_events(db, source, limit=100):
+            matched_name = event.payload.get("name")
+            if not entity_matching.names_match(interzoid_key, company_name, matched_name):
+                continue
+            phone, email = _extract_contact_fields(event.payload)
+            if phone and not found_phone:
+                found_phone = phone
+            if email and not found_email:
+                found_email = email
+            if phone or email:
+                matched_sources.append(f"{source.value}:'{event.payload.get('name')}'")
+            break  # one match per source is enough
+
+    if found_phone or found_email:
+        return found_phone, found_email, f"Contact enrichment matched {', '.join(matched_sources)}"
+
+    return None, None, (
+        "contact enrichment pending -- no Apollo.io/Cobalt Intelligence match with a phone or email yet; "
         "run per-candidate Interzoid/Apollo lookup from the Enrichment page once converted to a lead"
     )
 
@@ -462,9 +516,9 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
         score_delta, dismiss, lending_note = _stage3_lending_appetite(db, company_name)
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
 
-        phone, contact_note = (None, "contact enrichment skipped -- lending-appetite filter dismissed this candidate")
+        phone, email, contact_note = (None, None, "contact enrichment skipped -- lending-appetite filter dismissed this candidate")
         if not dismiss:
-            phone, contact_note = _stage4_contact_lookup(db, company_name)
+            phone, email, contact_note = _stage4_contact_enrichment(db, company_name)
 
         notes = " | ".join(
             filter(
@@ -483,6 +537,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
                 silo=CME_MACRO_SILO,
                 company_name=company_name,
                 phone=phone,
+                email=email,
                 source_reference=trade_source_ref,
                 notes=notes,
                 score=50.0 + score_delta,

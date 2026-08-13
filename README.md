@@ -93,8 +93,15 @@ apps_script/
   3. **Filter** -- Cobalt Intelligence SOS standing: a company in suspended/
      dissolved standing is dismissed here regardless of signal strength,
      since it isn't fundable no matter how loud the macro signal is.
-  4. **Contact** -- Apollo.io org search attaches phone/contact info to
-     whatever survives the filter.
+  4. **Contact** -- Apollo.io org search (primary source; its documented
+     `primary_phone` field is company-level, not a specific person's
+     direct line -- a true per-contact phone/email would need Apollo's
+     People/Contact Search endpoint, not wired here) plus Cobalt
+     Intelligence, checked defensively for a phone/email field even
+     though its real product (SOS business-registry standing) isn't
+     fundamentally a contact database. Populates both `phone` and the new
+     `email` column on the candidate; email carries forward to the lead's
+     `email` field on conversion (`pipeline.convert_or_update_silo_candidate`).
 
   **Agriculture & Grain Handling** (`run_agriculture_grain_handling_waterfall()`)
   -- a narrower, more direct version of the same pattern. CME Globex's

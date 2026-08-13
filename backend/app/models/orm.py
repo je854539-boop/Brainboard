@@ -133,6 +133,11 @@ class SiloCandidate(Base):
     source_reference: Mapped[str | None] = mapped_column(String(512))  # Col D
     notes: Mapped[str | None] = mapped_column(Text)  # Col E
     dossier_drive_link: Mapped[str | None] = mapped_column(String(1024))  # Col F
+    # Not a sheet column (the 8-column silo tab schema above is fixed) --
+    # same "extra structured field beyond the sheet mirror" precedent as
+    # latitude/longitude below. Populated by the CME Macro Funnel
+    # waterfall's stage 4 contact enrichment, see silo_leadgen.py.
+    email: Mapped[str | None] = mapped_column(String(256))
     score: Mapped[float | None] = mapped_column(Numeric(6, 2))  # Col G
     status: Mapped[SiloCandidateStatus] = mapped_column(
         _pg_enum(SiloCandidateStatus, "silo_candidate_status"),

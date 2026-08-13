@@ -73,12 +73,15 @@ class SiloCandidateOut(BaseModel):
     company_name: str
     contact_name: str | None
     phone: str | None
+    email: str | None
     source_reference: str | None
     notes: str | None
     dossier_drive_link: str | None
     score: float | None
     status: SiloCandidateStatus
     converted_lead_uid: uuid.UUID | None
+    latitude: float | None
+    longitude: float | None
     created_at: datetime
     updated_at: datetime
 

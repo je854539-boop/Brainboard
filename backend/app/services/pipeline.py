@@ -197,6 +197,7 @@ def convert_or_update_silo_candidate(
             co_broker=co_broker,
             contact_name=candidate.contact_name,
             phone=candidate.phone,
+            email=candidate.email,
             notes=f"Converted from silo candidate ({candidate.silo.value}). {candidate.notes or ''}".strip(),
             dossier_drive_link=candidate.dossier_drive_link,
             source=source,
