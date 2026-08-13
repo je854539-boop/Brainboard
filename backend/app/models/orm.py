@@ -144,6 +144,16 @@ class SiloCandidate(Base):
         ForeignKey("master_log_entries.lead_uid", ondelete="SET NULL")
     )
 
+    # Nullable, populated only when the identifying telemetry actually
+    # carried real coordinates (currently: Regrid parcel GeoJSON geometry,
+    # see silo_leadgen.py::_identify_via_regrid) -- most silos have no
+    # inherent geo signal in their source data, and those candidates
+    # simply have no position rather than a guessed one. Powers the
+    # globe's silo-funnel-lifecycle layer (creation -> conversion ->
+    # funded), see app/routers/silo.py::candidates_geo.
+    latitude: Mapped[float | None] = mapped_column(Numeric(9, 6))
+    longitude: Mapped[float | None] = mapped_column(Numeric(9, 6))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -40,6 +40,35 @@ def list_silo_candidates(
     return db.execute(query).scalars().all()
 
 
+@router.get("/geo")
+def silo_candidates_geo(db: Session = Depends(get_db)):
+    """Geo-anchored silo candidates for the globe's silo-funnel-lifecycle
+    layer (creation -> conversion into Master Log V2 -> funded). Only
+    returns candidates with real coordinates on file (see
+    silo_leadgen.py::_regrid_geometry_centroid) -- most silos have no
+    inherent geo signal in their source data and simply don't appear here
+    rather than being placed at a guessed location."""
+    candidates = (
+        db.query(SiloCandidate)
+        .filter(SiloCandidate.latitude.isnot(None), SiloCandidate.longitude.isnot(None))
+        .all()
+    )
+    return [
+        {
+            "candidate_uid": str(c.candidate_uid),
+            "silo": c.silo.value,
+            "company_name": c.company_name,
+            "status": c.status.value,
+            "score": float(c.score) if c.score is not None else None,
+            "latitude": float(c.latitude),
+            "longitude": float(c.longitude),
+            "converted_lead_uid": str(c.converted_lead_uid) if c.converted_lead_uid else None,
+            "source_reference": c.source_reference,
+        }
+        for c in candidates
+    ]
+
+
 @router.get("/{candidate_uid}", response_model=SiloCandidateOut)
 def get_silo_candidate(candidate_uid: uuid.UUID, db: Session = Depends(get_db)):
     candidate = db.get(SiloCandidate, candidate_uid)

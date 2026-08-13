@@ -31,6 +31,9 @@ _EVENT_TYPE_BY_FIELD = {
 }
 
 # Changing either of these on a lead must re-sync the linked Calendar event.
+# Status changes are handled separately below (see update_lead_fields) --
+# "status" is popped out of `updates` before this set is checked, since it
+# routes through update_lead_status instead of the generic field loop.
 _CALENDAR_TRIGGER_FIELDS = {"notes", "follow_up_date"}
 
 
@@ -141,9 +144,12 @@ def update_lead_fields(
     LeadActivityEvent per changed field, routing status changes through
     update_lead_status (so StatusHistory / the hazard engine still see
     it), and re-syncing Calendar + pushing to Sheets exactly once if any
-    of the changed fields warrant it."""
+    of the changed fields warrant it. A status mutation always re-syncs
+    Calendar (the event description includes current status -- see
+    calendar_sync.py -- so it shouldn't go stale until notes/follow-up
+    next happen to change too), same as notes/follow_up_date."""
     new_status = updates.pop("status", None)
-    calendar_dirty = False
+    calendar_dirty = bool(new_status is not None and new_status != entry.status)
 
     for field, new_value in updates.items():
         old_value = getattr(entry, field, None)
@@ -165,6 +171,10 @@ def update_lead_fields(
         db.commit()
 
     push_to_sheet(db, entry, source)
+    db.commit()  # push_to_sheet's own log_activity(SHEET_SYNC) call must be committed here --
+    # unlike create_lead (which already commits after its push_to_sheet call), this function
+    # had no commit after it, so that activity-log row was silently discarded whenever the
+    # caller's session closed without another commit happening to catch it afterward.
 
     db.refresh(entry)
     return entry

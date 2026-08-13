@@ -32,6 +32,7 @@
     <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Signals Tracked</div><div id="signal-count" class="hud-value text-lg">0</div></div>
     <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Leads Plotted</div><div id="lead-count" class="hud-value text-lg">0</div></div>
     <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Vessels Tracked</div><div id="vessel-count" class="hud-value text-lg">0</div></div>
+    <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Silo Candidates (Geo-Anchored)</div><div id="silo-candidate-count" class="hud-value text-lg">0</div></div>
   </div>
 </div>
 
@@ -47,8 +48,14 @@
   several leads in the same state render near the same point). Vessel
   positions come from Datalastic/VesselFinder AIS via the River
   Surveillance engine; green/amber/red reflects live velocity-anomaly and
-  port-dwell classification, not a static reference layer. Click any lead
-  or vessel to fly in and see its details.
+  port-dwell classification, not a static reference layer. Diamond
+  markers are silo funnel candidates that have a real address/coordinate
+  on file (via Regrid parcel geometry -- most silo sources have no
+  inherent geo signal, so most candidates don't appear here); a dashed
+  line traces a converted candidate to its resulting lead, so you can
+  watch the same entity move from silo detection into Master Log V2 and
+  on through the 13-status pipeline to Funded. Click any lead, vessel, or
+  candidate to fly in and see its details.
   {% if not cesium_ion_token %}
   <span class="text-[var(--crimson)]">No CESIUM_ION_TOKEN configured -- using Cesium's bundled offline Natural Earth II imagery (no terrain, lower resolution). Set CESIUM_ION_TOKEN for full-resolution satellite imagery and terrain.</span>
   {% endif %}
@@ -121,6 +128,10 @@ function makeShapeTexture(shape, color) {
     ctx.moveTo(size - 14, 14); ctx.lineTo(14, size - 14); ctx.stroke();
   } else if (shape === 'triangle') {
     ctx.beginPath(); ctx.moveTo(size/2, 6); ctx.lineTo(size - 10, size - 10); ctx.lineTo(10, size - 10); ctx.closePath(); ctx.fill();
+  } else if (shape === 'diamond') {
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(size/2, 6); ctx.lineTo(size - 6, size/2); ctx.lineTo(size/2, size - 6); ctx.lineTo(6, size/2); ctx.closePath();
+    ctx.stroke();
   }
   return canvas.toDataURL();
 }
@@ -371,12 +382,16 @@ function addLeadEntity(lead) {
   return id;
 }
 
+let currentLeads = []; // cached for the silo-funnel-lifecycle connecting lines below
+
 async function refreshLeads() {
   const leads = await fetchJSON('/api/globe/leads');
+  currentLeads = leads;
   document.getElementById('lead-count').textContent = leads.length;
   clearLeadEntities();
   for (const lead of leads) addLeadEntity(lead);
   viewer.scene.requestRender();
+  renderSiloCandidates(); // re-draw candidate->lead threads now that lead positions are current
 }
 
 // ---------------------------------------------------------------------
@@ -426,6 +441,74 @@ async function refreshVessels() {
   }
   for (const e of [...viewer.entities.values]) {
     if (e.id && e.id.startsWith('vessel:') && !seen.has(e.id)) viewer.entities.remove(e);
+  }
+  viewer.scene.requestRender();
+}
+
+// ---------------------------------------------------------------------
+// Silo funnel lifecycle -- creation (silo candidate, geo-anchored via
+// Regrid parcel geometry) -> conversion into Master Log V2 -> the same
+// entity then progresses through the 13-status pipeline colors above,
+// on to Funded. Only candidates with real coordinates on file appear
+// here (see GET /api/silo/geo) -- most silo sources have no inherent geo
+// signal, so this is necessarily a subset, not every candidate.
+// ---------------------------------------------------------------------
+const SILO_CANDIDATE_COLOR = { pending: '#FFB703', converted: '#38A3A5', dismissed: '#4A5568' };
+let siloEntityIds = [];
+
+function clearSiloEntities() {
+  for (const id of siloEntityIds) {
+    const e = viewer.entities.getById(id);
+    if (e) viewer.entities.remove(e);
+  }
+  siloEntityIds = [];
+}
+
+async function renderSiloCandidates() {
+  const candidates = await fetchJSON('/api/silo/geo');
+  document.getElementById('silo-candidate-count').textContent = candidates.length;
+  clearSiloEntities();
+
+  for (const c of candidates) {
+    const color = SILO_CANDIDATE_COLOR[c.status] || SILO_CANDIDATE_COLOR.pending;
+    const position = Cesium.Cartesian3.fromDegrees(c.longitude, c.latitude, 8000);
+    const id = `silo:${c.candidate_uid}`;
+
+    viewer.entities.add({
+      id,
+      position,
+      billboard: {
+        image: shapeTexture('diamond', color),
+        scale: c.status === 'pending'
+          ? new Cesium.CallbackProperty(() => 0.8 + 0.2 * Math.abs(Math.sin(performance.now() / 700)), false)
+          : 0.75,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      properties: { kind: 'silo-candidate', ...c },
+    });
+    siloEntityIds.push(id);
+
+    // "Creation -> Master Log V2" thread: once converted, draw a dashed
+    // line from the candidate's original detection point to its
+    // resulting lead's current position -- the lead itself then carries
+    // the thread onward through the 13-status colors (and, if Funded,
+    // the supply-chain-link visual above).
+    if (c.status === 'converted' && c.converted_lead_uid) {
+      const lead = currentLeads.find(l => l.lead_uid === c.converted_lead_uid);
+      if (lead) {
+        const threadId = `${id}:thread`;
+        viewer.entities.add({
+          id: threadId,
+          polyline: {
+            positions: [position, Cesium.Cartesian3.fromDegrees(lead.longitude, lead.latitude, 15000)],
+            width: 1.5,
+            material: new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.fromCssColorString(SILO_CANDIDATE_COLOR.converted).withAlpha(0.7) }),
+          },
+          properties: { kind: 'silo-thread', candidate_uid: c.candidate_uid },
+        });
+        siloEntityIds.push(threadId);
+      }
+    }
   }
   viewer.scene.requestRender();
 }
@@ -515,6 +598,16 @@ function showInfoPanel(entity) {
       <div class="mb-1"><span class="text-[var(--text-dim)]">Speed:</span> ${props.speed_knots != null ? props.speed_knots.toFixed(1) + ' kt' : '--'}</div>
       <div class="mb-1"><span class="text-[var(--text-dim)]">State:</span> <span style="color:${VESSEL_STATE_COLOR[props.state]}">${props.state.toUpperCase()}</span></div>
       <div class="mb-1"><span class="text-[var(--text-dim)]">Last observed:</span> ${new Date(props.observed_at).toISOString().slice(0,19)}Z</div>
+    `;
+  } else if (props.kind === 'silo-candidate') {
+    title.textContent = props.company_name;
+    const color = SILO_CANDIDATE_COLOR[props.status] || SILO_CANDIDATE_COLOR.pending;
+    body.innerHTML = `
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Silo:</span> ${props.silo}</div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Lifecycle status:</span> <span style="color:${color}">${props.status.toUpperCase()}</span></div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Score:</span> ${props.score != null ? props.score : '--'}</div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Source:</span> ${props.source_reference || '--'}</div>
+      ${props.converted_lead_uid ? `<div class="mt-2 pt-2 border-t border-[var(--panel-border)] text-[var(--amber)]">Converted -- now tracked in Master Log V2 (see the connecting thread on the globe).</div>` : ''}
     `;
   } else if (props.kind === 'reference-point') {
     title.textContent = props.name;

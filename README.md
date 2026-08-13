@@ -45,7 +45,7 @@ backend/
                              AIS) + GDELT (conflict zones) geospatial adapters
       google/
         sheets_sync.py       bidirectional Master Log V2 + 9 silo tab sync
-        calendar_sync.py     Column K/L -> Calendar event sync via lead_uid
+        calendar_sync.py     Column K/L and status changes -> Calendar event sync via lead_uid
         drive_harvester.py   `[Business Name] | [UUID]/FINANCIALS` OCR harvester
     routers/            dashboard pages, HTMX partials, JSON API, Apps Script webhooks
     templates/           Jinja2 + Tailwind + HTMX + Alpine, tactical/military UI --
@@ -271,6 +271,37 @@ apps_script/
   There is a genuine *live* USACE signal in the app beyond this page too
   -- see the CME Macro Funnel entry in "Silo Grid" below for the
   lock-congestion adapter, and "River Surveillance" for the full engine.
+
+  #### Silo funnel lifecycle (creation -> Master Log V2 -> Funded)
+
+  A diamond marker layer, separate from the 13-status lead layer above,
+  tracks `SiloCandidate` rows from creation through conversion:
+  amber = pending, teal = converted, gray = dismissed
+  (`SILO_CANDIDATE_COLOR` in `globe.html`). Once a candidate converts, a
+  dashed line traces from its original detection point to the resulting
+  lead's position -- the same entity then continues the thread through
+  the 13-status pipeline colors above it, and if it reaches Funded, the
+  beacon + live supply-chain link.
+
+  This layer is necessarily a *subset*: `SiloCandidate` has no address
+  field, and most silo sources (UCC filings, SOS registries, openFDA,
+  Cobalt Intelligence, Apollo) carry no confirmed geo signal in their
+  payload at all. Only candidates identified via **Regrid** (CME Macro
+  Funnel and Agriculture & Grain Handling's waterfalls, see
+  `_regrid_geometry_centroid` in `silo_leadgen.py`) get real coordinates,
+  extracted from the parcel's own GeoJSON geometry -- not a guessed
+  location. Everything else stays honestly unplaced rather than being
+  shown at a fabricated point. `GET /api/silo/geo` serves this layer.
+
+  **Relationship to the Brain**: none, currently, and worth saying
+  plainly -- this whole globe (13-status colors, the silo lifecycle
+  layer, all of it) is a pure visualization sitting on top of data the
+  Brain already had. A lead's status color reflects a `StatusHistory` row
+  that already existed before the globe rendered it; the globe doesn't
+  feed the logistic regression a new signal, it just makes an existing
+  one visible. If you want the globe to actually feed the Brain something
+  new (geographic clustering, corridor friction at time of funding), that
+  would be a separate, unbuilt enhancement.
 - **Analytics** (`/analytics`) -- Kaplan-Meier curves, Markov transition
   matrix, deal-velocity bottlenecks, silo friction correlation, and the
   time-varying Cox engagement-hazard panel.

@@ -152,7 +152,40 @@ def _normalize_address(address: str) -> str:
     return " ".join(words)
 
 
-def _identify_via_regrid(db: Session) -> list[tuple[str, str, str]]:
+def _regrid_geometry_centroid(payload: dict) -> tuple[float, float] | None:
+    """Real Regrid API responses are GeoJSON Features -- payload["geometry"]
+    carries the parcel's actual boundary (see regrid.py's fetch(), which
+    passes the raw feature through unmodified). Returns an approximate
+    centroid (average of ring vertices for a Polygon/MultiPolygon, direct
+    coordinates for a Point) as (lat, lon) -- not a true area-weighted
+    centroid, close enough for globe placement. Returns None rather than
+    guessing when the geometry is missing or an unrecognized type, same
+    posture as everywhere else geo data is either real or absent, never
+    fabricated."""
+    geometry = payload.get("geometry")
+    if not isinstance(geometry, dict):
+        return None
+    gtype, coords = geometry.get("type"), geometry.get("coordinates")
+    if not coords:
+        return None
+    try:
+        if gtype == "Point":
+            lon, lat = coords[0], coords[1]
+            return (float(lat), float(lon))
+        if gtype == "Polygon":
+            ring = coords[0]
+        elif gtype == "MultiPolygon":
+            ring = coords[0][0]
+        else:
+            return None
+        lons = [float(pt[0]) for pt in ring]
+        lats = [float(pt[1]) for pt in ring]
+        return (sum(lats) / len(lats), sum(lons) / len(lons))
+    except (TypeError, IndexError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _identify_via_regrid(db: Session) -> list[tuple[str, str, str, tuple[float, float] | None]]:
     """A Regrid parcel's owner-of-record is a land-ownership fact, not a
     confirmation that the owner is the business actually operating there
     -- an operator can lease land it doesn't own. So identification here
@@ -164,7 +197,10 @@ def _identify_via_regrid(db: Session) -> list[tuple[str, str, str]]:
     silently dropped, since it may still be the right business, just not
     address-confirmed.
 
-    Returns (company_name, source_reference, note) tuples.
+    Returns (company_name, source_reference, note, coordinates) tuples --
+    coordinates is (lat, lon) from the parcel's own GeoJSON geometry when
+    present, else None (see _regrid_geometry_centroid). Powers the
+    globe's silo-funnel-lifecycle layer.
     """
     known_addresses: dict[str, str] = {}
     for event in _fresh_events(db, TelemetrySource.IMPORT_GENIUS, limit=25):
@@ -173,7 +209,7 @@ def _identify_via_regrid(db: Session) -> list[tuple[str, str, str]]:
         if name and address:
             known_addresses[_normalize_address(str(address))] = str(name)
 
-    identified: list[tuple[str, str, str]] = []
+    identified: list[tuple[str, str, str, tuple[float, float] | None]] = []
     for event in _fresh_events(db, TelemetrySource.REGRID, limit=25):
         properties = event.payload.get("properties") or {}
         parcel_address = properties.get("address")
@@ -183,12 +219,14 @@ def _identify_via_regrid(db: Session) -> list[tuple[str, str, str]]:
 
         source_reference = f"telemetry_event:{event.id} [regrid] {event.title}"
         matched_company = known_addresses.get(_normalize_address(str(parcel_address))) if parcel_address else None
+        coordinates = _regrid_geometry_centroid(event.payload)
 
         if matched_company:
             identified.append((
                 matched_company,
                 source_reference,
                 f"Regrid parcel at '{parcel_address}' address-matches Import Genius's business address for '{matched_company}'",
+                coordinates,
             ))
         elif owner:
             identified.append((
@@ -196,6 +234,7 @@ def _identify_via_regrid(db: Session) -> list[tuple[str, str, str]]:
                 source_reference,
                 f"Regrid parcel owner '{owner}' at '{parcel_address or 'unknown address'}' -- "
                 "land ownership only, operating business at this address not independently confirmed",
+                coordinates,
             ))
 
     return identified
@@ -305,7 +344,11 @@ def _stage2_identify_companies(db: Session) -> list[tuple[str, str, str]]:
     corroborate one, attached as supporting evidence in the notes field
     of every candidate this stage produces.
 
-    Returns (company_name, source_reference, corroboration_note) tuples.
+    Returns (company_name, source_reference, corroboration_note,
+    coordinates) tuples -- coordinates is None for Import Genius-sourced
+    identifications (that provider's payload carries no confirmed geo
+    field, see telemetry/import_genius.py), populated for Regrid-sourced
+    ones from the parcel's own geometry.
     """
     corroboration_events: list[TelemetryEvent] = []
     for source in (
@@ -322,15 +365,15 @@ def _stage2_identify_companies(db: Session) -> list[tuple[str, str, str]]:
     else:
         corroboration_note = "no corroborating vessel/barge logistics signal this sweep"
 
-    identified: list[tuple[str, str, str]] = []
+    identified: list[tuple[str, str, str, tuple[float, float] | None]] = []
 
     for event in _fresh_events(db, TelemetrySource.IMPORT_GENIUS, limit=25):
         name = event.payload.get("consignee_name") or event.payload.get("company_name")
         if name:
-            identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", corroboration_note))
+            identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", corroboration_note, None))
 
-    for company_name, source_reference, regrid_note in _identify_via_regrid(db):
-        identified.append((company_name, source_reference, f"{corroboration_note} | {regrid_note}"))
+    for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(db):
+        identified.append((company_name, source_reference, f"{corroboration_note} | {regrid_note}", coordinates))
 
     return identified
 
@@ -407,7 +450,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
 
     created = 0
     dismissed = 0
-    for company_name, trade_source_ref, corroboration_note in identified:
+    for company_name, trade_source_ref, corroboration_note, coordinates in identified:
         already = (
             db.query(SiloCandidate)
             .filter(SiloCandidate.silo == CME_MACRO_SILO, SiloCandidate.source_reference == trade_source_ref)
@@ -444,6 +487,8 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
                 notes=notes,
                 score=50.0 + score_delta,
                 status=status,
+                latitude=coordinates[0] if coordinates else None,
+                longitude=coordinates[1] if coordinates else None,
             )
         )
         created += 1
@@ -494,7 +539,7 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
     signal_summary = "; ".join(f"[{s.kind}] {s.description}" for s in signals[:5])
 
     created = 0
-    for company_name, source_reference, regrid_note in _identify_via_regrid(db):
+    for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(db):
         already = (
             db.query(SiloCandidate)
             .filter(SiloCandidate.silo == GRAIN_SILO, SiloCandidate.source_reference == source_reference)
@@ -509,6 +554,8 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
                 company_name=company_name,
                 source_reference=source_reference,
                 notes=f"Gated by: {signal_summary} | {regrid_note}",
+                latitude=coordinates[0] if coordinates else None,
+                longitude=coordinates[1] if coordinates else None,
             )
         )
         created += 1
