@@ -18,26 +18,32 @@
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--green)"></span> Major ports (hover for name)</div>
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--teal)"></span> USACE river ports (hover for name)</div>
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--blue)"></span> National capitals (hover for name)</div>
+    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-[1px]" style="background:var(--amber); opacity:0.5"></span> State/province borders</div>
   </div>
 </div>
 
 <div id="globe-status" class="text-[10px] text-[var(--text-dim)] mb-2"></div>
 <div class="text-[10px] text-[var(--text-dim)] mb-2">
-  Sea routes, ports, USACE river ports, and capitals are a static
-  geographic reference layer (real coordinates; corridors chained through
-  known chokepoints/canals) -- not live AIS-routed shipping data or a
-  live USACE feed. Live vessel activity is the amber GFW 4Wings signal
-  dots above.
+  Sea routes, ports, USACE river ports, capitals, and state/province
+  borders are a static geographic reference layer (real coordinates;
+  corridors chained through known chokepoints/canals) -- not live
+  AIS-routed shipping data or a live USACE feed. Live vessel activity is
+  the amber GFW 4Wings signal dots above. Scroll/pinch to zoom -- city,
+  port, and capital names appear once you're zoomed in close enough to
+  read them.
 </div>
-<div class="tactical-panel" style="height:600px; position:relative;">
+<div class="tactical-panel" style="height:600px; position:relative; overflow:hidden;">
   <div id="globe-container" style="width:100%; height:100%;"></div>
   <div id="port-tooltip" class="hidden" style="position:absolute; pointer-events:none; background:var(--panel-bg); border:1px solid var(--green); color:var(--green); padding:2px 6px; font-size:10px; z-index:10; white-space:nowrap;"></div>
 </div>
 
 <script type="module">
 import * as THREE from '/static/vendor/three/three.module.min.js';
+import { CSS2DRenderer, CSS2DObject } from '/static/vendor/three/CSS2DRenderer.js';
 
 const AMBER = 0xffb000, CRIMSON = 0xff3333, GREEN = 0x4aff7a, BLUE = 0x4aa3ff, TEAL = 0x2dd4bf, PANEL_BORDER = 0x2d333b, BG = 0x121417;
+const LABEL_ZOOM_DISTANCE = 3.6; // camera distance below which city/port/capital labels appear
+const MIN_ZOOM = 2.6, MAX_ZOOM = 9;
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, opts);
@@ -55,6 +61,60 @@ function latLonToVec3(lat, lon, r) {
   );
 }
 
+// Zoom-gated name label: a small CSS2DObject attached as a child of the
+// dot mesh so it tracks the dot's position automatically. Starts hidden;
+// updateLabelVisibility() (called every frame) shows it only when the
+// camera is zoomed in close AND the point is on the camera-facing side
+// of the globe (CSS2DRenderer doesn't depth-test against the opaque
+// sphere on its own, so without this a label on the far side would
+// render right through the globe).
+const labelObjects = [];
+function addLabel(parentMesh, text, colorHex) {
+  const el = document.createElement('div');
+  el.textContent = text;
+  el.style.fontSize = '9px';
+  el.style.fontFamily = "'JetBrains Mono', monospace";
+  el.style.color = colorHex;
+  el.style.textShadow = '0 0 3px #000, 0 0 3px #000';
+  el.style.whiteSpace = 'nowrap';
+  el.style.transform = 'translate(6px, -6px)';
+  const label = new CSS2DObject(el);
+  label.visible = false;
+  parentMesh.add(label);
+  labelObjects.push({ mesh: parentMesh, label });
+}
+
+// Point markers (ports/capitals/signals) are sized to read well at the
+// default zoomed-out view. Left alone, perspective would balloon them
+// hugely as the camera dollies in close (a marker that subtends a small
+// angle at distance 6.5 subtends a much larger one at distance 2.6).
+// Rescale each marker by its actual distance to the camera every frame
+// so it holds a roughly constant on-screen size instead -- standard
+// "billboard at constant screen size" compensation. Only affects the
+// dot mesh's own scale; CSS2DRenderer positions labels from world
+// translation only; it ignores the parent's scale, so this doesn't
+// distort or shift the label text at all (verified against the vendored
+// CSS2DRenderer.js source).
+const MARKER_REFERENCE_DIST = 4.5, MARKER_MIN_SCALE = 0.15;
+function updateMarkers() {
+  const worldPos = new THREE.Vector3();
+  for (const group of [portMeshes, usaceMeshes, capitalMeshes, signalMeshes]) {
+    for (const mesh of group.children) {
+      mesh.getWorldPosition(worldPos);
+      const distToCam = camera.position.distanceTo(worldPos);
+      mesh.scale.setScalar(Math.max(MARKER_MIN_SCALE, Math.min(1, distToCam / MARKER_REFERENCE_DIST)));
+    }
+  }
+
+  const zoomedIn = camera.position.length() < LABEL_ZOOM_DISTANCE;
+  for (const { mesh, label } of labelObjects) {
+    if (!zoomedIn) { label.visible = false; continue; }
+    mesh.getWorldPosition(worldPos);
+    const facing = worldPos.clone().normalize().dot(camera.position.clone().sub(worldPos).normalize());
+    label.visible = facing > 0.1;
+  }
+}
+
 const container = document.getElementById('globe-container');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(BG);
@@ -65,6 +125,18 @@ camera.position.set(0, 0, 6.5);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(container.clientWidth, container.clientHeight);
 container.appendChild(renderer.domElement);
+
+// CSS2DRenderer draws the zoom-gated name labels as real DOM text (crisp
+// at any zoom level, unlike a canvas-texture sprite) layered on top of
+// the WebGL canvas. pointer-events:none so drag/hover/wheel still reach
+// the canvas underneath.
+const labelRenderer = new CSS2DRenderer();
+labelRenderer.setSize(container.clientWidth, container.clientHeight);
+labelRenderer.domElement.style.position = 'absolute';
+labelRenderer.domElement.style.top = '0';
+labelRenderer.domElement.style.left = '0';
+labelRenderer.domElement.style.pointerEvents = 'none';
+container.appendChild(labelRenderer.domElement);
 
 const globeGroup = new THREE.Group();
 scene.add(globeGroup);
@@ -106,6 +178,31 @@ async function renderCountryBorders() {
   globeGroup.add(new THREE.LineSegments(geometry, material));
 }
 
+// State/province ("inland") borders -- Natural Earth 50m admin-1 boundary
+// lines, pre-flattened at build time by scripts/build-admin1-borders.js.
+// Sits just under the national-border layer (dimmer, thinner-reading)
+// so the hierarchy is legible: country outline > state/province outline.
+// Covers all 50 US states + DC plus first-level divisions for every other
+// country Natural Earth tracks them for.
+async function renderAdmin1Borders() {
+  const lines = await fetchJSON('/static/data/admin1-borders.json');
+  const r = 2.0008;
+  const positions = [];
+  for (const line of lines) {
+    for (let i = 0; i < line.length - 1; i++) {
+      const [lon1, lat1] = line[i];
+      const [lon2, lat2] = line[i + 1];
+      const p1 = latLonToVec3(lat1, lon1, r);
+      const p2 = latLonToVec3(lat2, lon2, r);
+      positions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const material = new THREE.LineBasicMaterial({ color: AMBER, transparent: true, opacity: 0.2 });
+  globeGroup.add(new THREE.LineSegments(geometry, material));
+}
+
 // Major trade route corridors -- multi-hop great-circle arcs through real
 // chokepoints (Malacca, Suez, Hormuz, Panama, Gibraltar, Cape of Good
 // Hope), pre-computed at build time by scripts/build-globe-extras.js.
@@ -144,6 +241,7 @@ async function renderMajorPorts() {
     dot.position.copy(latLonToVec3(p.lat, p.lon, 2.02));
     dot.userData.tooltip = p.name;
     dot.userData.color = '#4aff7a';
+    addLabel(dot, p.name, '#4aff7a');
     portMeshes.add(dot);
   }
 }
@@ -162,6 +260,7 @@ async function renderUSACERiverPorts() {
     dot.position.copy(latLonToVec3(p.lat, p.lon, 2.02));
     dot.userData.tooltip = `${p.name} (USACE river port)`;
     dot.userData.color = '#2dd4bf';
+    addLabel(dot, p.name, '#2dd4bf');
     usaceMeshes.add(dot);
   }
 }
@@ -179,6 +278,7 @@ async function renderCapitals() {
     dot.position.copy(latLonToVec3(c.lat, c.lon, 2.02));
     dot.userData.tooltip = `${c.name} (${c.country})`;
     dot.userData.color = '#4aa3ff';
+    addLabel(dot, c.name, '#4aa3ff');
     capitalMeshes.add(dot);
   }
 }
@@ -239,6 +339,16 @@ window.addEventListener('pointermove', (e) => {
   lastX = e.clientX; lastY = e.clientY;
 });
 
+// Scroll/pinch (trackpad pinch reports as wheel+ctrlKey in Chromium/Firefox)
+// to zoom -- dollies the camera along its existing view vector, clamped
+// so you can't clip through the globe or zoom out past the starting view.
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const dist = camera.position.length();
+  const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, dist + e.deltaY * 0.0025 * dist));
+  camera.position.setLength(next);
+}, { passive: false });
+
 // Hover a port, USACE river port, or capital to see its name.
 const raycaster = new THREE.Raycaster();
 const pointerNDC = new THREE.Vector2();
@@ -268,16 +378,21 @@ function animate() {
   if (!dragging) rotY += 0.0015;
   globeGroup.rotation.y = rotY;
   globeGroup.rotation.x = rotX;
+  globeGroup.updateMatrixWorld();
+  updateMarkers();
   renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
 }
 
 window.addEventListener('resize', () => {
   camera.aspect = container.clientWidth / container.clientHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(container.clientWidth, container.clientHeight);
+  labelRenderer.setSize(container.clientWidth, container.clientHeight);
 });
 
 renderCountryBorders();
+renderAdmin1Borders();
 renderSeaRoutes();
 renderMajorPorts();
 renderUSACERiverPorts();

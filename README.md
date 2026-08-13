@@ -71,16 +71,21 @@ apps_script/
   telephony integration, it doesn't place/receive/route calls. Optionally
   tag a call with a lead so it lands on that lead's activity ledger.
 - **Brain** (`/brain`) -- the shadow-mode scoring engine (see below).
-- **Globe** (`/globe`) -- a spinning 3D globe (vendored Three.js) plotting
-  GFW 4Wings marine traffic and GDELT conflict-zone events (last 24h), with
-  country border outlines (Natural Earth 50m via `world-atlas`), major
-  global trade corridors, ~45 major world ocean container ports, ~23 USACE
-  inland river ports (Mississippi/Ohio/Illinois/Tennessee/Arkansas/
-  Columbia-Snake systems), and all 241 national capitals -- all hoverable
-  for name. The borders/routes/ports/capitals layers are static reference
-  geometry pre-flattened at build time -- see "Frontend dependencies"
-  below -- not live-routed AIS shipping data or a live USACE feed (that's
-  what the GFW signal dots are for).
+- **Globe** (`/globe`) -- a spinning, zoomable 3D globe (vendored Three.js)
+  plotting GFW 4Wings marine traffic and GDELT conflict-zone events (last
+  24h), with country border outlines (Natural Earth 50m via `world-atlas`),
+  state/province ("admin-1") border outlines for every country Natural
+  Earth tracks them for -- including all 50 US states + DC -- major global
+  trade corridors, ~45 major world ocean container ports, ~23 USACE inland
+  river ports (Mississippi/Ohio/Illinois/Tennessee/Arkansas/Columbia-Snake
+  systems), and all 241 national capitals. Scroll/pinch to zoom; ports,
+  USACE ports, and capitals are hoverable for name always, and additionally
+  show a persistent name label once you're zoomed in close (labels scale-
+  compensate so point markers don't balloon at close range, and only show
+  on the camera-facing hemisphere). The borders/routes/ports/capitals
+  layers are static reference geometry pre-flattened at build time -- see
+  "Frontend dependencies" below -- not live-routed AIS shipping data or a
+  live USACE feed (that's what the GFW signal dots are for).
 - **Analytics** (`/analytics`) -- Kaplan-Meier curves, Markov transition
   matrix, deal-velocity bottlenecks, silo friction correlation, and the
   time-varying Cox engagement-hazard panel.
@@ -126,15 +131,20 @@ npm run vendor-assets      # re-copies htmx/Alpine/fonts from node_modules
 npm run build-css          # rebuilds app/static/css/tailwind.css
 npm run build-geo          # rebuilds app/static/data/country-borders.json
 npm run build-globe-extras # rebuilds sea-routes/ports/usace-ports/capitals JSON
+npm run build-admin1       # rebuilds app/static/data/admin1-borders.json
 ```
 
-`build-geo` and `build-globe-extras` only need to be re-run if you bump the
-`world-atlas` resolution or edit the corridor/port lists in
-`scripts/build-globe-extras.js` -- the generated JSON is committed, so a
-fresh clone doesn't need Node at deploy time for the globe to work.
-`build-globe-extras` additionally depends on the `all-the-cities` (GeoNames
-capital-city dump) and `world-countries` devDependencies, used only at
-build time to produce `capitals.json`.
+`build-geo`, `build-globe-extras`, and `build-admin1` only need to be
+re-run if you bump the `world-atlas` resolution or edit the corridor/port
+lists in `scripts/build-globe-extras.js` -- the generated JSON is
+committed, so a fresh clone doesn't need Node (or network access) at
+deploy time for the globe to work. `build-globe-extras` additionally
+depends on the `all-the-cities` (GeoNames capital-city dump) and
+`world-countries` devDependencies, used only at build time to produce
+`capitals.json`. `build-admin1` fetches Natural Earth's 50m admin-1
+boundary-lines dataset directly from `raw.githubusercontent.com` at
+build time (see the script header for a manual-download fallback if
+that host isn't reachable from your build environment).
 
 ## Local development
 
