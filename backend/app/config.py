@@ -30,9 +30,13 @@ class Settings(BaseSettings):
     gdelt_api_key: str = ""  # optional -- GDELT's GEO 2.0 API is free/keyless at normal volume
     datalastic_api_key: str = ""  # Datalastic AIS vessel-tracking API (datalastic.com)
     vesselfinder_api_key: str = ""  # VesselFinder AIS vessel-tracking API (vesselfinder.com)
-    # No separate USACE key -- the USACE lock-congestion adapter detects
-    # barge queuing as an AIS proxy via the Datalastic/VesselFinder keys
-    # above. See app/services/telemetry/usace.py.
+    # Optional -- USACE's real CWMS Data API (cwms-data.usace.army.mil) is
+    # keyless for GET requests on non-sensitive data per their FAQ; only
+    # set this if your office/endpoint combination turns out to require
+    # one. The USACE adapter also uses the Datalastic/VesselFinder keys
+    # above for its complementary AIS-proxy channel. See
+    # app/services/telemetry/usace.py.
+    cwms_api_key: str = ""
 
     cobalt_intelligence_api_key: str = ""
     interzoid_api_key: str = ""

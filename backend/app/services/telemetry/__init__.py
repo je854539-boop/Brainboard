@@ -34,7 +34,11 @@ def all_adapters() -> list[TelemetryAdapter]:
         GFW4WingsAdapter(api_key=settings.gfw_api_key),
         CobaltIntelligenceAdapter(api_key=settings.cobalt_intelligence_api_key),
         ApolloAdapter(api_key=settings.apollo_api_key),
-        USACEAdapter(datalastic_api_key=settings.datalastic_api_key, vesselfinder_api_key=settings.vesselfinder_api_key),
+        USACEAdapter(
+            datalastic_api_key=settings.datalastic_api_key,
+            vesselfinder_api_key=settings.vesselfinder_api_key,
+            cwms_api_key=settings.cwms_api_key,
+        ),
     ]
 
 

@@ -69,8 +69,8 @@ apps_script/
   itself: GDELT (conflict/supply-chain-shock news), GFW 4Wings/Datalastic/
   VesselFinder (AIS vessel traffic on grain-export corridors), SeaVantage
   (vessel/port-call activity), Import Genius (import/export flow), USACE
-  (barge congestion at Mississippi/Illinois Waterway locks, detected as
-  an AIS proxy -- see below), Regrid (agricultural land data), and
+  (gate-change activity + AIS barge queuing at Mississippi/Illinois
+  Waterway locks -- see below), Regrid (agricultural land data), and
   Cobalt Intelligence/Apollo.io (company status and commodities-adjacent
   business discovery). See `app/services/silo_leadgen.py::SOURCE_TO_SILOS`
   for the full mapping.
@@ -223,17 +223,24 @@ Everything is inert (no-ops, not errors) until configured:
   financing-need signal for maritime-adjacent leads), and the same three
   plus GDELT/GFW 4Wings/USACE/Cobalt Intelligence/Apollo.io all feed
   **CME Macro Funnel** lead-gen -- see the Silo Grid section above for
-  why. Two of those need extra setup beyond an API key: USACE has no API
-  key of its own -- it detects lock congestion as an AIS proxy off the
-  `DATALASTIC_API_KEY`/`VESSELFINDER_API_KEY` you already set (barges
-  queuing at a lock rather than a direct USACE feed, since there's no
-  confirmed public USACE API to wire up directly), configurable via
-  `MONITORED_LOCKS` in `app/services/telemetry/usace.py` (defaults to
-  grain-corridor locks on the Mississippi/Illinois Waterway). Cobalt
-  Intelligence's telemetry sweep is empty until you populate
-  `MONITORED_SEARCHES` in `app/services/telemetry/cobalt_intelligence.py`
-  -- it's a per-entity lookup API with no bulk endpoint, so the sweep
-  works by looping a configured watch-list of (state, search-term) pairs.
+  why. Some of those need extra setup beyond an API key. USACE runs two
+  independent channels, either of which is enough to activate it: (1) the
+  real CWMS Data API (confirmed against USACE's own
+  [cwms-data-api](https://github.com/USACE/cwms-data-api) source, not
+  guessed) reporting gate-change operational activity per reservoir
+  project -- GET requests are keyless per USACE's FAQ, `CWMS_API_KEY` is
+  optional; what's required is filling in each `MONITORED_LOCKS` entry's
+  real `office`/`project_id` in `app/services/telemetry/usace.py` (left
+  blank by default -- self-serve lookup instructions are in that file's
+  module docstring, since I can't confirm the exact CWMS project IDs
+  without a live session); (2) an AIS proxy off the
+  `DATALASTIC_API_KEY`/`VESSELFINDER_API_KEY` you already set, detecting
+  idle barges queuing at a lock's coordinates. Defaults to grain-corridor
+  locks on the Mississippi/Illinois Waterway. Cobalt Intelligence's
+  telemetry sweep is empty until you populate `MONITORED_SEARCHES` in
+  `app/services/telemetry/cobalt_intelligence.py` -- it's a per-entity
+  lookup API with no bulk endpoint, so the sweep works by looping a
+  configured watch-list of (state, search-term) pairs.
   UCC filings / SOS registries are per-state -- configure
   `STATE_ENDPOINTS` in `app/services/telemetry/{ucc_filings,sos_registries}.py`.
 - **Enrichment providers** (per-lead lookups, run at intake against leads
