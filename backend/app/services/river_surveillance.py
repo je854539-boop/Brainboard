@@ -39,12 +39,20 @@ Genius / SeaVantage cargo cross-reference calls carry the same
 adapter for these three providers elsewhere in this project -- see
 telemetry/datalastic.py, telemetry/import_genius.py,
 telemetry/seavantage.py.
+
+Entity resolution (_resolve_entity) goes through
+app/services/entity_matching.py: a cheap DB-side blocking-token
+pre-filter narrows candidates, then Interzoid fuzzy company-name scoring
+(when INTERZOID_API_KEY is set) confirms the match, catching legal-name
+variants a raw substring check would miss; falls back to substring
+matching otherwise, same as silo_leadgen.py's Cobalt/Apollo stages.
 """
 
 import asyncio
 import datetime as dt
 import logging
 import math
+import re
 
 import httpx
 from sqlalchemy import func
@@ -65,7 +73,7 @@ from app.models.orm import (
     WaterwayTelemetrySnapshot,
     WaterwayTrigger,
 )
-from app.services import pipeline
+from app.services import entity_matching, pipeline
 from app.services.telemetry.usace import (
     CWMS_BASE_URL,
     GATE_CHANGE_LOOKBACK_HOURS,
@@ -138,23 +146,43 @@ def _nearest_zone(lat: float | None, lon: float | None, max_nm: float = ZONE_MAT
     return best if best_dist is not None and best_dist <= max_nm else None
 
 
+def _blocking_token(name: str) -> str:
+    """First alphanumeric word of a company name, used as a cheap DB-side
+    pre-filter ("blocking key" in record-linkage terms) before the real
+    fuzzy comparison -- pulling every lead/candidate into Python to
+    fuzzy-score against would work but doesn't scale. A single-token LIKE
+    is deliberately loose (catches 'Heartland Grain Exporters LLC' as a
+    candidate for 'Heartland Grain Co') and lets entity_matching.names_match
+    make the actual same-entity call."""
+    words = re.findall(r"[A-Za-z0-9]+", name)
+    return words[0].lower() if words else name.strip().lower()
+
+
 def _resolve_entity(db: Session, company_name: str | None):
-    """Best-effort substring match against known leads and silo
-    candidates -- there's no shared entity ID between vessel-cargo data
-    and the pipeline, so this is a name match, not a guaranteed join.
-    Same posture as silo_leadgen.py's Cobalt/Apollo matching."""
-    if not company_name:
-        return None
-    needle = company_name.strip().lower()
-    if not needle:
+    """Entity resolution against known leads and silo candidates: a
+    cheap blocking-token pre-filter narrows the search, then
+    entity_matching.names_match (Interzoid fuzzy scoring when
+    configured, substring fallback otherwise) confirms the match. There's
+    no shared entity ID between vessel-cargo data and the pipeline, so
+    this is always a name match, not a guaranteed join. Same matching
+    utility as silo_leadgen.py's Cobalt/Apollo stages."""
+    if not company_name or not company_name.strip():
         return None
 
-    lead = db.query(MasterLogEntry).filter(func.lower(MasterLogEntry.business_name).like(f"%{needle}%")).first()
-    if lead:
-        return lead.lead_uid
+    token = _blocking_token(company_name)
+    interzoid_key = get_settings().interzoid_api_key
 
-    candidate = db.query(SiloCandidate).filter(func.lower(SiloCandidate.company_name).like(f"%{needle}%")).first()
-    return candidate.candidate_uid if candidate else None
+    leads = db.query(MasterLogEntry).filter(func.lower(MasterLogEntry.business_name).like(f"%{token}%")).limit(15).all()
+    for lead in leads:
+        if entity_matching.names_match(interzoid_key, company_name, lead.business_name):
+            return lead.lead_uid
+
+    candidates = db.query(SiloCandidate).filter(func.lower(SiloCandidate.company_name).like(f"%{token}%")).limit(15).all()
+    for candidate in candidates:
+        if entity_matching.names_match(interzoid_key, company_name, candidate.company_name):
+            return candidate.candidate_uid
+
+    return None
 
 
 def _apply_trigger_note(db: Session, entity_uid, trigger: WaterwayTrigger) -> None:

@@ -42,6 +42,14 @@ exactly which signal gated it in and which trade-data source identified
 it -- nothing here is a black box; every row traces back to the real
 telemetry that produced it via source_reference, same guarantee the flat
 mapping gives the other 7 silos.
+
+Cross-provider name matching (stage 3's Cobalt Intelligence match, stage
+4's Apollo match) goes through app/services/entity_matching.py, which
+uses Interzoid's fuzzy company-name matching when INTERZOID_API_KEY is
+configured -- catching legal-name variants (DBAs, LLC/Inc suffixes,
+punctuation) that a raw substring check misses -- and falls back to
+substring matching otherwise, same behavior as before Interzoid was
+wired in for this purpose.
 """
 
 import re
@@ -49,9 +57,10 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models.enums import SiloCandidateStatus, SiloName, TelemetrySource
 from app.models.orm import SiloCandidate, TelemetryEvent
-from app.services import telemetry
+from app.services import entity_matching, telemetry
 
 SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     TelemetrySource.CME_GLOBEX: [SiloName.TARIFF_SILO],
@@ -327,17 +336,19 @@ def _stage2_identify_companies(db: Session) -> list[tuple[str, str, str]]:
 
 
 def _stage3_lending_appetite(db: Session, company_name: str) -> tuple[float, bool, str]:
-    """Best-effort case-insensitive name match against fresh Cobalt
-    Intelligence SOS records -- there's no shared entity ID between
-    providers, so this is a name match, not a guaranteed join. Returns
-    (score_delta, dismiss, note)."""
-    needle = company_name.strip().lower()
-    if not needle:
+    """Name match against fresh Cobalt Intelligence SOS records via
+    entity_matching.names_match -- Interzoid fuzzy scoring when
+    configured (catches DBAs/suffix variants a raw substring check
+    misses), falling back to substring containment otherwise. There's no
+    shared entity ID between providers, so this is always a name match,
+    not a guaranteed join. Returns (score_delta, dismiss, note)."""
+    if not company_name.strip():
         return 0.0, False, "lending-appetite check skipped -- no company name to match"
 
+    interzoid_key = get_settings().interzoid_api_key
     for event in _fresh_events(db, TelemetrySource.COBALT_INTELLIGENCE, limit=100):
-        matched_name = str(event.payload.get("name", "")).strip().lower()
-        if not matched_name or (needle not in matched_name and matched_name not in needle):
+        matched_name = event.payload.get("name")
+        if not entity_matching.names_match(interzoid_key, company_name, matched_name):
             continue
 
         status = str(event.payload.get("status") or event.payload.get("standing") or "").lower()
@@ -355,18 +366,17 @@ def _stage3_lending_appetite(db: Session, company_name: str) -> tuple[float, boo
 
 
 def _stage4_contact_lookup(db: Session, company_name: str) -> tuple[str | None, str]:
-    """Best-effort name match against fresh Apollo.io org-search events.
-    Interzoid has no bulk/macro-sweep counterpart (it's a per-entity
-    lookup only, see enrichment/interzoid.py) so it isn't available at
-    this stage -- it still runs once a candidate converts to a lead, via
-    the normal per-lead Enrichment flow. Returns (phone, note)."""
-    needle = company_name.strip().lower()
-    if not needle:
+    """Name match against fresh Apollo.io org-search events via
+    entity_matching.names_match (Interzoid fuzzy scoring when configured,
+    substring fallback otherwise) -- same matching utility as stage 3.
+    Returns (phone, note)."""
+    if not company_name.strip():
         return None, "contact enrichment skipped -- no company name to match"
 
+    interzoid_key = get_settings().interzoid_api_key
     for event in _fresh_events(db, TelemetrySource.APOLLO, limit=100):
-        matched_name = str(event.payload.get("name", "")).strip().lower()
-        if not matched_name or (needle not in matched_name and matched_name not in needle):
+        matched_name = event.payload.get("name")
+        if not entity_matching.names_match(interzoid_key, company_name, matched_name):
             continue
         phone_field = event.payload.get("primary_phone")
         phone = phone_field.get("number") if isinstance(phone_field, dict) else event.payload.get("phone")

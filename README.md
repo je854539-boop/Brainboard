@@ -376,6 +376,12 @@ Everything is inert (no-ops, not errors) until configured:
   `VESSELFINDER_API_KEY` used by the telemetry/globe adapters above --
   one credential per vendor covers both its macro-sweep and
   per-lead-lookup use. `GDELT_API_KEY` is likewise shared and optional.
+  `INTERZOID_API_KEY` does triple duty: per-lead enrichment as usual,
+  plus cross-provider entity resolution (fuzzy company-name matching) in
+  the CME Macro Funnel waterfall and the River Surveillance engine -- see
+  `app/services/entity_matching.py`. Both degrade to substring matching
+  without it, so nothing breaks if it's left unset, but match recall on
+  legal-name variants (DBAs, LLC/Inc suffixes) will be materially worse.
 - **Globe data sources**: set `GFW_API_KEY` for Global Fishing Watch
   4Wings marine traffic; `GFW_DATASET` picks which underlying dataset it
   pulls (defaults to GFW's public fishing-effort dataset -- check your
