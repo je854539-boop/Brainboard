@@ -64,12 +64,35 @@ const core = new THREE.Mesh(
 );
 globeGroup.add(core);
 
-// Wireframe lat/lon grid overlay
+// Wireframe lat/lon grid overlay -- kept subtle now that real country
+// borders (below) are the crisp readable layer.
 const wireframe = new THREE.Mesh(
   new THREE.SphereGeometry(2, 32, 24),
-  new THREE.MeshBasicMaterial({ color: PANEL_BORDER, wireframe: true, transparent: true, opacity: 0.5 })
+  new THREE.MeshBasicMaterial({ color: PANEL_BORDER, wireframe: true, transparent: true, opacity: 0.25 })
 );
 globeGroup.add(wireframe);
+
+// Real country borders (Natural Earth 110m via world-atlas, pre-flattened
+// at build time by scripts/build-country-borders.js -- see that file to
+// regenerate at a finer resolution).
+async function renderCountryBorders() {
+  const rings = await fetchJSON('/static/data/country-borders.json');
+  const r = 2.001;
+  const positions = [];
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [lon1, lat1] = ring[i];
+      const [lon2, lat2] = ring[i + 1];
+      const p1 = latLonToVec3(lat1, lon1, r);
+      const p2 = latLonToVec3(lat2, lon2, r);
+      positions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const material = new THREE.LineBasicMaterial({ color: AMBER, transparent: true, opacity: 0.45 });
+  globeGroup.add(new THREE.LineSegments(geometry, material));
+}
 
 const signalMeshes = new THREE.Group();
 globeGroup.add(signalMeshes);
@@ -141,6 +164,7 @@ window.addEventListener('resize', () => {
   renderer.setSize(container.clientWidth, container.clientHeight);
 });
 
+renderCountryBorders();
 renderSourceStatus();
 renderSignals();
 animate();
