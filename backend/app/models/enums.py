@@ -103,6 +103,7 @@ class TelemetrySource(str, Enum):
     GDELT = "gdelt"
     DATALASTIC = "datalastic"
     VESSELFINDER = "vesselfinder"
+    USACE = "usace"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads /
@@ -141,6 +142,11 @@ MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.OPENFDA,
         TelemetrySource.DATALASTIC,
         TelemetrySource.VESSELFINDER,
+        TelemetrySource.GDELT,
+        TelemetrySource.GFW_4WINGS,
+        TelemetrySource.COBALT_INTELLIGENCE,
+        TelemetrySource.APOLLO,
+        TelemetrySource.USACE,
     }
 )
 

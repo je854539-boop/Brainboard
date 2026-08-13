@@ -12,22 +12,25 @@ No telephony/SignalWire integration is included by design.
 backend/
   app/
     models/           SQLAlchemy models + hardcoded enums (18 co-brokers,
-                       13 pipeline statuses, 9 macro silos, 17 data-provider sources)
+                       13 pipeline statuses, 9 macro silos, 18 data-provider sources)
     services/
       hazard_engine.py     Kaplan-Meier survival curves + Markov transition matrix +
                             time-varying Cox model (fit on the activity ledger)
       brain.py              shadow-mode logistic-regression funded-probability scorer
       pipeline.py           shared lead-creation / field-update / status-transition /
                              silo-conversion / activity-logging / Calendar+Sheet sync logic
-      silo_leadgen.py        derives SiloCandidate rows from telemetry sweeps
+      silo_leadgen.py        derives SiloCandidate rows from telemetry sweeps -- see
+                             SOURCE_TO_SILOS for which provider feeds which silo(s);
+                             CME Macro Funnel alone is fed by 12 of the 15 macro
+                             telemetry providers (see "Silo Grid" below)
       enrichment_orchestrator.py   CSV lead import + per-lead enrichment runner
       call_analysis.py       Deepgram Nova post-call transcription/diarization/sentiment
-      telemetry/            CME Globex, Import Genius, SeaVantage, UCC filings,
-                             SOS registries, Regrid, HigherGov, openFDA, Datalastic,
-                             VesselFinder adapters (macro sweeps, inert until an API
-                             key or state endpoint is configured -- openFDA feeds
-                             Healthcare & Pharma Silo lead-gen; SeaVantage/Datalastic/
-                             VesselFinder feed Oil & Gas / Refining Silo lead-gen)
+      telemetry/            15 macro-sweep adapters (CME Globex, Import Genius,
+                             SeaVantage, UCC filings, SOS registries, Regrid,
+                             HigherGov, openFDA, Datalastic, VesselFinder, GDELT,
+                             GFW 4Wings, Cobalt Intelligence, Apollo.io, USACE),
+                             inert until an API key/state endpoint/watch-list is
+                             configured
       enrichment/            Cobalt Intelligence, Interzoid, Apollo.io, openFDA,
                              Deepgram Nova, CME Globex, Import Genius, SeaVantage,
                              Regrid, HigherGov, GFW 4Wings, GDELT, Datalastic,
@@ -59,7 +62,17 @@ apps_script/
 - **Master Log** (`/master-log`) -- the pipeline command view.
 - **Silo Grid** (`/silo-grid`) -- the 9 macro silos, plus a "Run Lead-Gen
   Sweep" button that runs every configured telemetry adapter and derives
-  new SiloCandidate rows from what it ingests.
+  new SiloCandidate rows from what it ingests. **CME Macro Funnel** is
+  the widest-fed silo by design -- "Chicago commodities market swings and
+  crashes" per spec -- drawing on CME Globex (direct futures-price feed)
+  plus 11 leading-indicator sources that tend to move ahead of the price
+  itself: GDELT (conflict/supply-chain-shock news), GFW 4Wings/Datalastic/
+  VesselFinder (AIS vessel traffic on grain-export corridors), SeaVantage
+  (vessel/port-call activity), Import Genius (import/export flow), USACE
+  (lock closures/delays on the Mississippi/Illinois barge system), Regrid
+  (agricultural land data), and Cobalt Intelligence/Apollo.io (company
+  status and commodities-adjacent business discovery). See
+  `app/services/silo_leadgen.py::SOURCE_TO_SILOS` for the full mapping.
 - **Enrichment** (`/enrichment`) -- CSV lead upload and per-lead enrichment
   against all 14 providers (Cobalt Intelligence, Interzoid, Apollo.io,
   openFDA, Deepgram Nova, CME Globex, Import Genius, SeaVantage, Regrid,
@@ -198,13 +211,24 @@ Everything is inert (no-ops, not errors) until configured:
   `GOOGLE_CALENDAR_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`.
 - **Telemetry providers** (macro silo sweeps): set `CME_GLOBEX_API_KEY`,
   `IMPORT_GENIUS_API_KEY`, `SEAVANTAGE_API_KEY`, `REGRID_API_KEY`,
-  `HIGHERGOV_API_KEY`, `DATALASTIC_API_KEY`, `VESSELFINDER_API_KEY`.
-  `OPENFDA_API_KEY` is optional (openFDA works unauthenticated) and feeds
-  Healthcare & Pharma Silo lead-gen -- a recall is treated as a
-  financing-need signal. SeaVantage/Datalastic/VesselFinder all feed
-  Oil & Gas / Refining Silo lead-gen (AIS vessel activity as a financing-
-  need signal for maritime-adjacent leads). UCC filings / SOS registries
-  are per-state -- configure `STATE_ENDPOINTS` in
+  `HIGHERGOV_API_KEY`, `DATALASTIC_API_KEY`, `VESSELFINDER_API_KEY`,
+  `GFW_API_KEY`, `USACE_API_KEY`. `OPENFDA_API_KEY` and `GDELT_API_KEY`
+  are optional (both work unauthenticated/keyless at normal volume).
+  `OPENFDA_API_KEY` feeds Healthcare & Pharma Silo lead-gen -- a recall
+  is treated as a financing-need signal. SeaVantage/Datalastic/
+  VesselFinder feed Oil & Gas / Refining Silo lead-gen (AIS vessel
+  activity as a financing-need signal for maritime-adjacent leads), and
+  the same three plus GDELT/GFW 4Wings/USACE/Cobalt Intelligence/
+  Apollo.io all feed **CME Macro Funnel** lead-gen -- see the Silo Grid
+  section above for why. Two of those need extra setup beyond an API key:
+  `USACE_API_KEY` also needs `MONITORED_LOCKS` reviewed in
+  `app/services/telemetry/usace.py` (defaults to grain-corridor locks on
+  the Mississippi/Illinois Waterway), and Cobalt Intelligence's telemetry
+  sweep is empty until you populate `MONITORED_SEARCHES` in
+  `app/services/telemetry/cobalt_intelligence.py` -- it's a per-entity
+  lookup API with no bulk endpoint, so the sweep works by looping a
+  configured watch-list of (state, search-term) pairs. UCC filings / SOS
+  registries are per-state -- configure `STATE_ENDPOINTS` in
   `app/services/telemetry/{ucc_filings,sos_registries}.py`.
 - **Enrichment providers** (per-lead lookups, run at intake against leads
   sourced off the dialer): `COBALT_INTELLIGENCE_API_KEY`,

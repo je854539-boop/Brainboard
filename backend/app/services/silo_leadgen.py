@@ -17,21 +17,34 @@ from app.models.orm import SiloCandidate, TelemetryEvent
 from app.services import telemetry
 
 SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
+    # CME Macro Funnel is deliberately fed by a wide roster of sources --
+    # "Chicago commodities market swings and crashes" per spec. CME Globex
+    # is the direct futures-price feed; everything else below it is a
+    # leading indicator (conflict/supply-chain-shock news, vessel/AIS
+    # traffic on grain-export corridors, lock closures on the barge
+    # system, import/export flow, land data, and company-status signals)
+    # that tends to move ahead of the price itself showing up on Globex.
     TelemetrySource.CME_GLOBEX: [SiloName.CME_MACRO_FUNNEL, SiloName.TARIFF_SILO],
+    TelemetrySource.GDELT: [SiloName.CME_MACRO_FUNNEL],
+    TelemetrySource.GFW_4WINGS: [SiloName.CME_MACRO_FUNNEL],
+    TelemetrySource.SEAVANTAGE: [SiloName.OIL_GAS_REFINING_SILO, SiloName.CME_MACRO_FUNNEL],
     TelemetrySource.IMPORT_GENIUS: [
         SiloName.HEAVY_MACHINERY_INDUSTRIAL_EQUIPMENT_SILO,
         SiloName.FOOD_PROCESSING_FABRICATION_SILO,
         SiloName.TARIFF_SILO,
+        SiloName.CME_MACRO_FUNNEL,
     ],
-    TelemetrySource.SEAVANTAGE: [SiloName.OIL_GAS_REFINING_SILO],
-    TelemetrySource.DATALASTIC: [SiloName.OIL_GAS_REFINING_SILO],
-    TelemetrySource.VESSELFINDER: [SiloName.OIL_GAS_REFINING_SILO],
+    TelemetrySource.DATALASTIC: [SiloName.OIL_GAS_REFINING_SILO, SiloName.CME_MACRO_FUNNEL],
+    TelemetrySource.VESSELFINDER: [SiloName.OIL_GAS_REFINING_SILO, SiloName.CME_MACRO_FUNNEL],
+    TelemetrySource.REGRID: [SiloName.AGRICULTURE_GRAIN_HANDLING_SILO, SiloName.CME_MACRO_FUNNEL],
+    TelemetrySource.COBALT_INTELLIGENCE: [SiloName.CME_MACRO_FUNNEL],
+    TelemetrySource.APOLLO: [SiloName.CME_MACRO_FUNNEL],
+    TelemetrySource.USACE: [SiloName.CME_MACRO_FUNNEL],
     TelemetrySource.UCC_FILINGS: [
         SiloName.FOOD_PROCESSING_FABRICATION_SILO,
         SiloName.HEAVY_MACHINERY_INDUSTRIAL_EQUIPMENT_SILO,
     ],
     TelemetrySource.SOS_REGISTRIES: [SiloName.HEALTHCARE_PHARMA_SILO, SiloName.ECOMMERCE_FULFILLMENT_SILO],
-    TelemetrySource.REGRID: [SiloName.AGRICULTURE_GRAIN_HANDLING_SILO],
     TelemetrySource.HIGHERGOV: [SiloName.HIGHERGOV_FUNNEL],
     # A recall often means a business needs financing to cover remediation,
     # inventory write-off, or legal costs -- a genuine lead-gen signal.
