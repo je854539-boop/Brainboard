@@ -25,8 +25,8 @@
   --bg-olive: #1a1e18;
   --panel-bg: #16181b;
   --panel-border: #2d333b;
-  --crimson: #ff3333;
-  --amber: #ffb000;
+  --crimson: #ff2b4d;
+  --amber: #00e0ff;
   --green: #4aff7a;
   --blue: #4aa3ff;
   --teal: #2dd4bf;
@@ -130,7 +130,7 @@ body::before {
 }
 
 .tactical-table tbody tr:hover {
-  background-color: rgba(255, 176, 0, 0.05);
+  background-color: rgba(0, 224, 255, 0.05);
 }
 
 .status-badge {

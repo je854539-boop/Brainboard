@@ -41,7 +41,7 @@
 import * as THREE from '/static/vendor/three/three.module.min.js';
 import { CSS2DRenderer, CSS2DObject } from '/static/vendor/three/CSS2DRenderer.js';
 
-const AMBER = 0xffb000, CRIMSON = 0xff3333, GREEN = 0x4aff7a, BLUE = 0x4aa3ff, TEAL = 0x2dd4bf, PANEL_BORDER = 0x2d333b, BG = 0x121417;
+const AMBER = 0x00e0ff, CRIMSON = 0xff2b4d, GREEN = 0x4aff7a, BLUE = 0x4aa3ff, TEAL = 0x2dd4bf, BG = 0x121417;
 const LABEL_ZOOM_DISTANCE = 3.6; // camera distance below which city/port/capital labels appear
 const MIN_ZOOM = 2.6, MAX_ZOOM = 9;
 
@@ -152,7 +152,7 @@ globeGroup.add(core);
 // borders (below) are the crisp readable layer.
 const wireframe = new THREE.Mesh(
   new THREE.SphereGeometry(2, 32, 24),
-  new THREE.MeshBasicMaterial({ color: PANEL_BORDER, wireframe: true, transparent: true, opacity: 0.25 })
+  new THREE.MeshBasicMaterial({ color: AMBER, wireframe: true, transparent: true, opacity: 0.2 })
 );
 globeGroup.add(wireframe);
 
