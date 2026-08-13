@@ -84,6 +84,18 @@ class SignalWireAdapter:
             response.raise_for_status()
             return response.json()
 
+    def verify_credentials(self) -> dict:
+        """Fetches the Account resource -- confirms project_id/api_token/
+        space_url are actually valid together, with no cost and no need
+        for a public callback URL (unlike place_call, this never gets
+        called back into)."""
+        if not self.enabled:
+            raise RuntimeError("SignalWire is not configured (project_id/api_token/space_url)")
+        with self._client() as client:
+            response = client.get(f"{self._base_url}.json")
+            response.raise_for_status()
+            return response.json()
+
     def get_call(self, call_sid: str) -> dict:
         if not self.enabled:
             raise RuntimeError("SignalWire is not configured (project_id/api_token/space_url)")
