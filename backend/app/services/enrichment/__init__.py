@@ -3,6 +3,7 @@ from app.services.enrichment.apollo import ApolloAdapter
 from app.services.enrichment.base import EnrichmentAdapter, EnrichmentQuery
 from app.services.enrichment.cme_globex import CMEGlobexEnrichmentAdapter
 from app.services.enrichment.cobalt_intelligence import CobaltIntelligenceAdapter
+from app.services.enrichment.datalastic import DatalasticEnrichmentAdapter
 from app.services.enrichment.deepgram_nova import DeepgramNovaAdapter
 from app.services.enrichment.gdelt import GDELTEnrichmentAdapter
 from app.services.enrichment.gfw_4wings import GFW4WingsEnrichmentAdapter
@@ -12,6 +13,7 @@ from app.services.enrichment.interzoid import InterzoidAdapter
 from app.services.enrichment.openfda import OpenFDAAdapter
 from app.services.enrichment.regrid import RegridEnrichmentAdapter
 from app.services.enrichment.seavantage import SeaVantageEnrichmentAdapter
+from app.services.enrichment.vesselfinder import VesselFinderEnrichmentAdapter
 
 
 def all_enrichment_adapters() -> list[EnrichmentAdapter]:
@@ -33,6 +35,8 @@ def all_enrichment_adapters() -> list[EnrichmentAdapter]:
         HigherGovEnrichmentAdapter(api_key=settings.highergov_api_key),
         GFW4WingsEnrichmentAdapter(api_key=settings.gfw_api_key),
         GDELTEnrichmentAdapter(api_key=settings.gdelt_api_key),
+        DatalasticEnrichmentAdapter(api_key=settings.datalastic_api_key),
+        VesselFinderEnrichmentAdapter(api_key=settings.vesselfinder_api_key),
     ]
 
 
@@ -51,5 +55,7 @@ __all__ = [
     "HigherGovEnrichmentAdapter",
     "GFW4WingsEnrichmentAdapter",
     "GDELTEnrichmentAdapter",
+    "DatalasticEnrichmentAdapter",
+    "VesselFinderEnrichmentAdapter",
     "all_enrichment_adapters",
 ]

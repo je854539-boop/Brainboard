@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     # ID per your GFW API plan -- see app/services/globe/gfw_4wings.py.
     gfw_dataset: str = "public-global-fishing-effort:latest"
     gdelt_api_key: str = ""  # optional -- GDELT's GEO 2.0 API is free/keyless at normal volume
+    datalastic_api_key: str = ""  # Datalastic AIS vessel-tracking API (datalastic.com)
+    vesselfinder_api_key: str = ""  # VesselFinder AIS vessel-tracking API (vesselfinder.com)
 
     cobalt_intelligence_api_key: str = ""
     interzoid_api_key: str = ""

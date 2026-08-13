@@ -24,6 +24,8 @@ SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
         SiloName.TARIFF_SILO,
     ],
     TelemetrySource.SEAVANTAGE: [SiloName.OIL_GAS_REFINING_SILO],
+    TelemetrySource.DATALASTIC: [SiloName.OIL_GAS_REFINING_SILO],
+    TelemetrySource.VESSELFINDER: [SiloName.OIL_GAS_REFINING_SILO],
     TelemetrySource.UCC_FILINGS: [
         SiloName.FOOD_PROCESSING_FABRICATION_SILO,
         SiloName.HEAVY_MACHINERY_INDUSTRIAL_EQUIPMENT_SILO,

@@ -12,7 +12,7 @@ No telephony/SignalWire integration is included by design.
 backend/
   app/
     models/           SQLAlchemy models + hardcoded enums (18 co-brokers,
-                       13 pipeline statuses, 9 macro silos, 15 data-provider sources)
+                       13 pipeline statuses, 9 macro silos, 17 data-provider sources)
     services/
       hazard_engine.py     Kaplan-Meier survival curves + Markov transition matrix +
                             time-varying Cox model (fit on the activity ledger)
@@ -23,15 +23,18 @@ backend/
       enrichment_orchestrator.py   CSV lead import + per-lead enrichment runner
       call_analysis.py       Deepgram Nova post-call transcription/diarization/sentiment
       telemetry/            CME Globex, Import Genius, SeaVantage, UCC filings,
-                             SOS registries, Regrid, HigherGov, openFDA adapters (macro
-                             sweeps, inert until an API key or state endpoint is
-                             configured -- openFDA feeds Healthcare & Pharma Silo lead-gen)
+                             SOS registries, Regrid, HigherGov, openFDA, Datalastic,
+                             VesselFinder adapters (macro sweeps, inert until an API
+                             key or state endpoint is configured -- openFDA feeds
+                             Healthcare & Pharma Silo lead-gen; SeaVantage/Datalastic/
+                             VesselFinder feed Oil & Gas / Refining Silo lead-gen)
       enrichment/            Cobalt Intelligence, Interzoid, Apollo.io, openFDA,
                              Deepgram Nova, CME Globex, Import Genius, SeaVantage,
-                             Regrid, HigherGov, GFW 4Wings, GDELT -- 12 providers run
-                             per lead at intake to surface what the dialer call missed
-      globe/                 GFW 4Wings (marine traffic) + GDELT (conflict zones)
-                             geospatial adapters
+                             Regrid, HigherGov, GFW 4Wings, GDELT, Datalastic,
+                             VesselFinder -- 14 providers run per lead at intake to
+                             surface what the dialer call missed
+      globe/                 GFW 4Wings + Datalastic + VesselFinder (marine traffic,
+                             AIS) + GDELT (conflict zones) geospatial adapters
       google/
         sheets_sync.py       bidirectional Master Log V2 + 9 silo tab sync
         calendar_sync.py     Column K/L -> Calendar event sync via lead_uid
@@ -58,13 +61,16 @@ apps_script/
   Sweep" button that runs every configured telemetry adapter and derives
   new SiloCandidate rows from what it ingests.
 - **Enrichment** (`/enrichment`) -- CSV lead upload and per-lead enrichment
-  against all 12 providers (Cobalt Intelligence, Interzoid, Apollo.io,
+  against all 14 providers (Cobalt Intelligence, Interzoid, Apollo.io,
   openFDA, Deepgram Nova, CME Globex, Import Genius, SeaVantage, Regrid,
-  HigherGov, GFW 4Wings, GDELT) -- the point is surfacing what a dialer
-  call didn't cover before the follow-up. CME Globex and GFW 4Wings aren't
-  company-searchable APIs, so their "enrichment" is macro/regional context
-  attached to the lead rather than a personalized lookup -- flagged as
-  such in the result payload.
+  HigherGov, GFW 4Wings, GDELT, Datalastic, VesselFinder) -- the point is
+  surfacing what a dialer call didn't cover before the follow-up. CME
+  Globex and GFW 4Wings aren't company-searchable APIs, so their
+  "enrichment" is macro/regional context attached to the lead rather than
+  a personalized lookup; Datalastic and VesselFinder are vessel-identity
+  APIs, so their "enrichment" is a best-effort vessel-name match against
+  the business name, not a confirmed company-to-fleet lookup -- both
+  caveats flagged directly in the result payload.
 - **Calls** (`/calls`) -- upload a recorded call (or paste a URL to one
   already hosted) and Deepgram Nova transcribes, diarizes, summarizes, and
   sentiment-scores it. Analyzes recordings after the fact only -- no
@@ -72,8 +78,9 @@ apps_script/
   tag a call with a lead so it lands on that lead's activity ledger.
 - **Brain** (`/brain`) -- the shadow-mode scoring engine (see below).
 - **Globe** (`/globe`) -- a spinning, zoomable 3D globe (vendored Three.js)
-  plotting GFW 4Wings marine traffic and GDELT conflict-zone events (last
-  24h), with country border outlines (Natural Earth 50m via `world-atlas`),
+  plotting GFW 4Wings, Datalastic, and VesselFinder marine/AIS traffic
+  plus GDELT conflict-zone events (last 24h), with country border
+  outlines (Natural Earth 50m via `world-atlas`),
   state/province ("admin-1") border outlines for every country Natural
   Earth tracks them for -- including all 50 US states + DC -- major global
   trade corridors, ~45 major world ocean container ports, ~23 USACE inland
@@ -84,8 +91,9 @@ apps_script/
   compensate so point markers don't balloon at close range, and only show
   on the camera-facing hemisphere). The borders/routes/ports/capitals
   layers are static reference geometry pre-flattened at build time -- see
-  "Frontend dependencies" below -- not live-routed AIS shipping data or a
-  live USACE feed (that's what the GFW signal dots are for).
+  "Frontend dependencies" below -- not live-routed shipping data or a
+  live USACE feed (that's what the amber marine-traffic signal dots,
+  fed by GFW 4Wings/Datalastic/VesselFinder, are for).
 - **Analytics** (`/analytics`) -- Kaplan-Meier curves, Markov transition
   matrix, deal-velocity bottlenecks, silo friction correlation, and the
   time-varying Cox engagement-hazard panel.
@@ -190,26 +198,37 @@ Everything is inert (no-ops, not errors) until configured:
   `GOOGLE_CALENDAR_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`.
 - **Telemetry providers** (macro silo sweeps): set `CME_GLOBEX_API_KEY`,
   `IMPORT_GENIUS_API_KEY`, `SEAVANTAGE_API_KEY`, `REGRID_API_KEY`,
-  `HIGHERGOV_API_KEY`. `OPENFDA_API_KEY` is optional (openFDA works
-  unauthenticated) and feeds Healthcare & Pharma Silo lead-gen -- a
-  recall is treated as a financing-need signal. UCC filings / SOS
-  registries are per-state -- configure `STATE_ENDPOINTS` in
+  `HIGHERGOV_API_KEY`, `DATALASTIC_API_KEY`, `VESSELFINDER_API_KEY`.
+  `OPENFDA_API_KEY` is optional (openFDA works unauthenticated) and feeds
+  Healthcare & Pharma Silo lead-gen -- a recall is treated as a
+  financing-need signal. SeaVantage/Datalastic/VesselFinder all feed
+  Oil & Gas / Refining Silo lead-gen (AIS vessel activity as a financing-
+  need signal for maritime-adjacent leads). UCC filings / SOS registries
+  are per-state -- configure `STATE_ENDPOINTS` in
   `app/services/telemetry/{ucc_filings,sos_registries}.py`.
 - **Enrichment providers** (per-lead lookups, run at intake against leads
   sourced off the dialer): `COBALT_INTELLIGENCE_API_KEY`,
   `INTERZOID_API_KEY`, `APOLLO_API_KEY`, `OPENFDA_API_KEY` (optional),
   `DEEPGRAM_API_KEY`, plus the same `CME_GLOBEX_API_KEY`,
   `IMPORT_GENIUS_API_KEY`, `SEAVANTAGE_API_KEY`, `REGRID_API_KEY`,
-  `HIGHERGOV_API_KEY`, `GFW_API_KEY` used by the telemetry/globe adapters
-  above -- one credential per vendor covers both its macro-sweep and
+  `HIGHERGOV_API_KEY`, `GFW_API_KEY`, `DATALASTIC_API_KEY`,
+  `VESSELFINDER_API_KEY` used by the telemetry/globe adapters above --
+  one credential per vendor covers both its macro-sweep and
   per-lead-lookup use. `GDELT_API_KEY` is likewise shared and optional.
 - **Globe data sources**: set `GFW_API_KEY` for Global Fishing Watch
   4Wings marine traffic; `GFW_DATASET` picks which underlying dataset it
   pulls (defaults to GFW's public fishing-effort dataset -- check your
   API plan for the exact ID if you have access to broader non-fishing
-  AIS traffic). GDELT's GEO 2.0 API (conflict-zone events) is free and
-  keyless, so it's live by default with no configuration -- `GDELT_API_KEY` is
-  reserved for future use only.
+  AIS traffic). `DATALASTIC_API_KEY` and `VESSELFINDER_API_KEY` add two
+  more AIS vessel-position sources to the same amber marine-traffic
+  layer -- both adapters ship with a default AOI (Houston Ship Channel /
+  Gulf of Mexico approach) and an endpoint/response shape I couldn't
+  verify against live docs in this environment, so confirm both against
+  your actual API plan before relying on them (see the module docstrings
+  in `app/services/{globe,telemetry,enrichment}/{datalastic,vesselfinder}.py`).
+  GDELT's GEO 2.0 API (conflict-zone events) is free and keyless, so it's
+  live by default with no configuration -- `GDELT_API_KEY` is reserved
+  for future use only.
 - **Apps Script**: open the Master Log V2 spreadsheet's Apps Script editor,
   paste in `apps_script/Code.gs`, set Script Properties `BACKEND_BASE_URL`
   and `WEBHOOK_SHARED_SECRET` (must match the backend's

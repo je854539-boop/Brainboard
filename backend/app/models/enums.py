@@ -101,6 +101,8 @@ class TelemetrySource(str, Enum):
     HIGHERGOV = "highergov"
     GFW_4WINGS = "gfw_4wings"
     GDELT = "gdelt"
+    DATALASTIC = "datalastic"
+    VESSELFINDER = "vesselfinder"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads /
@@ -120,6 +122,8 @@ ENRICHMENT_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.HIGHERGOV,
         TelemetrySource.GFW_4WINGS,
         TelemetrySource.GDELT,
+        TelemetrySource.DATALASTIC,
+        TelemetrySource.VESSELFINDER,
     }
 )
 
@@ -135,11 +139,20 @@ MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.REGRID,
         TelemetrySource.HIGHERGOV,
         TelemetrySource.OPENFDA,
+        TelemetrySource.DATALASTIC,
+        TelemetrySource.VESSELFINDER,
     }
 )
 
 # Geospatial sources plotted on the 3D globe.
-GLOBE_SOURCES: frozenset[TelemetrySource] = frozenset({TelemetrySource.GFW_4WINGS, TelemetrySource.GDELT})
+GLOBE_SOURCES: frozenset[TelemetrySource] = frozenset(
+    {
+        TelemetrySource.GFW_4WINGS,
+        TelemetrySource.GDELT,
+        TelemetrySource.DATALASTIC,
+        TelemetrySource.VESSELFINDER,
+    }
+)
 
 
 class ActivityEventType(str, Enum):
