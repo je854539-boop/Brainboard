@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Call Analysis // Deepgram Nova</h1>
+</div>
+
+<p class="text-[10px] text-[var(--text-dim)] mb-4 max-w-3xl">
+  Transcribes, diarizes, and scores sentiment on an already-recorded call -- upload a file or paste a URL to one
+  already hosted (e.g. a dossier recording). This analyzes recordings after the fact; it does not place, receive, or
+  route calls. Optionally tag a call with a lead so the transcript/summary land on that lead's activity ledger.
+</p>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+  <div class="tactical-panel p-4 lg:col-span-1">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Upload Recording</div>
+    <form id="upload-form" class="flex flex-col gap-2">
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">Associate with Lead (optional)</label>
+      <select name="lead_uid" id="upload-lead-select" class="tactical-select w-full">
+        <option value="">— none —</option>
+      </select>
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)] mt-1">Audio File</label>
+      <input type="file" name="file" accept="audio/*" required class="tactical-select w-full" />
+      <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)] mt-1">Upload &amp; Analyze</button>
+    </form>
+    <div id="upload-result" class="mt-3 text-[10px] leading-relaxed"></div>
+  </div>
+
+  <div class="tactical-panel p-4 lg:col-span-1">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Analyze From URL</div>
+    <form id="url-form" class="flex flex-col gap-2">
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">Associate with Lead (optional)</label>
+      <select name="lead_uid" id="url-lead-select" class="tactical-select w-full">
+        <option value="">— none —</option>
+      </select>
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)] mt-1">Recording URL</label>
+      <input type="url" name="audio_url" required placeholder="https://..." class="tactical-select w-full" />
+      <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)] mt-1">Analyze</button>
+    </form>
+    <div id="url-result" class="mt-3 text-[10px] leading-relaxed"></div>
+  </div>
+
+  <div class="tactical-panel p-4 lg:col-span-1">
+    <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-2">Deepgram Nova Status</div>
+    <div id="provider-status" class="text-[10px]"></div>
+  </div>
+</div>
+
+<div class="tactical-panel scroll-panel">
+  <div class="stencil-header text-[var(--amber)] text-xs p-4 pb-2">Analyzed Calls</div>
+  <table class="tactical-table">
+    <thead><tr><th>Recording</th><th>Lead</th><th>Status</th><th>Duration</th><th>Sentiment</th><th>Transcript / Summary</th></tr></thead>
+    <tbody id="calls-body"><tr><td colspan="6" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<script>
+const AMBER = "#ffb000", CRIMSON = "#ff3333", GREEN = "#4aff7a";
+let leadsCache = [];
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail ? JSON.stringify(data.detail) : `${url} -> ${res.status}`);
+  return data;
+}
+
+async function renderProviderStatus() {
+  const sources = await fetchJSON("/api/enrichment/sources");
+  const dg = sources.find(s => s.source === "deepgram_nova");
+  document.getElementById("provider-status").innerHTML = dg ? `
+    <div class="tactical-panel px-2 py-1.5 flex items-center justify-between">
+      <span class="uppercase tracking-wide">deepgram_nova</span>
+      <span class="status-badge ${dg.enabled ? 'status-badge--funded' : 'status-badge--attrition'}">${dg.enabled ? 'LIVE' : 'OFF'}</span>
+    </div>
+    ${!dg.enabled ? '<div class="text-[var(--text-dim)] mt-2">Set DEEPGRAM_API_KEY to enable.</div>' : ''}
+  ` : '';
+}
+
+async function renderLeadSelects() {
+  leadsCache = await fetchJSON("/api/master-log");
+  const options = leadsCache.slice(0, 100).map(l => `<option value="${l.lead_uid}">${l.business_name}</option>`).join("");
+  document.getElementById("upload-lead-select").innerHTML = '<option value="">— none —</option>' + options;
+  document.getElementById("url-lead-select").innerHTML = '<option value="">— none —</option>' + options;
+}
+
+function leadName(leadUid) {
+  if (!leadUid) return "—";
+  const lead = leadsCache.find(l => l.lead_uid === leadUid);
+  return lead ? lead.business_name : leadUid.slice(0, 8);
+}
+
+function sentimentBadge(sentiment) {
+  if (!sentiment) return "—";
+  const avg = sentiment.average || sentiment;
+  const label = avg && (avg.sentiment || avg.label);
+  if (!label) return `<span class="text-[var(--text-dim)]">see payload</span>`;
+  const color = label === "positive" ? GREEN : label === "negative" ? CRIMSON : AMBER;
+  return `<span class="status-badge" style="border-color:${color}; color:${color}">${label}</span>`;
+}
+
+async function renderCalls() {
+  const calls = await fetchJSON("/api/calls");
+  document.getElementById("calls-body").innerHTML = calls.map(c => {
+    const statusColor = c.status === "completed" ? "status-badge--funded" : c.status === "failed" ? "status-badge--attrition" : "status-badge--active";
+    const preview = c.status === "completed"
+      ? `<div class="max-w-[420px]"><div class="truncate" title="${(c.transcript || '').replace(/"/g,'&quot;')}">${c.transcript || '(empty transcript)'}</div>${c.summary ? `<div class="text-[var(--amber)] truncate mt-0.5">${c.summary}</div>` : ''}</div>`
+      : c.status === "failed" ? `<span class="text-[var(--crimson)]">${c.error || 'failed'}</span>` : `<span class="text-[var(--text-dim)]">processing...</span>`;
+    return `
+      <tr>
+        <td class="font-medium">${c.source_label}</td>
+        <td>${leadName(c.lead_uid)}</td>
+        <td><span class="status-badge ${statusColor}">${c.status}</span></td>
+        <td class="hud-value">${c.duration_seconds ? c.duration_seconds.toFixed(0) + 's' : '—'}</td>
+        <td>${sentimentBadge(c.sentiment)}</td>
+        <td>${preview}</td>
+      </tr>`;
+  }).join("") || `<tr><td colspan="6" class="text-center text-[var(--text-dim)] py-6">No calls analyzed yet.</td></tr>`;
+}
+
+document.getElementById("upload-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const formData = new FormData(e.target);
+  const resultDiv = document.getElementById("upload-result");
+  resultDiv.textContent = "Uploading & analyzing...";
+  try {
+    const data = await fetchJSON("/api/calls/upload", { method: "POST", body: formData });
+    resultDiv.innerHTML = data.status === "completed"
+      ? `<span class="hud-value--nominal">Analysis complete.</span>`
+      : `<span class="hud-value--hazard">${data.status}: ${data.error || ''}</span>`;
+    e.target.reset();
+    renderCalls();
+  } catch (err) {
+    resultDiv.innerHTML = `<span class="hud-value--hazard">${err.message}</span>`;
+  }
+});
+
+document.getElementById("url-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const payload = { audio_url: form.audio_url.value, lead_uid: form.lead_uid.value || null };
+  const resultDiv = document.getElementById("url-result");
+  resultDiv.textContent = "Analyzing...";
+  try {
+    const data = await fetchJSON("/api/calls/from-url", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    resultDiv.innerHTML = data.status === "completed"
+      ? `<span class="hud-value--nominal">Analysis complete.</span>`
+      : `<span class="hud-value--hazard">${data.status}: ${data.error || ''}</span>`;
+    form.reset();
+    renderCalls();
+  } catch (err) {
+    resultDiv.innerHTML = `<span class="hud-value--hazard">${err.message}</span>`;
+  }
+});
+
+(async () => {
+  await renderLeadSelects();
+  await Promise.all([renderProviderStatus(), renderCalls()]);
+})();
+</script>
+{% endblock %}

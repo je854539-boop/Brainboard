@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.enums import CoBroker, MasterLogStatus, SiloCandidateStatus, SiloName, TelemetrySource
+from app.models.enums import CallAnalysisStatus, CoBroker, MasterLogStatus, SiloCandidateStatus, SiloName, TelemetrySource
 
 
 class HazardSnapshotOut(BaseModel):
@@ -150,3 +150,27 @@ class GlobeSignalOut(BaseModel):
     payload: dict
     entity_uid: uuid.UUID | None
     observed_at: datetime
+
+
+class CallRecordingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    lead_uid: uuid.UUID | None
+    source_label: str
+    audio_url: str | None
+    status: CallAnalysisStatus
+    transcript: str | None
+    summary: str | None
+    sentiment: dict | None
+    speakers: dict | list | None
+    duration_seconds: float | None
+    error: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class CallFromUrlRequest(BaseModel):
+    audio_url: str
+    lead_uid: uuid.UUID | None = None
+    source_label: str | None = None

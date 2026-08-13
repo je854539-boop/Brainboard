@@ -21,6 +21,7 @@ backend/
                              silo-conversion / activity-logging / Calendar+Sheet sync logic
       silo_leadgen.py        derives SiloCandidate rows from telemetry sweeps
       enrichment_orchestrator.py   CSV lead import + per-lead enrichment runner
+      call_analysis.py       Deepgram Nova post-call transcription/diarization/sentiment
       telemetry/            CME Globex, Import Genius, SeaVantage, UCC filings,
                              SOS registries, Regrid, HigherGov, openFDA adapters (macro
                              sweeps, inert until an API key or state endpoint is
@@ -37,7 +38,7 @@ backend/
         drive_harvester.py   `[Business Name] | [UUID]/FINANCIALS` OCR harvester
     routers/            dashboard pages, HTMX partials, JSON API, Apps Script webhooks
     templates/           Jinja2 + Tailwind + HTMX + Alpine, tactical/military UI --
-                         Intake, Master Log, Silo Grid, Enrichment, Brain, Globe,
+                         Intake, Master Log, Silo Grid, Enrichment, Calls, Brain, Globe,
                          Analytics, Surveillance
   alembic/               DB migrations
   seed.py                 demo data generator (dev/staging only)
@@ -64,6 +65,11 @@ apps_script/
   company-searchable APIs, so their "enrichment" is macro/regional context
   attached to the lead rather than a personalized lookup -- flagged as
   such in the result payload.
+- **Calls** (`/calls`) -- upload a recorded call (or paste a URL to one
+  already hosted) and Deepgram Nova transcribes, diarizes, summarizes, and
+  sentiment-scores it. Analyzes recordings after the fact only -- no
+  telephony integration, it doesn't place/receive/route calls. Optionally
+  tag a call with a lead so it lands on that lead's activity ledger.
 - **Brain** (`/brain`) -- the shadow-mode scoring engine (see below).
 - **Globe** (`/globe`) -- a spinning 3D globe (vendored Three.js) plotting
   GFW 4Wings marine traffic and GDELT conflict-zone events (last 24h).

@@ -156,6 +156,7 @@ class ActivityEventType(str, Enum):
     CLICK = "click"
     ENRICHMENT = "enrichment"
     SHEET_SYNC = "sheet_sync"
+    CALL_ANALYSIS = "call_analysis"
 
 
 class ActivitySource(str, Enum):
@@ -163,6 +164,12 @@ class ActivitySource(str, Enum):
     API = "api"
     WEBHOOK_SHEET = "webhook_sheet"
     SYSTEM = "system"
+
+
+class CallAnalysisStatus(str, Enum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class BrainMode(str, Enum):

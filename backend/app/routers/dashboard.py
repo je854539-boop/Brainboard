@@ -64,3 +64,8 @@ def brain_page(request: Request):
 @router.get("/globe")
 def globe_page(request: Request):
     return templates.TemplateResponse(request, "globe.html", {"active_nav": "globe"})
+
+
+@router.get("/calls")
+def calls_page(request: Request):
+    return templates.TemplateResponse(request, "calls.html", {"active_nav": "calls"})

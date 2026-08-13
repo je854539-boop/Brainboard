@@ -1,7 +1,19 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import analytics, brain, dashboard, enrichment, globe, master_log, partials, silo, surveillance, webhooks
+from app.routers import (
+    analytics,
+    brain,
+    calls,
+    dashboard,
+    enrichment,
+    globe,
+    master_log,
+    partials,
+    silo,
+    surveillance,
+    webhooks,
+)
 
 app = FastAPI(title="Brainboard Command Deck")
 
@@ -17,6 +29,7 @@ app.include_router(webhooks.router)
 app.include_router(enrichment.router)
 app.include_router(brain.router)
 app.include_router(globe.router)
+app.include_router(calls.router)
 
 
 @app.get("/healthz")

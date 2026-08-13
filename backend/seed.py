@@ -14,6 +14,7 @@ from app.models.enums import (
     TERMINAL_ATTRITION_STATUSES,
     ActivityEventType,
     ActivitySource,
+    CallAnalysisStatus,
     CoBroker,
     MasterLogStatus,
     SiloCandidateStatus,
@@ -21,6 +22,7 @@ from app.models.enums import (
     TelemetrySource,
 )
 from app.models.orm import (
+    CallRecording,
     EnrichmentResult,
     GlobeSignal,
     LeadActivityEvent,
@@ -258,9 +260,56 @@ def seed_globe(db) -> None:
     db.commit()
 
 
+def seed_calls(db, leads: list[MasterLogEntry]) -> None:
+    """Fabricated demo transcripts (clearly labeled) so the Call Analysis
+    section isn't empty out of the box -- these were never sent to
+    Deepgram, they simulate what a completed analysis looks like."""
+    sample_leads = random.sample(leads, k=min(3, len(leads)))
+    demo_transcripts = [
+        (
+            "Thanks for calling back. Yeah, revenue's been steady, we're looking at maybe 150k to cover a "
+            "new refrigeration unit. [DEMO SEED DATA -- fabricated transcript, not a real call]",
+            "Lead requesting ~$150k for refrigeration equipment; steady revenue reported.",
+            "positive",
+        ),
+        (
+            "Honestly we already have two other offers on the table, not sure this is worth my time. "
+            "[DEMO SEED DATA -- fabricated transcript, not a real call]",
+            "Lead has competing offers; price-sensitive, low urgency signaled.",
+            "negative",
+        ),
+        (
+            "Sure, send over the paperwork, we can look at it next week. [DEMO SEED DATA -- fabricated transcript, not a real call]",
+            "Lead agreed to review paperwork next week.",
+            "neutral",
+        ),
+    ]
+    for lead, (transcript, summary, sentiment_label) in zip(sample_leads, demo_transcripts):
+        db.add(CallRecording(
+            lead_uid=lead.lead_uid,
+            source_label=f"dialer-call-{lead.business_name.lower().replace(' ', '-')}.wav",
+            status=CallAnalysisStatus.COMPLETED,
+            transcript=transcript,
+            summary=summary,
+            sentiment={"average": {"sentiment": sentiment_label, "sentiment_score": round(random.uniform(0.2, 0.8), 2)}, "demo": True},
+            speakers={"demo": True, "note": "diarization omitted from fabricated demo data"},
+            duration_seconds=round(random.uniform(45, 300), 1),
+            created_at=NOW - dt.timedelta(hours=random.uniform(1, 72)),
+            completed_at=NOW - dt.timedelta(hours=random.uniform(0, 1)),
+        ))
+    db.add(CallRecording(
+        source_label="unassociated-inbound-call.wav",
+        status=CallAnalysisStatus.FAILED,
+        error="deepgram_nova is not configured (no API key) [DEMO SEED DATA]",
+        created_at=NOW - dt.timedelta(hours=2),
+    ))
+    db.commit()
+
+
 def main():
     db = SessionLocal()
     try:
+        db.query(CallRecording).delete()
         db.query(EnrichmentResult).delete()
         db.query(GlobeSignal).delete()
         db.query(LeadActivityEvent).delete()
@@ -275,13 +324,14 @@ def main():
         seed_telemetry(db)
         seed_enrichment(db, leads)
         seed_globe(db)
+        seed_calls(db, leads)
 
         refreshed = hazard_engine.refresh_hazard_snapshots(db)
         scored = brain.refresh_shadow_scores(db)
         cox = hazard_engine.fit_cox_time_varying(db)
 
         print(f"Seeded {len(BUSINESS_NAME_POOL)} leads, silo candidates across {len(list(SiloName))} silos, "
-              f"demo telemetry/enrichment/globe signals.")
+              f"demo telemetry/enrichment/globe signals/call recordings.")
         print(f"Refreshed {refreshed} hazard snapshots, {scored} brain shadow scores.")
         print(f"Cox time-varying model: {'fitted' if cox['fitted'] else 'not fitted -- ' + cox['reason']}")
     finally:

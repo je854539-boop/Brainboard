@@ -12,6 +12,7 @@ from app.models.enums import (
     ActivityEventType,
     ActivitySource,
     BrainMode,
+    CallAnalysisStatus,
     CoBroker,
     MasterLogStatus,
     SiloCandidateStatus,
@@ -252,3 +253,32 @@ class GlobeSignal(Base):
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     entity_uid: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class CallRecording(Base):
+    """A post-call analysis run via Deepgram Nova on an already-recorded
+    call (uploaded file or a URL to one already hosted, e.g. in a Drive
+    dossier). This analyzes recordings after the fact -- it does not
+    place, receive, or route calls; Brainboard has no telephony
+    integration. `lead_uid` is nullable because a call may get analyzed
+    before the lead is formally intaken off the dialer."""
+
+    __tablename__ = "call_recordings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_uid: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("master_log_entries.lead_uid", ondelete="SET NULL"), index=True
+    )
+    source_label: Mapped[str] = mapped_column(String(512), nullable=False)
+    audio_url: Mapped[str | None] = mapped_column(String(1024))
+    status: Mapped[CallAnalysisStatus] = mapped_column(
+        _pg_enum(CallAnalysisStatus, "call_analysis_status"), nullable=False, default=CallAnalysisStatus.PENDING
+    )
+    transcript: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    sentiment: Mapped[dict | None] = mapped_column(JSONB)
+    speakers: Mapped[dict | None] = mapped_column(JSONB)
+    duration_seconds: Mapped[float | None] = mapped_column(Numeric(10, 2))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
