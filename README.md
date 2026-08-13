@@ -228,13 +228,18 @@ apps_script/
   - Placing a call picks a caller-ID number local to the lead's area
     code where possible. With a `pitch_recording_url` set on the campaign
     (a real recording of the broker pitching -- deliberately not a
-    synthetic/AI voice, see below), an answered call plays it and gathers
-    one keypress: "1" bridges straight to that campaign's follow-up
-    number (`caller_connect_number`); anything else, or no input, ends
-    the call politely instead of leaving the lead stranded. No recording
-    configured = bridges immediately on answer (legacy/simple mode). Run
-    several campaigns with different `caller_connect_number` values to
-    work multiple phone lines at once.
+    synthetic/AI voice, see below), an answered call plays it as the
+    opener, then always bridges straight to that campaign's follow-up
+    number (`caller_connect_number`) -- no keypress gate. A lead who
+    hangs up during/after the recording just ends the call there; one
+    who stays on the line gets connected live. This is a deliberate
+    choice over an active press-1 gate: it's a lower-friction passive
+    filter (self-select out by hanging up vs. requiring an action), it's
+    less code, and total call duration is still captured as an
+    engagement signal either way via the status webhook, keypress or
+    not. No recording configured = bridges immediately on answer
+    (legacy/simple mode). Run several campaigns with different
+    `caller_connect_number` values to work multiple phone lines at once.
   - After each call, mark it **Advance** or **Purge** from the dashboard
     -- this routes through the *same* `pipeline.convert_or_update_silo_candidate`
     / `pipeline.update_lead_status` calls the Targets grid's manual

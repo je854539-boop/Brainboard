@@ -7,8 +7,9 @@
 
 <p class="text-[10px] text-[var(--text-dim)] mb-4 max-w-4xl leading-relaxed">
   Phase 1: outbound calling only. A campaign dials calendar leads / filtered Sheet leads / pending silo candidates from a
-  local-presence number pool. With a pitch recording set, an answered call plays it and waits for a keypress: "1" bridges
-  straight to that campaign's follow-up number, anything else ends the call politely. No pitch recording set = bridges
+  local-presence number pool. With a pitch recording set, an answered call plays it as the opener, then always bridges
+  straight to that campaign's follow-up number -- no keypress needed. If the merchant hangs up during/after the
+  recording, the call just ends there; if they stay on the line, you're connected live. No pitch recording set = bridges
   immediately on answer. The recording is a real recording of you pitching, not a synthetic/AI voice -- deliberate, see
   the compliance notes this was built from. After each call, mark it <b class="text-[var(--green)]">Advance</b> (converts
   a silo candidate into Master Log V2, or moves an existing lead forward) or <b class="text-[var(--crimson)]">Purge</b>

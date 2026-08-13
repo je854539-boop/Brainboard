@@ -175,18 +175,20 @@ def _laml(xml_body: str) -> Response:
 
 
 @router.api_route("/laml/outbound/{attempt_id}", methods=["GET", "POST"])
-async def outbound_laml(attempt_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
-    """Fetched by SignalWire once the outbound call connects -- and fetched
-    a second time as the <Gather> action callback once the lead presses a
-    key (or times out), so this one endpoint handles both hits, told apart
-    by whether a `Digits` field is present.
+async def outbound_laml(attempt_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Fetched by SignalWire once the outbound call connects.
 
     With campaign.pitch_recording_url set: plays that recording (a real
     recording of the broker pitching -- deliberately not synthetic/AI
-    voice, see the compliance discussion this was built from) and gathers
-    one keypress. "1" bridges the lead straight to caller_connect_number;
-    anything else, or no input before the timeout, ends the call politely
-    instead of leaving the lead stranded on a dead line.
+    voice, see the compliance discussion this was built from) as the
+    opener, then always bridges to caller_connect_number -- no keypress
+    gate. If the lead hangs up during/after the recording, the call just
+    ends there (SignalWire never reaches the <Dial>); if they stay on the
+    line, they're connected live. This is a passive filter (self-select
+    out by hanging up) rather than an active one (press 1) -- lower
+    friction, same effect, and total call duration (captured either way
+    via the status webhook below) is still a usable engagement signal
+    even without a keypress.
 
     Without a pitch_recording_url: legacy/simple mode, bridges immediately
     on answer -- NOT the deferred live patch-in/double-dial conferencing,
@@ -205,32 +207,14 @@ async def outbound_laml(attempt_id: uuid.UUID, request: Request, db: Session = D
     settings = get_settings()
     base = settings.dialer_public_base_url.rstrip("/")
     status_url = escape(f"{base}/api/dialer/webhooks/status/{attempt.id}")
-    laml_url = escape(f"{base}/api/dialer/laml/outbound/{attempt.id}")
     number = escape(campaign.caller_connect_number)
     bridge = (
         f'<Dial record="record-from-answer" recordingStatusCallback="{status_url}" '
         f'action="{status_url}"><Number>{number}</Number></Dial>'
     )
 
-    form = await request.form() if request.method == "POST" else {}
-    digits = form.get("Digits") if "Digits" in form else request.query_params.get("Digits")
-
-    if digits is not None:
-        # Second hit: this is SignalWire posting back the <Gather> result.
-        if digits == "1":
-            return _laml(f"<Response>{bridge}</Response>")
-        return _laml("<Response><Say>Thanks for your time. Someone will follow up shortly. Goodbye.</Say></Response>")
-
-    if campaign.pitch_recording_url:
-        pitch_url = escape(campaign.pitch_recording_url)
-        return _laml(
-            f'<Response><Gather numDigits="1" timeout="8" action="{laml_url}" method="POST">'
-            f"<Play>{pitch_url}</Play></Gather>"
-            "<Say>We did not get your response. Goodbye.</Say></Response>"
-        )
-
-    # Legacy/simple mode: no pitch recording configured, bridge immediately.
-    return _laml(f"<Response>{bridge}</Response>")
+    opener = f"<Play>{escape(campaign.pitch_recording_url)}</Play>" if campaign.pitch_recording_url else ""
+    return _laml(f"<Response>{opener}{bridge}</Response>")
 
 
 @router.post("/webhooks/status/{attempt_id}")
