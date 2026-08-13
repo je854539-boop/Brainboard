@@ -22,10 +22,13 @@ backend/
       silo_leadgen.py        derives SiloCandidate rows from telemetry sweeps
       enrichment_orchestrator.py   CSV lead import + per-lead enrichment runner
       telemetry/            CME Globex, Import Genius, SeaVantage, UCC filings,
-                             SOS registries, Regrid, HigherGov adapters (macro sweeps,
-                             inert until an API key or state endpoint is configured)
+                             SOS registries, Regrid, HigherGov, openFDA adapters (macro
+                             sweeps, inert until an API key or state endpoint is
+                             configured -- openFDA feeds Healthcare & Pharma Silo lead-gen)
       enrichment/            Cobalt Intelligence, Interzoid, Apollo.io, openFDA,
-                             Deepgram Nova adapters (targeted per-lead lookups)
+                             Deepgram Nova, CME Globex, Import Genius, SeaVantage,
+                             Regrid, HigherGov, GFW 4Wings, GDELT -- 12 providers run
+                             per lead at intake to surface what the dialer call missed
       globe/                 GFW 4Wings (marine traffic) + GDELT (conflict zones)
                              geospatial adapters
       google/
@@ -54,7 +57,13 @@ apps_script/
   Sweep" button that runs every configured telemetry adapter and derives
   new SiloCandidate rows from what it ingests.
 - **Enrichment** (`/enrichment`) -- CSV lead upload and per-lead enrichment
-  against Cobalt Intelligence / Interzoid / Apollo.io / openFDA / Deepgram Nova.
+  against all 12 providers (Cobalt Intelligence, Interzoid, Apollo.io,
+  openFDA, Deepgram Nova, CME Globex, Import Genius, SeaVantage, Regrid,
+  HigherGov, GFW 4Wings, GDELT) -- the point is surfacing what a dialer
+  call didn't cover before the follow-up. CME Globex and GFW 4Wings aren't
+  company-searchable APIs, so their "enrichment" is macro/regional context
+  attached to the lead rather than a personalized lookup -- flagged as
+  such in the result payload.
 - **Brain** (`/brain`) -- the shadow-mode scoring engine (see below).
 - **Globe** (`/globe`) -- a spinning 3D globe (vendored Three.js) plotting
   GFW 4Wings marine traffic and GDELT conflict-zone events (last 24h).
@@ -147,13 +156,19 @@ Everything is inert (no-ops, not errors) until configured:
   `GOOGLE_CALENDAR_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`.
 - **Telemetry providers** (macro silo sweeps): set `CME_GLOBEX_API_KEY`,
   `IMPORT_GENIUS_API_KEY`, `SEAVANTAGE_API_KEY`, `REGRID_API_KEY`,
-  `HIGHERGOV_API_KEY`. UCC filings / SOS registries are per-state --
-  configure `STATE_ENDPOINTS` in
+  `HIGHERGOV_API_KEY`. `OPENFDA_API_KEY` is optional (openFDA works
+  unauthenticated) and feeds Healthcare & Pharma Silo lead-gen -- a
+  recall is treated as a financing-need signal. UCC filings / SOS
+  registries are per-state -- configure `STATE_ENDPOINTS` in
   `app/services/telemetry/{ucc_filings,sos_registries}.py`.
-- **Enrichment providers** (per-lead lookups): set
-  `COBALT_INTELLIGENCE_API_KEY`, `INTERZOID_API_KEY`, `APOLLO_API_KEY`,
-  `OPENFDA_API_KEY` (optional -- openFDA works unauthenticated),
-  `DEEPGRAM_API_KEY`.
+- **Enrichment providers** (per-lead lookups, run at intake against leads
+  sourced off the dialer): `COBALT_INTELLIGENCE_API_KEY`,
+  `INTERZOID_API_KEY`, `APOLLO_API_KEY`, `OPENFDA_API_KEY` (optional),
+  `DEEPGRAM_API_KEY`, plus the same `CME_GLOBEX_API_KEY`,
+  `IMPORT_GENIUS_API_KEY`, `SEAVANTAGE_API_KEY`, `REGRID_API_KEY`,
+  `HIGHERGOV_API_KEY`, `GFW_API_KEY` used by the telemetry/globe adapters
+  above -- one credential per vendor covers both its macro-sweep and
+  per-lead-lookup use. `GDELT_API_KEY` is likewise shared and optional.
 - **Globe data sources**: set `GFW_API_KEY` for Global Fishing Watch
   4Wings marine traffic; `GFW_DATASET` picks which underlying dataset it
   pulls (defaults to GFW's public fishing-effort dataset -- check your

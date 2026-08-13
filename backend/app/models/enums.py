@@ -103,7 +103,9 @@ class TelemetrySource(str, Enum):
     GDELT = "gdelt"
 
 
-# Sources meant for targeted, per-lead enrichment lookups (uploaded leads).
+# Sources meant for targeted, per-lead enrichment lookups (uploaded leads /
+# leads sourced off the dialer) -- kept in sync with
+# services/enrichment/__init__.py::all_enrichment_adapters().
 ENRICHMENT_SOURCES: frozenset[TelemetrySource] = frozenset(
     {
         TelemetrySource.COBALT_INTELLIGENCE,
@@ -111,13 +113,18 @@ ENRICHMENT_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.APOLLO,
         TelemetrySource.OPENFDA,
         TelemetrySource.DEEPGRAM_NOVA,
+        TelemetrySource.CME_GLOBEX,
+        TelemetrySource.IMPORT_GENIUS,
+        TelemetrySource.SEAVANTAGE,
         TelemetrySource.REGRID,
-        TelemetrySource.SOS_REGISTRIES,
-        TelemetrySource.UCC_FILINGS,
+        TelemetrySource.HIGHERGOV,
+        TelemetrySource.GFW_4WINGS,
+        TelemetrySource.GDELT,
     }
 )
 
-# Sources meant for passive macro-silo surveillance sweeps.
+# Sources meant for passive macro-silo surveillance sweeps -- kept in sync
+# with services/telemetry/__init__.py::all_adapters().
 MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
     {
         TelemetrySource.CME_GLOBEX,
@@ -127,6 +134,7 @@ MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.SOS_REGISTRIES,
         TelemetrySource.REGRID,
         TelemetrySource.HIGHERGOV,
+        TelemetrySource.OPENFDA,
     }
 )
 

@@ -31,6 +31,9 @@ SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     TelemetrySource.SOS_REGISTRIES: [SiloName.HEALTHCARE_PHARMA_SILO, SiloName.ECOMMERCE_FULFILLMENT_SILO],
     TelemetrySource.REGRID: [SiloName.AGRICULTURE_GRAIN_HANDLING_SILO],
     TelemetrySource.HIGHERGOV: [SiloName.HIGHERGOV_FUNNEL],
+    # A recall often means a business needs financing to cover remediation,
+    # inventory write-off, or legal costs -- a genuine lead-gen signal.
+    TelemetrySource.OPENFDA: [SiloName.HEALTHCARE_PHARMA_SILO],
 }
 
 

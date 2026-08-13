@@ -200,22 +200,26 @@ def seed_silos(db) -> None:
 
 def seed_telemetry(db) -> None:
     samples = {
-        TelemetrySource.CME_GLOBEX: "Grain complex open interest +4.2% WoW [DEMO SEED DATA]",
-        TelemetrySource.IMPORT_GENIUS: "New consignee manifest: CNC machining imports [DEMO SEED DATA]",
-        TelemetrySource.SEAVANTAGE: "Tanker ETA Port of Houston, 36h [DEMO SEED DATA]",
-        TelemetrySource.UCC_FILINGS: "UCC-1 filed: equipment lien, TX SOS [DEMO SEED DATA]",
-        TelemetrySource.SOS_REGISTRIES: "New entity formation: cold-chain logistics LLC [DEMO SEED DATA]",
-        TelemetrySource.REGRID: "Parcel permit filed: grain elevator expansion [DEMO SEED DATA]",
-        TelemetrySource.DRIVE_OCR: "Bank statement OCR: ending balance extracted [DEMO SEED DATA]",
-        TelemetrySource.HIGHERGOV: "Contract award notice: fleet maintenance IDIQ [DEMO SEED DATA]",
+        TelemetrySource.CME_GLOBEX: ("Grain complex open interest +4.2% WoW [DEMO SEED DATA]", {"demo": True}),
+        TelemetrySource.IMPORT_GENIUS: ("New consignee manifest: CNC machining imports [DEMO SEED DATA]", {"demo": True}),
+        TelemetrySource.SEAVANTAGE: ("Tanker ETA Port of Houston, 36h [DEMO SEED DATA]", {"demo": True}),
+        TelemetrySource.UCC_FILINGS: ("UCC-1 filed: equipment lien, TX SOS [DEMO SEED DATA]", {"demo": True}),
+        TelemetrySource.SOS_REGISTRIES: ("New entity formation: cold-chain logistics LLC [DEMO SEED DATA]", {"demo": True}),
+        TelemetrySource.REGRID: ("Parcel permit filed: grain elevator expansion [DEMO SEED DATA]", {"demo": True}),
+        TelemetrySource.DRIVE_OCR: ("Bank statement OCR: ending balance extracted [DEMO SEED DATA]", {"demo": True}),
+        TelemetrySource.HIGHERGOV: ("Contract award notice: fleet maintenance IDIQ [DEMO SEED DATA]", {"demo": True}),
+        TelemetrySource.OPENFDA: (
+            "FDA enforcement: Foxhollow Pharma Supply [DEMO SEED DATA]",
+            {"demo": True, "recalling_firm": "Foxhollow Pharma Supply", "classification": "Class II"},
+        ),
     }
-    for source, title in samples.items():
+    for source, (title, payload) in samples.items():
         for _ in range(random.randint(3, 6)):
             db.add(
                 TelemetryEvent(
                     source=source,
                     title=title,
-                    payload={"demo": True},
+                    payload=payload,
                     ingested_at=NOW - dt.timedelta(hours=random.uniform(0, 96)),
                 )
             )

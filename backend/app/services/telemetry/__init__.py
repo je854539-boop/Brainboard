@@ -3,6 +3,7 @@ from app.services.telemetry.base import RawTelemetryRecord, TelemetryAdapter
 from app.services.telemetry.cme_globex import CMEGlobexAdapter
 from app.services.telemetry.highergov import HigherGovAdapter
 from app.services.telemetry.import_genius import ImportGeniusAdapter
+from app.services.telemetry.openfda import OpenFDATelemetryAdapter
 from app.services.telemetry.regrid import RegridAdapter
 from app.services.telemetry.seavantage import SeaVantageAdapter
 from app.services.telemetry.sos_registries import SOSRegistriesAdapter
@@ -19,6 +20,7 @@ def all_adapters() -> list[TelemetryAdapter]:
         SOSRegistriesAdapter(),
         RegridAdapter(api_key=settings.regrid_api_key),
         HigherGovAdapter(api_key=settings.highergov_api_key),
+        OpenFDATelemetryAdapter(api_key=settings.openfda_api_key),
     ]
 
 
@@ -32,5 +34,6 @@ __all__ = [
     "SOSRegistriesAdapter",
     "RegridAdapter",
     "HigherGovAdapter",
+    "OpenFDATelemetryAdapter",
     "all_adapters",
 ]
