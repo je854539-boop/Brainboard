@@ -16,15 +16,18 @@
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--crimson)"></span> GDELT (conflict zones, last 24h)</div>
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--green)"></span> Major trade corridors (static reference)</div>
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--green)"></span> Major ports (hover for name)</div>
+    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--teal)"></span> USACE river ports (hover for name)</div>
+    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--blue)"></span> National capitals (hover for name)</div>
   </div>
 </div>
 
 <div id="globe-status" class="text-[10px] text-[var(--text-dim)] mb-2"></div>
 <div class="text-[10px] text-[var(--text-dim)] mb-2">
-  Sea routes and ports are a static geographic reference layer (real port
-  locations, corridors chained through known chokepoints/canals) -- not
-  live AIS-routed shipping data. Live vessel activity is the amber GFW
-  4Wings signal dots above.
+  Sea routes, ports, USACE river ports, and capitals are a static
+  geographic reference layer (real coordinates; corridors chained through
+  known chokepoints/canals) -- not live AIS-routed shipping data or a
+  live USACE feed. Live vessel activity is the amber GFW 4Wings signal
+  dots above.
 </div>
 <div class="tactical-panel" style="height:600px; position:relative;">
   <div id="globe-container" style="width:100%; height:100%;"></div>
@@ -34,7 +37,7 @@
 <script type="module">
 import * as THREE from '/static/vendor/three/three.module.min.js';
 
-const AMBER = 0xffb000, CRIMSON = 0xff3333, GREEN = 0x4aff7a, PANEL_BORDER = 0x2d333b, BG = 0x121417;
+const AMBER = 0xffb000, CRIMSON = 0xff3333, GREEN = 0x4aff7a, BLUE = 0x4aa3ff, TEAL = 0x2dd4bf, PANEL_BORDER = 0x2d333b, BG = 0x121417;
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, opts);
@@ -139,8 +142,44 @@ async function renderMajorPorts() {
   for (const p of ports) {
     const dot = new THREE.Mesh(dotGeometry, material);
     dot.position.copy(latLonToVec3(p.lat, p.lon, 2.02));
-    dot.userData.portName = p.name;
+    dot.userData.tooltip = p.name;
+    dot.userData.color = '#4aff7a';
     portMeshes.add(dot);
+  }
+}
+
+// USACE-maintained US inland river ports -- static reference points (see
+// caption above the globe), hoverable like major ocean ports.
+const usaceMeshes = new THREE.Group();
+globeGroup.add(usaceMeshes);
+
+async function renderUSACERiverPorts() {
+  const ports = await fetchJSON('/static/data/usace-river-ports.json');
+  const dotGeometry = new THREE.SphereGeometry(0.03, 8, 8);
+  const material = new THREE.MeshBasicMaterial({ color: TEAL });
+  for (const p of ports) {
+    const dot = new THREE.Mesh(dotGeometry, material);
+    dot.position.copy(latLonToVec3(p.lat, p.lon, 2.02));
+    dot.userData.tooltip = `${p.name} (USACE river port)`;
+    dot.userData.color = '#2dd4bf';
+    usaceMeshes.add(dot);
+  }
+}
+
+// National capitals -- static reference points, hoverable.
+const capitalMeshes = new THREE.Group();
+globeGroup.add(capitalMeshes);
+
+async function renderCapitals() {
+  const capitals = await fetchJSON('/static/data/capitals.json');
+  const dotGeometry = new THREE.SphereGeometry(0.022, 6, 6);
+  const material = new THREE.MeshBasicMaterial({ color: BLUE });
+  for (const c of capitals) {
+    const dot = new THREE.Mesh(dotGeometry, material);
+    dot.position.copy(latLonToVec3(c.lat, c.lon, 2.02));
+    dot.userData.tooltip = `${c.name} (${c.country})`;
+    dot.userData.color = '#4aa3ff';
+    capitalMeshes.add(dot);
   }
 }
 
@@ -200,18 +239,21 @@ window.addEventListener('pointermove', (e) => {
   lastX = e.clientX; lastY = e.clientY;
 });
 
-// Hover a major port to see its name.
+// Hover a port, USACE river port, or capital to see its name.
 const raycaster = new THREE.Raycaster();
 const pointerNDC = new THREE.Vector2();
 const tooltip = document.getElementById('port-tooltip');
+const hoverables = [portMeshes, usaceMeshes, capitalMeshes];
 renderer.domElement.addEventListener('pointermove', (e) => {
   const rect = renderer.domElement.getBoundingClientRect();
   pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointerNDC, camera);
-  const hit = raycaster.intersectObjects(portMeshes.children)[0];
+  const hit = raycaster.intersectObjects(hoverables.flatMap(g => g.children))[0];
   if (hit) {
-    tooltip.textContent = hit.object.userData.portName;
+    tooltip.textContent = hit.object.userData.tooltip;
+    tooltip.style.borderColor = hit.object.userData.color;
+    tooltip.style.color = hit.object.userData.color;
     tooltip.style.left = (e.clientX - rect.left + 12) + 'px';
     tooltip.style.top = (e.clientY - rect.top + 12) + 'px';
     tooltip.classList.remove('hidden');
@@ -238,6 +280,8 @@ window.addEventListener('resize', () => {
 renderCountryBorders();
 renderSeaRoutes();
 renderMajorPorts();
+renderUSACERiverPorts();
+renderCapitals();
 renderSourceStatus();
 renderSignals();
 animate();

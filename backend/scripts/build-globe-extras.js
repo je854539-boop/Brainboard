@@ -1,11 +1,24 @@
-// Generates two static reference layers for the 3D globe:
+// Generates four static reference layers for the 3D globe:
 //
-//   app/static/data/major-ports.json  -- ~40 of the world's highest-throughput
-//     container ports (name + real-world lat/lon).
+//   app/static/data/major-ports.json     -- ~40 of the world's highest-
+//     throughput ocean container ports (name + real-world lat/lon).
 //
-//   app/static/data/sea-routes.json   -- major global trade corridors, drawn
-//     as multi-hop great-circle paths through real chokepoints (Malacca,
-//     Suez, Bab-el-Mandeb, Hormuz, Gibraltar, Panama, Cape of Good Hope).
+//   app/static/data/sea-routes.json      -- major global trade corridors,
+//     drawn as multi-hop great-circle paths through real chokepoints
+//     (Malacca, Suez, Bab-el-Mandeb, Hormuz, Gibraltar, Panama, Cape of
+//     Good Hope).
+//
+//   app/static/data/usace-river-ports.json -- major US inland-waterway
+//     ports on the rivers USACE maintains for navigation (Mississippi,
+//     Ohio, Illinois, Tennessee, Arkansas, Columbia-Snake systems),
+//     matched to the port cities that show up in USACE's Waterborne
+//     Commerce Statistics Center "Principal Ports" rankings.
+//
+//   app/static/data/capitals.json        -- national capital cities
+//     (name, country, real lat/lon), sourced from the `all-the-cities`
+//     package's GeoNames dump (PPLC = "seat of government of a political
+//     entity" feature code) and cross-referenced against `world-countries`
+//     for the country display name.
 //
 // IMPORTANT: sea-routes.json is a stylized reference layer, not routed or
 // live shipping data. Each route is a straight great-circle arc between
@@ -15,6 +28,13 @@
 // hug coastlines. Live vessel-position data is what GFW 4Wings (the
 // amber signal dots) already provides; this layer exists purely to show
 // *which* corridors matter, not to track *what* is currently on them.
+//
+// usace-river-ports.json is likewise a curated static list, not a live
+// USACE feed -- there's no confirmed keyless USACE REST API for port
+// locations to wire up the way GDELT's GEO API is wired up live, so
+// (same call as GFW_DATASET elsewhere in this project) this ships as
+// known-good reference geometry rather than a guessed, possibly-wrong
+// live endpoint.
 const fs = require("fs");
 const path = require("path");
 
@@ -65,6 +85,39 @@ const PORTS = [
   ["Tokyo", 139.8, 35.6],
   ["Karachi", 66.98, 24.85],
   ["Apapa (Lagos)", 3.38, 6.45],
+  ["San Antonio", -71.62, -33.59], // Chile's principal container port (Valparaiso region)
+  ["Lazaro Cardenas", -102.2, 17.96], // Mexico's largest Pacific-coast container port (Michoacan)
+];
+
+// Major US inland/river ports -- the cities that anchor USACE's navigable
+// waterway system (Mississippi, Ohio, Illinois, Tennessee, Arkansas,
+// Columbia-Snake), matched to USACE Waterborne Commerce Statistics
+// Center "Principal Ports" categories. See file header for the static-vs-
+// live caveat.
+const USACE_RIVER_PORTS = [
+  ["South Louisiana", -90.65, 30.05], // Mississippi River, LaPlace -- largest US port by tonnage
+  ["Baton Rouge", -91.19, 30.45], // Mississippi River
+  ["Greater New Orleans", -90.06, 29.95], // Mississippi River
+  ["St. Louis", -90.19, 38.63], // Mississippi River
+  ["Memphis", -90.05, 35.15], // Mississippi River
+  ["Vicksburg", -90.88, 32.35], // Mississippi River
+  ["Greenville", -91.06, 33.41], // Mississippi River
+  ["Natchez", -91.4, 31.56], // Mississippi River
+  ["Minneapolis-St. Paul", -93.09, 44.94], // Upper Mississippi River
+  ["Quad Cities (Davenport)", -90.58, 41.52], // Upper Mississippi River
+  ["Cairo", -89.18, 37.0], // Ohio/Mississippi confluence
+  ["Huntington-Tristate", -82.44, 38.42], // Ohio River
+  ["Pittsburgh", -80.0, 40.44], // Ohio/Monongahela/Allegheny confluence
+  ["Cincinnati", -84.51, 39.1], // Ohio River
+  ["Louisville", -85.76, 38.25], // Ohio River
+  ["Paducah", -88.6, 37.08], // Ohio/Tennessee/Cumberland confluence
+  ["Chattanooga", -85.31, 35.05], // Tennessee River
+  ["Knoxville", -83.92, 35.96], // Tennessee River
+  ["Guntersville", -86.29, 34.35], // Tennessee River
+  ["Pine Bluff", -92.0, 34.22], // Arkansas River
+  ["Catoosa (Tulsa)", -95.75, 36.19], // McClellan-Kerr Arkansas River Navigation System
+  ["Chicago", -87.65, 41.85], // Illinois Waterway
+  ["Portland-Vancouver", -122.68, 45.55], // Columbia/Willamette Rivers
 ];
 
 // Named chokepoints used as intermediate waypoints so corridors follow the
@@ -148,12 +201,34 @@ const routeRings = ROUTES.map((chain) => {
 });
 
 const portsOut = PORTS.map(([name, lon, lat]) => ({ name, lon, lat }));
+const usaceOut = USACE_RIVER_PORTS.map(([name, lon, lat]) => ({ name, lon, lat }));
+
+// National capitals: GeoNames PPLC ("capital of a political entity") records
+// from the all-the-cities package, cross-referenced against world-countries
+// for a human-readable country name.
+const cities = require(path.join(ROOT, "node_modules/all-the-cities"));
+const countries = require(path.join(ROOT, "node_modules/world-countries/countries.json"));
+const countryNameByCca2 = Object.fromEntries(countries.map((c) => [c.cca2, c.name.common]));
+
+const capitalsOut = cities
+  .filter((c) => c.featureCode === "PPLC")
+  .map((c) => ({
+    name: c.name,
+    country: countryNameByCca2[c.country] || c.country,
+    lon: Math.round(c.loc.coordinates[0] * 100) / 100,
+    lat: Math.round(c.loc.coordinates[1] * 100) / 100,
+  }))
+  .sort((a, b) => a.name.localeCompare(b.name));
 
 const dataDir = path.join(ROOT, "app/static/data");
 fs.mkdirSync(dataDir, { recursive: true });
 
 fs.writeFileSync(path.join(dataDir, "major-ports.json"), JSON.stringify(portsOut));
 fs.writeFileSync(path.join(dataDir, "sea-routes.json"), JSON.stringify(routeRings));
+fs.writeFileSync(path.join(dataDir, "usace-river-ports.json"), JSON.stringify(usaceOut));
+fs.writeFileSync(path.join(dataDir, "capitals.json"), JSON.stringify(capitalsOut));
 
 console.log(`wrote ${portsOut.length} ports to app/static/data/major-ports.json`);
 console.log(`wrote ${routeRings.length} sea route corridors to app/static/data/sea-routes.json`);
+console.log(`wrote ${usaceOut.length} USACE river ports to app/static/data/usace-river-ports.json`);
+console.log(`wrote ${capitalsOut.length} national capitals to app/static/data/capitals.json`);

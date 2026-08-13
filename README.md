@@ -74,10 +74,13 @@ apps_script/
 - **Globe** (`/globe`) -- a spinning 3D globe (vendored Three.js) plotting
   GFW 4Wings marine traffic and GDELT conflict-zone events (last 24h), with
   country border outlines (Natural Earth 50m via `world-atlas`), major
-  global trade corridors, and ~40 major world container ports (hoverable
-  for name). The borders/routes/ports layers are static reference geometry
-  pre-flattened at build time -- see "Frontend dependencies" below -- not
-  live-routed AIS shipping data (that's what the GFW signal dots are for).
+  global trade corridors, ~45 major world ocean container ports, ~23 USACE
+  inland river ports (Mississippi/Ohio/Illinois/Tennessee/Arkansas/
+  Columbia-Snake systems), and all 241 national capitals -- all hoverable
+  for name. The borders/routes/ports/capitals layers are static reference
+  geometry pre-flattened at build time -- see "Frontend dependencies"
+  below -- not live-routed AIS shipping data or a live USACE feed (that's
+  what the GFW signal dots are for).
 - **Analytics** (`/analytics`) -- Kaplan-Meier curves, Markov transition
   matrix, deal-velocity bottlenecks, silo friction correlation, and the
   time-varying Cox engagement-hazard panel.
@@ -122,13 +125,16 @@ npm install
 npm run vendor-assets      # re-copies htmx/Alpine/fonts from node_modules
 npm run build-css          # rebuilds app/static/css/tailwind.css
 npm run build-geo          # rebuilds app/static/data/country-borders.json
-npm run build-globe-extras # rebuilds sea-routes.json + major-ports.json
+npm run build-globe-extras # rebuilds sea-routes/ports/usace-ports/capitals JSON
 ```
 
 `build-geo` and `build-globe-extras` only need to be re-run if you bump the
 `world-atlas` resolution or edit the corridor/port lists in
 `scripts/build-globe-extras.js` -- the generated JSON is committed, so a
 fresh clone doesn't need Node at deploy time for the globe to work.
+`build-globe-extras` additionally depends on the `all-the-cities` (GeoNames
+capital-city dump) and `world-countries` devDependencies, used only at
+build time to produce `capitals.json`.
 
 ## Local development
 
