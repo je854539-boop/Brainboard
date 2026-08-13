@@ -65,7 +65,7 @@ document.getElementById("leadgen-btn").addEventListener("click", async (e) => {
   try {
     const res = await fetch("/api/silo/leadgen/run", { method: "POST" });
     const data = await res.json();
-    const ingested = Object.entries(data.telemetry_ingested).map(([s, n]) => `${s}:${n}`).join(", ");
+    const ingested = Object.entries(data.telemetry_ingested).map(([s, r]) => r.error ? `${s}:ERROR(${r.error})` : `${s}:${r.count}`).join(", ");
     const created = Object.entries(data.candidates_created).filter(([, n]) => n > 0).map(([s, n]) => `${s}:+${n}`).join(", ");
     resultDiv.textContent = `Telemetry ingested -- ${ingested}. Candidates created -- ${created || "(none -- no sources configured or nothing new)"}`;
     htmx.trigger("#silo-filters", "change");

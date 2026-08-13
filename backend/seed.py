@@ -90,7 +90,7 @@ GFW_DEMO_POINTS = [
     (1.29, 103.85, "Singapore Strait"), (29.95, -90.07, "Port of New Orleans"),
     (51.95, 4.14, "Port of Rotterdam"), (22.31, 114.17, "Hong Kong waters"),
 ]
-GLED_DEMO_POINTS = [
+GDELT_DEMO_POINTS = [
     (40.71, -74.01, "New York"), (51.51, -0.13, "London"),
     (41.88, -87.63, "Chicago"), (34.05, -118.24, "Los Angeles"),
 ]
@@ -245,10 +245,10 @@ def seed_globe(db) -> None:
             intensity=round(random.uniform(2, 20), 1), title=f"Vessel presence, {label} [DEMO SEED DATA]",
             payload={"demo": True}, observed_at=NOW - dt.timedelta(hours=random.uniform(0, 72)),
         ))
-    for lat, lon, label in GLED_DEMO_POINTS:
+    for lat, lon, label in GDELT_DEMO_POINTS:
         db.add(GlobeSignal(
-            source=TelemetrySource.GLED, latitude=lat, longitude=lon,
-            title=f"GLED event, {label} [DEMO SEED DATA]",
+            source=TelemetrySource.GDELT, latitude=lat, longitude=lon,
+            title=f"GDELT conflict-zone monitoring point, {label} [DEMO SEED DATA -- not a real event]",
             payload={"demo": True}, observed_at=NOW - dt.timedelta(hours=random.uniform(0, 72)),
         ))
     db.commit()

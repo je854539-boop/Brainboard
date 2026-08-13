@@ -100,7 +100,7 @@ class TelemetrySource(str, Enum):
     DEEPGRAM_NOVA = "deepgram_nova"
     HIGHERGOV = "highergov"
     GFW_4WINGS = "gfw_4wings"
-    GLED = "gled"
+    GDELT = "gdelt"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads).
@@ -131,7 +131,7 @@ MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
 )
 
 # Geospatial sources plotted on the 3D globe.
-GLOBE_SOURCES: frozenset[TelemetrySource] = frozenset({TelemetrySource.GFW_4WINGS, TelemetrySource.GLED})
+GLOBE_SOURCES: frozenset[TelemetrySource] = frozenset({TelemetrySource.GFW_4WINGS, TelemetrySource.GDELT})
 
 
 class ActivityEventType(str, Enum):

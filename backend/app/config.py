@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     regrid_api_key: str = ""
     highergov_api_key: str = ""
     gfw_api_key: str = ""  # Global Fishing Watch API token, powers the 4Wings globe layer
-    gled_api_key: str = ""  # unconfirmed provider -- see app/services/globe/gled.py
+    gdelt_api_key: str = ""  # optional -- GDELT's GEO 2.0 API is free/keyless at normal volume
 
     cobalt_intelligence_api_key: str = ""
     interzoid_api_key: str = ""

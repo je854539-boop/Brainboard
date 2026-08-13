@@ -26,8 +26,8 @@ backend/
                              inert until an API key or state endpoint is configured)
       enrichment/            Cobalt Intelligence, Interzoid, Apollo.io, openFDA,
                              Deepgram Nova adapters (targeted per-lead lookups)
-      globe/                 GFW 4Wings + GLED geospatial adapters (GLED's provider
-                             identity is unconfirmed -- see app/services/globe/gled.py)
+      globe/                 GFW 4Wings (vessel presence) + GDELT (conflict zones)
+                             geospatial adapters
       google/
         sheets_sync.py       bidirectional Master Log V2 + 9 silo tab sync
         calendar_sync.py     Column K/L -> Calendar event sync via lead_uid
@@ -57,7 +57,7 @@ apps_script/
   against Cobalt Intelligence / Interzoid / Apollo.io / openFDA / Deepgram Nova.
 - **Brain** (`/brain`) -- the shadow-mode scoring engine (see below).
 - **Globe** (`/globe`) -- a spinning 3D globe (vendored Three.js) plotting
-  GFW 4Wings vessel-presence and GLED signals.
+  GFW 4Wings vessel-presence and GDELT conflict-zone events (last 24h).
 - **Analytics** (`/analytics`) -- Kaplan-Meier curves, Markov transition
   matrix, deal-velocity bottlenecks, silo friction correlation, and the
   time-varying Cox engagement-hazard panel.
@@ -155,8 +155,9 @@ Everything is inert (no-ops, not errors) until configured:
   `OPENFDA_API_KEY` (optional -- openFDA works unauthenticated),
   `DEEPGRAM_API_KEY`.
 - **Globe data sources**: set `GFW_API_KEY` for Global Fishing Watch
-  4Wings. `GLED_API_KEY` is reserved but GLED's actual provider identity
-  is unconfirmed -- read `app/services/globe/gled.py` before setting it.
+  4Wings. GDELT's GEO 2.0 API (conflict-zone events) is free and keyless,
+  so it's live by default with no configuration -- `GDELT_API_KEY` is
+  reserved for future use only.
 - **Apps Script**: open the Master Log V2 spreadsheet's Apps Script editor,
   paste in `apps_script/Code.gs`, set Script Properties `BACKEND_BASE_URL`
   and `WEBHOOK_SHARED_SECRET` (must match the backend's

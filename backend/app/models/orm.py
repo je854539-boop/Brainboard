@@ -239,7 +239,7 @@ class ShadowScore(Base):
 
 class GlobeSignal(Base):
     """A geolocated ping plotted on the 3D globe -- Global Fishing Watch
-    4Wings vessel-activity tiles, GLED alerts, etc."""
+    4Wings vessel-activity tiles, GDELT conflict-zone events, etc."""
 
     __tablename__ = "globe_signals"
 

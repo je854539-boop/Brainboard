@@ -7,6 +7,7 @@ configured is inert (`enabled` is False, `ingest` is a no-op) rather than
 erroring, so the surveillance loop can run with a partial provider roster.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import TelemetrySource
 from app.models.orm import TelemetryEvent
+
+logger = logging.getLogger("brainboard.telemetry")
 
 
 @dataclass
@@ -43,18 +46,28 @@ class TelemetryAdapter(ABC):
         adapter for what is stubbed vs. wired."""
         raise NotImplementedError
 
-    def ingest(self, db: Session) -> int:
+    def ingest(self, db: Session) -> dict:
+        """Returns {"count": int, "error": str | None}. A failure in one
+        adapter (network blocked, bad key, upstream outage) is caught and
+        reported here rather than raised, so a batch sweep across multiple
+        adapters can't have one flaky source 500 the whole call and lose
+        results the other adapters already produced."""
         if not self.enabled:
-            return 0
-        records = self.fetch()
-        for record in records:
-            db.add(
-                TelemetryEvent(
-                    source=self.source,
-                    entity_uid=record.entity_uid,
-                    title=record.title,
-                    payload=record.payload,
+            return {"count": 0, "error": None}
+        try:
+            records = self.fetch()
+            for record in records:
+                db.add(
+                    TelemetryEvent(
+                        source=self.source,
+                        entity_uid=record.entity_uid,
+                        title=record.title,
+                        payload=record.payload,
+                    )
                 )
-            )
-        db.commit()
-        return len(records)
+            db.commit()
+            return {"count": len(records), "error": None}
+        except Exception as exc:  # noqa: BLE001 -- one bad provider must not break the whole sweep
+            db.rollback()
+            logger.exception("Telemetry adapter %s failed to ingest", self.source.value)
+            return {"count": 0, "error": str(exc)}

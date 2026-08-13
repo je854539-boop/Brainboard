@@ -13,7 +13,7 @@
   <div class="tactical-panel p-3 lg:col-span-3 flex items-center gap-6">
     <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Signals Tracked</div><div id="signal-count" class="hud-value text-lg">0</div></div>
     <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--amber)"></span> GFW 4Wings (vessel presence)</div>
-    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--crimson)"></span> GLED (unconfirmed source, see docs)</div>
+    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--crimson)"></span> GDELT (conflict zones, last 24h)</div>
   </div>
 </div>
 
@@ -82,7 +82,7 @@ async function renderSignals() {
 
   const dotGeometry = new THREE.SphereGeometry(0.02, 6, 6);
   for (const s of signals) {
-    const color = s.source === 'gled' ? CRIMSON : AMBER;
+    const color = s.source === 'gdelt' ? CRIMSON : AMBER;
     const dot = new THREE.Mesh(dotGeometry, new THREE.MeshBasicMaterial({ color }));
     dot.position.copy(latLonToVec3(s.latitude, s.longitude, 2.02));
     signalMeshes.add(dot);
@@ -105,7 +105,7 @@ document.getElementById('globe-refresh-btn').addEventListener('click', async (e)
   const statusDiv = document.getElementById('globe-status');
   try {
     const data = await fetchJSON('/api/globe/refresh', { method: 'POST' });
-    statusDiv.textContent = 'Ingested: ' + Object.entries(data.ingested).map(([s, n]) => `${s}:${n}`).join(', ');
+    statusDiv.textContent = 'Ingested: ' + Object.entries(data.ingested).map(([s, r]) => r.error ? `${s}:ERROR(${r.error})` : `${s}:${r.count}`).join(', ');
     await renderSignals();
   } catch (err) {
     statusDiv.textContent = 'Refresh failed: ' + err.message;

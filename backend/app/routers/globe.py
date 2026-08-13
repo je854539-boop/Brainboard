@@ -23,7 +23,5 @@ def globe_sources():
 
 @router.post("/refresh")
 def refresh_signals(db: Session = Depends(get_db)):
-    ingested = {}
-    for adapter in all_globe_adapters():
-        ingested[adapter.source.value] = adapter.ingest(db)
+    ingested = {adapter.source.value: adapter.ingest(db) for adapter in all_globe_adapters()}
     return {"ingested": ingested}

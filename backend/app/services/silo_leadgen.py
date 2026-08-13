@@ -46,7 +46,7 @@ def run_silo_leadgen(db: Session) -> dict:
     """Ingests fresh telemetry from every configured adapter, then derives
     one SiloCandidate per (event, mapped silo) pair. Returns a summary of
     events ingested per source and candidates created per silo."""
-    ingested_by_source: dict[str, int] = {}
+    ingested_by_source: dict[str, dict] = {}
     for adapter in telemetry.all_adapters():
         ingested_by_source[adapter.source.value] = adapter.ingest(db)
 
