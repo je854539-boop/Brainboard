@@ -548,6 +548,85 @@ def detect_zone_transitions(db: Session) -> list[GeofenceEvent]:
     return events
 
 
+def compute_port_dwell_hours(db: Session, mmsi: str, zone_name: str) -> float | None:
+    """How long a vessel has been continuously sitting in `zone_name`,
+    measured from its most recent ZONE_ENTRY into that zone -- distinct
+    from the velocity-anomaly episode duration above (which only counts
+    time at/below idle speed). A vessel can dwell at a port for days at
+    low-but-nonzero speed (maneuvering, waiting on a berth) without ever
+    tripping the idle-speed velocity-anomaly check. Returns None if the
+    vessel's latest snapshot shows it's no longer in this zone (it's
+    moved on -- nothing to measure) or there's no recorded entry."""
+    latest_snapshot = (
+        db.query(WaterwayTelemetrySnapshot)
+        .filter(WaterwayTelemetrySnapshot.mmsi == mmsi)
+        .order_by(WaterwayTelemetrySnapshot.observed_at.desc())
+        .first()
+    )
+    if latest_snapshot is None or latest_snapshot.zone_name != zone_name:
+        return None
+
+    last_entry = (
+        db.query(GeofenceEvent)
+        .filter(
+            GeofenceEvent.mmsi == mmsi,
+            GeofenceEvent.zone_name == zone_name,
+            GeofenceEvent.event_type == GeofenceEventType.ZONE_ENTRY,
+        )
+        .order_by(GeofenceEvent.detected_at.desc())
+        .first()
+    )
+    if last_entry is None:
+        return None
+
+    return (_now() - last_entry.detected_at).total_seconds() / 3600
+
+
+def classify_vessel_state(db: Session, mmsi: str, zone_name: str, speed_knots: float | None) -> str:
+    """Green/amber/red classification for the globe's live vessel
+    overlay -- broader than the funded-lead trigger matrix above (this
+    applies to every tracked vessel, not just ones cross-referenced to a
+    company). Returns "distress" (red, pulsing), "friction" (amber), or
+    "normal" (green):
+      - distress: >= river_surveillance_distress_idle_hours (36h)
+        stationary in a restricted zone (same threshold
+        check_distress_trigger uses to judge fundability), OR >=
+        river_surveillance_port_dwell_days (10d) continuously dwelling
+        at the same zone regardless of speed.
+      - friction: idle-speed right now but hasn't crossed either
+        threshold yet.
+      - normal: everything else.
+    """
+    settings = get_settings()
+    idle_speed = settings.river_surveillance_idle_speed_knots
+    zone = next((z for z in WATERWAY_ZONES if z["name"] == zone_name), None)
+    restricted = bool(zone and zone.get("restricted"))
+    is_idle_now = speed_knots is not None and speed_knots <= idle_speed
+
+    if restricted and is_idle_now:
+        anomaly = (
+            db.query(GeofenceEvent)
+            .filter(
+                GeofenceEvent.mmsi == mmsi,
+                GeofenceEvent.zone_name == zone_name,
+                GeofenceEvent.event_type == GeofenceEventType.VELOCITY_ANOMALY,
+            )
+            .order_by(GeofenceEvent.detected_at.desc())
+            .first()
+        )
+        if anomaly and anomaly.stationary_minutes and (anomaly.stationary_minutes / 60) >= settings.river_surveillance_distress_idle_hours:
+            return "distress"
+
+    dwell_hours = compute_port_dwell_hours(db, mmsi, zone_name)
+    if dwell_hours is not None and (dwell_hours / 24) >= settings.river_surveillance_port_dwell_days:
+        return "distress"
+
+    if is_idle_now:
+        return "friction"
+
+    return "normal"
+
+
 def learn_baseline_transit(db: Session, zone_name: str) -> float | None:
     """Route pattern recognition: learns a zone's 'normal' dwell/idle
     duration from historical velocity-anomaly episodes over the trailing

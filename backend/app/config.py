@@ -50,6 +50,16 @@ class Settings(BaseSettings):
 
     brain_shadow_mode_lead_threshold: int = 1000
 
+    # CesiumJS globe (templates/globe.html). Empty by default -- the
+    # globe still renders (Cesium's bundled offline Natural Earth II
+    # imagery, no terrain) without this, just without ion's streaming
+    # high-res satellite imagery/terrain. Note this is inherently a
+    # client-visible token, not a hidden server secret -- Cesium ion
+    # tokens are meant to be used in browser JS and restricted by
+    # referrer/domain in your ion account dashboard, not kept secret the
+    # way a server-side API key is.
+    cesium_ion_token: str = ""
+
     # River surveillance engine (app/services/river_surveillance.py) --
     # off by default so no background network polling starts without an
     # explicit opt-in. Reuses datalastic_api_key/vesselfinder_api_key/
@@ -74,6 +84,10 @@ class Settings(BaseSettings):
     # 90-day daily baseline rate by this multiple to flag a throughput
     # spike.
     river_surveillance_expansion_multiplier: float = 1.5
+    # Globe vessel-overlay red-state condition (in addition to the 36h
+    # distress-idle threshold above): a vessel still docked at the same
+    # port zone this many days after its last recorded zone entry.
+    river_surveillance_port_dwell_days: float = 10.0
 
 
 @lru_cache

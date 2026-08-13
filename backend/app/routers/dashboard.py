@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app.config import get_settings
 from app.models.enums import CoBroker, MasterLogStatus, SiloName
 
 templates = Jinja2Templates(directory="app/templates")
@@ -63,7 +64,9 @@ def brain_page(request: Request):
 
 @router.get("/globe")
 def globe_page(request: Request):
-    return templates.TemplateResponse(request, "globe.html", {"active_nav": "globe"})
+    return templates.TemplateResponse(
+        request, "globe.html", {"active_nav": "globe", "cesium_ion_token": get_settings().cesium_ion_token}
+    )
 
 
 @router.get("/calls")

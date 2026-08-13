@@ -1,8 +1,26 @@
 {% extends "base.html" %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="/static/vendor/cesium/Widgets/widgets.css" />
+<script>
+  // Cesium needs to know where to fetch its Workers/Assets/ThirdParty
+  // from at runtime -- must be set before Cesium.js loads. Vendored
+  // locally like everything else in this project, no CDN.
+  window.CESIUM_BASE_URL = '/static/vendor/cesium/';
+</script>
+<script src="/static/vendor/cesium/Cesium.js"></script>
+{% endblock %}
+
 {% block content %}
 <div class="flex items-center justify-between mb-4">
   <h1 class="stencil-header text-lg text-[var(--amber)]">Globe // Maritime &amp; Geospatial Surveillance</h1>
-  <button id="globe-refresh-btn" class="tactical-select hover:border-[var(--amber)] hover:text-[var(--amber)]">Refresh Signals</button>
+  <div class="flex items-center gap-2">
+    <label class="flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-[var(--text-dim)] cursor-pointer">
+      <input type="checkbox" id="show-filtered-toggle" class="accent-[var(--amber)]" />
+      Show Dog Shit (filtered)
+    </label>
+    <button id="globe-refresh-btn" class="tactical-select hover:border-[var(--amber)] hover:text-[var(--amber)]">Refresh Signals</button>
+  </div>
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4">
@@ -12,38 +30,64 @@
   </div>
   <div class="tactical-panel p-3 lg:col-span-3 flex items-center gap-6 flex-wrap">
     <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Signals Tracked</div><div id="signal-count" class="hud-value text-lg">0</div></div>
-    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--amber)"></span> Marine traffic (GFW 4Wings / Datalastic / VesselFinder AIS)</div>
-    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--crimson)"></span> GDELT (conflict zones, last 24h)</div>
-    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-3" style="background:var(--green)"></span> Major trade corridors (static reference)</div>
-    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--green)"></span> Major ports (hover for name)</div>
-    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--teal)"></span> USACE river ports (hover for name)</div>
-    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-2 h-2 rounded-full" style="background:var(--blue)"></span> National capitals (hover for name)</div>
-    <div class="flex items-center gap-2 text-[10px]"><span class="inline-block w-3 h-[1px]" style="background:var(--amber); opacity:0.5"></span> State/province borders</div>
+    <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Leads Plotted</div><div id="lead-count" class="hud-value text-lg">0</div></div>
+    <div><div class="text-[10px] text-[var(--text-dim)] uppercase">Vessels Tracked</div><div id="vessel-count" class="hud-value text-lg">0</div></div>
   </div>
+</div>
+
+<div class="tactical-panel p-3 mb-4">
+  <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-2">13-Status Pipeline Legend</div>
+  <div id="status-legend" class="flex flex-wrap gap-x-4 gap-y-1.5 text-[10px]"></div>
 </div>
 
 <div id="globe-status" class="text-[10px] text-[var(--text-dim)] mb-2"></div>
 <div class="text-[10px] text-[var(--text-dim)] mb-2">
-  Sea routes, ports, USACE river ports, capitals, and state/province
-  borders are a static geographic reference layer (real coordinates;
-  corridors chained through known chokepoints/canals) -- not live
-  AIS-routed shipping data or a live USACE feed. Live vessel activity is
-  the amber signal dots above (GFW 4Wings, Datalastic, and VesselFinder
-  AIS combined). Scroll/pinch to zoom -- city, port, and capital names
-  appear once you're zoomed in close enough to read them.
-</div>
-<div class="tactical-panel" style="height:600px; position:relative; overflow:hidden;">
-  <div id="globe-container" style="width:100%; height:100%;"></div>
-  <div id="port-tooltip" class="hidden" style="position:absolute; pointer-events:none; background:var(--panel-bg); border:1px solid var(--green); color:var(--green); padding:2px 6px; font-size:10px; z-index:10; white-space:nowrap;"></div>
+  Rendered with CesiumJS. Leads are placed at their state's approximate
+  centroid (Master Log V2 stores a state, not a geocoded address --
+  several leads in the same state render near the same point). Vessel
+  positions come from Datalastic/VesselFinder AIS via the River
+  Surveillance engine; green/amber/red reflects live velocity-anomaly and
+  port-dwell classification, not a static reference layer. Click any lead
+  or vessel to fly in and see its details.
+  {% if not cesium_ion_token %}
+  <span class="text-[var(--crimson)]">No CESIUM_ION_TOKEN configured -- using Cesium's bundled offline Natural Earth II imagery (no terrain, lower resolution). Set CESIUM_ION_TOKEN for full-resolution satellite imagery and terrain.</span>
+  {% endif %}
 </div>
 
-<script type="module">
-import * as THREE from '/static/vendor/three/three.module.min.js';
-import { CSS2DRenderer, CSS2DObject } from '/static/vendor/three/CSS2DRenderer.js';
+<div class="tactical-panel" style="height:680px; position:relative; overflow:hidden;">
+  <div id="cesiumContainer" style="width:100%; height:100%;"></div>
+  <div id="entity-info-panel" class="tactical-panel hidden" style="position:absolute; top:12px; right:12px; width:340px; max-height:calc(100% - 24px); overflow-y:auto; z-index:20; padding:12px;">
+    <div class="flex items-center justify-between mb-2">
+      <div class="stencil-header text-[10px]" id="info-panel-title">--</div>
+      <button id="info-panel-close" class="text-[var(--text-dim)] hover:text-[var(--crimson)] text-xs">&times;</button>
+    </div>
+    <div id="info-panel-body" class="text-[10px] leading-relaxed"></div>
+  </div>
+</div>
 
-const AMBER = 0x00e0ff, CRIMSON = 0xff2b4d, GREEN = 0x4aff7a, BLUE = 0x4aa3ff, TEAL = 0x2dd4bf, BG = 0x121417;
-const LABEL_ZOOM_DISTANCE = 3.6; // camera distance below which city/port/capital labels appear
-const MIN_ZOOM = 2.6, MAX_ZOOM = 9;
+<script>
+const CESIUM_ION_TOKEN = {{ cesium_ion_token | tojson }};
+
+// ---------------------------------------------------------------------
+// 13-status pipeline color/animation taxonomy -- exact values, matching
+// app/models/enums.py::MasterLogStatus string-for-string.
+// ---------------------------------------------------------------------
+const STATUS_STYLE = {
+  "New lead":                { color: "#A0AEC0", anim: "static",     label: "Ghost Gray -- small static node" },
+  "App Sent":                { color: "#00B4D8", anim: "pulse",      pulseMs: 500,  label: "Electric Blue -- steady pulse" },
+  "Docs Owed":                { color: "#FFB703", anim: "pulse",      pulseMs: 1400, label: "Warning Amber -- slow pulse" },
+  "Chase Docs":               { color: "#FB8500", anim: "flash",      flashMs: 180,  label: "Deep Orange -- rapid flash" },
+  "Docs in":                  { color: "#38A3A5", anim: "static",     label: "Vivid Lime Green -- solid anchor" },
+  "In negotiation":           { color: "#7209B7", anim: "halo",       label: "Electric Violet -- spinning halo" },
+  "Offer Made Not Sold":      { color: "#F72585", anim: "ring",       label: "Hot Magenta -- neon ring" },
+  "Sold Deal Killed":         { color: "#4A5568", anim: "dim",        label: "Muted Slate -- graveyard node" },
+  "Deal Stalled Proxy Pass":  { color: "#CCFF00", anim: "flicker",    label: "Toxic Yellow-Green -- intermittent flicker" },
+  "Funded":                   { color: "#4CC9F0", anim: "beacon",     pulseMs: 600,  label: "Gold Beacon -- crown jewel, tracks live cargo" },
+  "Ghosted":                  { color: "#2D333B", anim: "dim",        label: "Dark Industrial Steel -- low-opacity node" },
+  "Loss to Competitor":       { color: "#D90429", anim: "x",          label: "Blood Crimson -- battleground X-marker" },
+  "Dog Shit":                 { color: "#121417", anim: "hidden",     label: "Dead Black -- filtered/hidden cluster" },
+};
+const VESSEL_STATE_COLOR = { normal: "#4aff7a", friction: "#FFB703", distress: "#D90429" };
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, opts);
@@ -51,254 +95,360 @@ async function fetchJSON(url, opts) {
   return res.json();
 }
 
-function latLonToVec3(lat, lon, r) {
-  const phi = (90 - lat) * (Math.PI / 180);
-  const theta = (lon + 180) * (Math.PI / 180);
-  return new THREE.Vector3(
-    -r * Math.sin(phi) * Math.cos(theta),
-    r * Math.cos(phi),
-    r * Math.sin(phi) * Math.sin(theta)
+// ---------------------------------------------------------------------
+// Canvas-generated billboard textures -- no external image assets, drawn
+// once per (shape, color) and reused across every entity of that kind.
+// ---------------------------------------------------------------------
+function makeShapeTexture(shape, color) {
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 5;
+  if (shape === 'dot') {
+    ctx.beginPath(); ctx.arc(size/2, size/2, size/2 - 6, 0, Math.PI * 2); ctx.fill();
+  } else if (shape === 'ring') {
+    ctx.beginPath(); ctx.arc(size/2, size/2, size/2 - 8, 0, Math.PI * 2); ctx.stroke();
+  } else if (shape === 'halo') {
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(size/2, size/2, size/2 - 4, 0, Math.PI * 1.5); ctx.stroke();
+    ctx.beginPath(); ctx.arc(size/2, size/2, size/2 - 12, Math.PI * 0.4, Math.PI * 2); ctx.stroke();
+  } else if (shape === 'x') {
+    ctx.lineWidth = 7; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(14, 14); ctx.lineTo(size - 14, size - 14);
+    ctx.moveTo(size - 14, 14); ctx.lineTo(14, size - 14); ctx.stroke();
+  } else if (shape === 'triangle') {
+    ctx.beginPath(); ctx.moveTo(size/2, 6); ctx.lineTo(size - 10, size - 10); ctx.lineTo(10, size - 10); ctx.closePath(); ctx.fill();
+  }
+  return canvas.toDataURL();
+}
+const _textureCache = new Map();
+function shapeTexture(shape, color) {
+  const key = `${shape}:${color}`;
+  if (!_textureCache.has(key)) _textureCache.set(key, makeShapeTexture(shape, color));
+  return _textureCache.get(key);
+}
+
+// ---------------------------------------------------------------------
+// Cesium viewer -- brutalist tactical styling: dark canvas, atmosphere
+// on, fog tuned down (this is a surveillance instrument, not a scenic
+// flight sim), requestRenderMode for performance (only re-renders on
+// change, not every frame at 60fps regardless of activity).
+// ---------------------------------------------------------------------
+let baseLayer;
+if (CESIUM_ION_TOKEN) {
+  Cesium.Ion.defaultAccessToken = CESIUM_ION_TOKEN;
+} else {
+  // No token: fall back to Cesium's own bundled offline imagery
+  // (Assets/Textures/NaturalEarthII, shipped in the vendored static
+  // build) instead of failing to render any basemap at all. Lower
+  // resolution, no terrain -- upgrades automatically once a real
+  // CESIUM_ION_TOKEN is set (see app/config.py::cesium_ion_token).
+  baseLayer = Cesium.ImageryLayer.fromProviderAsync(
+    Cesium.TileMapServiceImageryProvider.fromUrl(Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'))
   );
 }
 
-// Zoom-gated name label: a small CSS2DObject attached as a child of the
-// dot mesh so it tracks the dot's position automatically. Starts hidden;
-// updateLabelVisibility() (called every frame) shows it only when the
-// camera is zoomed in close AND the point is on the camera-facing side
-// of the globe (CSS2DRenderer doesn't depth-test against the opaque
-// sphere on its own, so without this a label on the far side would
-// render right through the globe).
-const labelObjects = [];
-function addLabel(parentMesh, text, colorHex) {
-  const el = document.createElement('div');
-  el.textContent = text;
-  el.style.fontSize = '9px';
-  el.style.fontFamily = "'JetBrains Mono', monospace";
-  el.style.color = colorHex;
-  el.style.textShadow = '0 0 3px #000, 0 0 3px #000';
-  el.style.whiteSpace = 'nowrap';
-  el.style.transform = 'translate(6px, -6px)';
-  const label = new CSS2DObject(el);
-  label.visible = false;
-  parentMesh.add(label);
-  labelObjects.push({ mesh: parentMesh, label });
-}
+const viewer = new Cesium.Viewer('cesiumContainer', {
+  ...(baseLayer ? { baseLayer } : {}),
+  baseLayerPicker: false,
+  geocoder: false,
+  homeButton: false,
+  sceneModePicker: false,
+  navigationHelpButton: false,
+  animation: false,
+  timeline: false,
+  fullscreenButton: false,
+  infoBox: false,
+  selectionIndicator: false,
+  requestRenderMode: true,
+  maximumRenderTimeChange: Infinity,
+});
+window.viewer = viewer;
 
-// Point markers (ports/capitals/signals) are sized to read well at the
-// default zoomed-out view. Left alone, perspective would balloon them
-// hugely as the camera dollies in close (a marker that subtends a small
-// angle at distance 6.5 subtends a much larger one at distance 2.6).
-// Rescale each marker by its actual distance to the camera every frame
-// so it holds a roughly constant on-screen size instead -- standard
-// "billboard at constant screen size" compensation. Only affects the
-// dot mesh's own scale; CSS2DRenderer positions labels from world
-// translation only; it ignores the parent's scale, so this doesn't
-// distort or shift the label text at all (verified against the vendored
-// CSS2DRenderer.js source).
-const MARKER_REFERENCE_DIST = 4.5, MARKER_MIN_SCALE = 0.15;
-function updateMarkers() {
-  const worldPos = new THREE.Vector3();
-  for (const group of [portMeshes, usaceMeshes, capitalMeshes, signalMeshes]) {
-    for (const mesh of group.children) {
-      mesh.getWorldPosition(worldPos);
-      const distToCam = camera.position.distanceTo(worldPos);
-      mesh.scale.setScalar(Math.max(MARKER_MIN_SCALE, Math.min(1, distToCam / MARKER_REFERENCE_DIST)));
-    }
-  }
+viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#121417');
+viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0a0c0e');
+viewer.scene.skyAtmosphere.show = true;
+viewer.scene.fog.enabled = true;
+viewer.scene.fog.density = 0.00012;
+viewer.scene.fog.screenSpaceErrorFactor = 4.0;
+viewer.scene.globe.enableLighting = false;
 
-  const zoomedIn = camera.position.length() < LABEL_ZOOM_DISTANCE;
-  for (const { mesh, label } of labelObjects) {
-    if (!zoomedIn) { label.visible = false; continue; }
-    mesh.getWorldPosition(worldPos);
-    const facing = worldPos.clone().normalize().dot(camera.position.clone().sub(worldPos).normalize());
-    label.visible = facing > 0.1;
+if (CESIUM_ION_TOKEN) {
+  try {
+    viewer.scene.setTerrain(Cesium.Terrain.fromWorldTerrain());
+  } catch (err) {
+    console.warn('World terrain unavailable, continuing without it:', err);
   }
 }
 
-const container = document.getElementById('globe-container');
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(BG);
+// requestRenderMode means Cesium only repaints on change -- force a
+// steady heartbeat so CallbackProperty-driven pulse/flash/spin/flicker
+// animations actually animate instead of freezing on the first frame.
+setInterval(() => viewer.scene.requestRender(), 100);
 
-const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 100);
-camera.position.set(0, 0, 6.5);
+// ---------------------------------------------------------------------
+// Static reference layers -- country borders, admin-1 (state/province)
+// borders, sea routes, major ports, USACE river ports, capitals. Same
+// pre-generated JSON this dashboard already had under Three.js; just
+// rendered through Cesium's entity API instead now. Real coordinates,
+// static reference data -- not live-routed shipping (see caption above).
+// ---------------------------------------------------------------------
+function toCartesianArray(ring) {
+  const flat = [];
+  for (const [lon, lat] of ring) flat.push(lon, lat);
+  return Cesium.Cartesian3.fromDegreesArray(flat);
+}
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(container.clientWidth, container.clientHeight);
-container.appendChild(renderer.domElement);
-
-// CSS2DRenderer draws the zoom-gated name labels as real DOM text (crisp
-// at any zoom level, unlike a canvas-texture sprite) layered on top of
-// the WebGL canvas. pointer-events:none so drag/hover/wheel still reach
-// the canvas underneath.
-const labelRenderer = new CSS2DRenderer();
-labelRenderer.setSize(container.clientWidth, container.clientHeight);
-labelRenderer.domElement.style.position = 'absolute';
-labelRenderer.domElement.style.top = '0';
-labelRenderer.domElement.style.left = '0';
-labelRenderer.domElement.style.pointerEvents = 'none';
-container.appendChild(labelRenderer.domElement);
-
-const globeGroup = new THREE.Group();
-scene.add(globeGroup);
-
-// Dark solid core sphere (the "body" of the globe)
-const core = new THREE.Mesh(
-  new THREE.SphereGeometry(1.98, 48, 48),
-  new THREE.MeshBasicMaterial({ color: 0x0a0c0e })
-);
-globeGroup.add(core);
-
-// Wireframe lat/lon grid overlay -- kept subtle now that real country
-// borders (below) are the crisp readable layer.
-const wireframe = new THREE.Mesh(
-  new THREE.SphereGeometry(2, 32, 24),
-  new THREE.MeshBasicMaterial({ color: AMBER, wireframe: true, transparent: true, opacity: 0.2 })
-);
-globeGroup.add(wireframe);
-
-// Real country borders (Natural Earth 110m via world-atlas, pre-flattened
-// at build time by scripts/build-country-borders.js -- see that file to
-// regenerate at a finer resolution).
 async function renderCountryBorders() {
   const rings = await fetchJSON('/static/data/country-borders.json');
-  const r = 2.001;
-  const positions = [];
   for (const ring of rings) {
-    for (let i = 0; i < ring.length - 1; i++) {
-      const [lon1, lat1] = ring[i];
-      const [lon2, lat2] = ring[i + 1];
-      const p1 = latLonToVec3(lat1, lon1, r);
-      const p2 = latLonToVec3(lat2, lon2, r);
-      positions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-    }
+    if (ring.length < 2) continue;
+    viewer.entities.add({
+      polyline: {
+        positions: toCartesianArray(ring),
+        width: 1,
+        material: Cesium.Color.fromCssColorString('#00e0ff').withAlpha(0.45),
+        clampToGround: true,
+      },
+    });
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  const material = new THREE.LineBasicMaterial({ color: AMBER, transparent: true, opacity: 0.45 });
-  globeGroup.add(new THREE.LineSegments(geometry, material));
 }
 
-// State/province ("inland") borders -- Natural Earth 50m admin-1 boundary
-// lines, pre-flattened at build time by scripts/build-admin1-borders.js.
-// Sits just under the national-border layer (dimmer, thinner-reading)
-// so the hierarchy is legible: country outline > state/province outline.
-// Covers all 50 US states + DC plus first-level divisions for every other
-// country Natural Earth tracks them for.
 async function renderAdmin1Borders() {
   const lines = await fetchJSON('/static/data/admin1-borders.json');
-  const r = 2.0008;
-  const positions = [];
   for (const line of lines) {
-    for (let i = 0; i < line.length - 1; i++) {
-      const [lon1, lat1] = line[i];
-      const [lon2, lat2] = line[i + 1];
-      const p1 = latLonToVec3(lat1, lon1, r);
-      const p2 = latLonToVec3(lat2, lon2, r);
-      positions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-    }
+    if (line.length < 2) continue;
+    viewer.entities.add({
+      polyline: {
+        positions: toCartesianArray(line),
+        width: 1,
+        material: Cesium.Color.fromCssColorString('#00e0ff').withAlpha(0.18),
+        clampToGround: true,
+      },
+    });
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  const material = new THREE.LineBasicMaterial({ color: AMBER, transparent: true, opacity: 0.2 });
-  globeGroup.add(new THREE.LineSegments(geometry, material));
 }
 
-// Major trade route corridors -- multi-hop great-circle arcs through real
-// chokepoints (Malacca, Suez, Hormuz, Panama, Gibraltar, Cape of Good
-// Hope), pre-computed at build time by scripts/build-globe-extras.js.
-// Static reference layer, not live-routed shipping data (see caption
-// above the globe).
 async function renderSeaRoutes() {
   const routes = await fetchJSON('/static/data/sea-routes.json');
-  const r = 2.003;
-  const positions = [];
   for (const route of routes) {
-    for (let i = 0; i < route.length - 1; i++) {
-      const [lon1, lat1] = route[i];
-      const [lon2, lat2] = route[i + 1];
-      const p1 = latLonToVec3(lat1, lon1, r);
-      const p2 = latLonToVec3(lat2, lon2, r);
-      positions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+    if (route.length < 2) continue;
+    viewer.entities.add({
+      polyline: {
+        positions: toCartesianArray(route),
+        width: 1.5,
+        material: new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.fromCssColorString('#4aff7a').withAlpha(0.45) }),
+        clampToGround: true,
+      },
+    });
+  }
+}
+
+const LABEL_VISIBLE_METERS = 600000; // labels appear once camera is within this distance
+
+async function renderPointLayer(url, color, tooltipSuffix) {
+  const points = await fetchJSON(url);
+  for (const p of points) {
+    viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(p.lon, p.lat),
+      point: { pixelSize: 5, color: Cesium.Color.fromCssColorString(color), outlineWidth: 0, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+      label: {
+        text: p.name + (tooltipSuffix || ''),
+        font: '11px "JetBrains Mono", monospace',
+        fillColor: Cesium.Color.fromCssColorString(color),
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        pixelOffset: new Cesium.Cartesian2(8, -8),
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, LABEL_VISIBLE_METERS),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      properties: { kind: 'reference-point', name: p.name },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------
+// 13-status lead entities
+// ---------------------------------------------------------------------
+let leadEntityIds = [];
+function clearLeadEntities() {
+  for (const id of leadEntityIds) {
+    const e = viewer.entities.getById(id);
+    if (e) viewer.entities.remove(e);
+  }
+  leadEntityIds = [];
+}
+
+function addLeadEntity(lead) {
+  const style = STATUS_STYLE[lead.status] || STATUS_STYLE['New lead'];
+  const position = Cesium.Cartesian3.fromDegrees(lead.longitude, lead.latitude, 15000);
+  const id = `lead:${lead.lead_uid}`;
+  const showFiltered = document.getElementById('show-filtered-toggle').checked;
+
+  let shape = 'dot';
+  if (style.anim === 'ring') shape = 'ring';
+  if (style.anim === 'x') shape = 'x';
+  const baseImage = shapeTexture(shape, style.color);
+
+  let scaleProp = 0.9, colorProp = Cesium.Color.WHITE, showProp = style.anim !== 'hidden' || showFiltered;
+  if (style.anim === 'pulse' || style.anim === 'beacon') {
+    const period = style.pulseMs || 600;
+    scaleProp = new Cesium.CallbackProperty(() => 0.75 + 0.35 * Math.abs(Math.sin(performance.now() / period)), false);
+  } else if (style.anim === 'flash') {
+    const period = style.flashMs || 200;
+    colorProp = new Cesium.CallbackProperty(() => Cesium.Color.WHITE.withAlpha(0.4 + 0.6 * Math.abs(Math.sin(performance.now() / period))), false);
+  } else if (style.anim === 'flicker') {
+    showProp = new Cesium.CallbackProperty(() => Math.random() > 0.15, false);
+  } else if (style.anim === 'dim') {
+    colorProp = Cesium.Color.WHITE.withAlpha(0.45);
+  } else if (style.anim === 'ring') {
+    scaleProp = new Cesium.CallbackProperty(() => 0.8 + 0.25 * Math.abs(Math.sin(performance.now() / 500)), false);
+  }
+
+  viewer.entities.add({
+    id,
+    position,
+    billboard: {
+      image: baseImage,
+      scale: scaleProp,
+      color: colorProp,
+      show: showProp,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+    properties: { kind: 'lead', ...lead },
+    show: style.anim !== 'hidden' || showFiltered,
+  });
+  leadEntityIds.push(id);
+
+  // "In negotiation" spinning halo -- a genuine rotating billboard
+  // (points have no orientation in Cesium, billboards do), not just an
+  // oscillating shape standing in for "spin".
+  if (style.anim === 'halo') {
+    const haloId = `${id}:halo`;
+    viewer.entities.add({
+      id: haloId,
+      position,
+      billboard: {
+        image: shapeTexture('halo', style.color),
+        scale: 1.3,
+        rotation: new Cesium.CallbackProperty(() => performance.now() / 500, false),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      properties: { kind: 'lead-halo', lead_uid: lead.lead_uid },
+    });
+    leadEntityIds.push(haloId);
+  }
+
+  // Funded = "crown jewel tracking node ... links to active supply-chain
+  // stream": a real link, not cosmetic -- if any tracked vessel's
+  // geofence activity resolved to this lead's entity_uid (see
+  // river_surveillance.py::_resolve_entity), draw a live connecting line
+  // from the lead to that vessel's current position.
+  if (style.anim === 'beacon') {
+    const linked = currentVessels.find(v => v.linked_lead_uid === lead.lead_uid);
+    if (linked) {
+      const linkId = `${id}:supply-chain-link`;
+      viewer.entities.add({
+        id: linkId,
+        polyline: {
+          positions: new Cesium.CallbackProperty(() => [
+            position,
+            Cesium.Cartesian3.fromDegrees(linked.longitude, linked.latitude, 5000),
+          ], false),
+          width: 2,
+          material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.25, color: Cesium.Color.fromCssColorString(style.color) }),
+        },
+        properties: { kind: 'supply-chain-link', lead_uid: lead.lead_uid },
+      });
+      leadEntityIds.push(linkId);
     }
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  const material = new THREE.LineBasicMaterial({ color: GREEN, transparent: true, opacity: 0.35 });
-  globeGroup.add(new THREE.LineSegments(geometry, material));
+
+  return id;
 }
 
-// Major world container ports -- static reference points, hoverable for
-// name lookup via the raycaster wired up below.
-const portMeshes = new THREE.Group();
-globeGroup.add(portMeshes);
+async function refreshLeads() {
+  const leads = await fetchJSON('/api/globe/leads');
+  document.getElementById('lead-count').textContent = leads.length;
+  clearLeadEntities();
+  for (const lead of leads) addLeadEntity(lead);
+  viewer.scene.requestRender();
+}
 
-async function renderMajorPorts() {
-  const ports = await fetchJSON('/static/data/major-ports.json');
-  const dotGeometry = new THREE.SphereGeometry(0.03, 8, 8);
-  const material = new THREE.MeshBasicMaterial({ color: GREEN });
-  for (const p of ports) {
-    const dot = new THREE.Mesh(dotGeometry, material);
-    dot.position.copy(latLonToVec3(p.lat, p.lon, 2.02));
-    dot.userData.tooltip = p.name;
-    dot.userData.color = '#4aff7a';
-    addLabel(dot, p.name, '#4aff7a');
-    portMeshes.add(dot);
+// ---------------------------------------------------------------------
+// River/ocean vessel traffic -- green/amber/red from
+// river_surveillance.py::classify_vessel_state, polled from
+// /api/river-surveillance/vessels. `linked_lead_uid` (added client-side
+// below) powers the Funded-lead supply-chain link above.
+// ---------------------------------------------------------------------
+let currentVessels = [];
+
+function upsertVesselEntity(vessel) {
+  const id = `vessel:${vessel.mmsi}`;
+  const position = Cesium.Cartesian3.fromDegrees(vessel.longitude, vessel.latitude, 3000);
+  const color = VESSEL_STATE_COLOR[vessel.state] || VESSEL_STATE_COLOR.normal;
+  const image = shapeTexture('triangle', color);
+  let entity = viewer.entities.getById(id);
+
+  const scaleProp = vessel.state === 'distress'
+    ? new Cesium.CallbackProperty(() => 0.7 + 0.3 * Math.abs(Math.sin(performance.now() / 250)), false)
+    : 0.7;
+
+  if (!entity) {
+    entity = viewer.entities.add({
+      id,
+      position,
+      billboard: { image, scale: scaleProp, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+      properties: { kind: 'vessel', ...vessel },
+    });
+  } else {
+    entity.position = position;
+    entity.billboard.image = image;
+    entity.billboard.scale = scaleProp;
+    entity.properties = new Cesium.PropertyBag({ kind: 'vessel', ...vessel });
   }
+  return entity;
 }
 
-// USACE-maintained US inland river ports -- static reference points (see
-// caption above the globe), hoverable like major ocean ports.
-const usaceMeshes = new THREE.Group();
-globeGroup.add(usaceMeshes);
+async function refreshVessels() {
+  const vessels = await fetchJSON('/api/river-surveillance/vessels');
+  currentVessels = vessels;
+  document.getElementById('vessel-count').textContent = vessels.length;
 
-async function renderUSACERiverPorts() {
-  const ports = await fetchJSON('/static/data/usace-river-ports.json');
-  const dotGeometry = new THREE.SphereGeometry(0.03, 8, 8);
-  const material = new THREE.MeshBasicMaterial({ color: TEAL });
-  for (const p of ports) {
-    const dot = new THREE.Mesh(dotGeometry, material);
-    dot.position.copy(latLonToVec3(p.lat, p.lon, 2.02));
-    dot.userData.tooltip = `${p.name} (USACE river port)`;
-    dot.userData.color = '#2dd4bf';
-    addLabel(dot, p.name, '#2dd4bf');
-    usaceMeshes.add(dot);
+  const seen = new Set();
+  for (const v of vessels) {
+    upsertVesselEntity(v);
+    seen.add(`vessel:${v.mmsi}`);
   }
-}
-
-// National capitals -- static reference points, hoverable.
-const capitalMeshes = new THREE.Group();
-globeGroup.add(capitalMeshes);
-
-async function renderCapitals() {
-  const capitals = await fetchJSON('/static/data/capitals.json');
-  const dotGeometry = new THREE.SphereGeometry(0.022, 6, 6);
-  const material = new THREE.MeshBasicMaterial({ color: BLUE });
-  for (const c of capitals) {
-    const dot = new THREE.Mesh(dotGeometry, material);
-    dot.position.copy(latLonToVec3(c.lat, c.lon, 2.02));
-    dot.userData.tooltip = `${c.name} (${c.country})`;
-    dot.userData.color = '#4aa3ff';
-    addLabel(dot, c.name, '#4aa3ff');
-    capitalMeshes.add(dot);
+  for (const e of [...viewer.entities.values]) {
+    if (e.id && e.id.startsWith('vessel:') && !seen.has(e.id)) viewer.entities.remove(e);
   }
+  viewer.scene.requestRender();
 }
 
-const signalMeshes = new THREE.Group();
-globeGroup.add(signalMeshes);
-
+// ---------------------------------------------------------------------
+// GDELT / AIS macro signals (existing globe_signals feed, unchanged)
+// ---------------------------------------------------------------------
 async function renderSignals() {
   const signals = await fetchJSON('/api/globe/signals');
   document.getElementById('signal-count').textContent = signals.length;
-
-  while (signalMeshes.children.length) signalMeshes.remove(signalMeshes.children[0]);
-
-  const dotGeometry = new THREE.SphereGeometry(0.02, 6, 6);
-  for (const s of signals) {
-    const color = s.source === 'gdelt' ? CRIMSON : AMBER;
-    const dot = new THREE.Mesh(dotGeometry, new THREE.MeshBasicMaterial({ color }));
-    dot.position.copy(latLonToVec3(s.latitude, s.longitude, 2.02));
-    signalMeshes.add(dot);
+  for (const e of [...viewer.entities.values]) {
+    if (e.id && e.id.startsWith('signal:')) viewer.entities.remove(e);
   }
+  for (const s of signals) {
+    const color = s.source === 'gdelt' ? '#ff2b4d' : '#00e0ff';
+    viewer.entities.add({
+      id: `signal:${s.id}`,
+      position: Cesium.Cartesian3.fromDegrees(s.longitude, s.latitude, 1000),
+      point: { pixelSize: 4, color: Cesium.Color.fromCssColorString(color), disableDepthTestDistance: Number.POSITIVE_INFINITY },
+      properties: { kind: 'signal', ...s },
+    });
+  }
+  viewer.scene.requestRender();
 }
 
 async function renderSourceStatus() {
@@ -311,6 +461,97 @@ async function renderSourceStatus() {
   `).join('');
 }
 
+function renderStatusLegend() {
+  document.getElementById('status-legend').innerHTML = Object.entries(STATUS_STYLE).map(([status, s]) => `
+    <div class="flex items-center gap-1.5">
+      <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${s.color}"></span>
+      <span>${status} <span class="text-[var(--text-dim)]">(${s.label})</span></span>
+    </div>
+  `).join('');
+}
+
+// ---------------------------------------------------------------------
+// Click -> orbital fly-to + info panel. Behavioral/audit signals shown
+// here are real (activity ledger, Brain score, call sentiment) -- this
+// system has no biometric data source, so nothing here is labeled or
+// implied to be biometric.
+// ---------------------------------------------------------------------
+function propsToObject(properties, time) {
+  if (!properties) return {};
+  if (typeof properties.getValue === 'function') return properties.getValue(time) || {};
+  return properties;
+}
+
+function showInfoPanel(entity) {
+  const props = propsToObject(entity.properties, viewer.clock.currentTime);
+  const panel = document.getElementById('entity-info-panel');
+  const title = document.getElementById('info-panel-title');
+  const body = document.getElementById('info-panel-body');
+
+  if (props.kind === 'lead') {
+    title.textContent = props.business_name;
+    const bs = props.behavioral_signals || {};
+    const activity = Object.entries(bs.activity_event_counts || {}).map(([k, v]) => `${k}:${v}`).join(', ') || 'none logged';
+    body.innerHTML = `
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Status:</span> ${props.status}</div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Co-broker:</span> ${props.co_broker}</div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">State:</span> ${props.state || '--'}</div>
+      <div class="mb-2 pt-2 border-t border-[var(--panel-border)]">
+        <div class="text-[var(--amber)] uppercase text-[9px] mb-1">Behavioral &amp; Audit Signals</div>
+        <div class="mb-1"><span class="text-[var(--text-dim)]">Activity ledger:</span> ${activity}</div>
+        <div class="mb-1"><span class="text-[var(--text-dim)]">Brain funded-probability:</span> ${bs.predicted_funded_probability != null ? (bs.predicted_funded_probability * 100).toFixed(1) + '% (' + bs.brain_mode + ')' : 'not yet scored'}</div>
+        <div class="mb-1"><span class="text-[var(--text-dim)]">Call sentiment:</span> ${bs.call_sentiment ? JSON.stringify(bs.call_sentiment) : 'no analyzed call on file'}</div>
+      </div>
+      <div class="pt-2 border-t border-[var(--panel-border)]">
+        <div class="text-[var(--amber)] uppercase text-[9px] mb-1">Notes / Audit Trail</div>
+        <div class="whitespace-pre-wrap">${props.notes || '(none)'}</div>
+      </div>
+    `;
+  } else if (props.kind === 'vessel') {
+    title.textContent = props.vessel_name || `MMSI ${props.mmsi}`;
+    body.innerHTML = `
+      <div class="mb-1"><span class="text-[var(--text-dim)]">MMSI:</span> ${props.mmsi}</div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Zone:</span> ${props.zone_name}</div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Speed:</span> ${props.speed_knots != null ? props.speed_knots.toFixed(1) + ' kt' : '--'}</div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">State:</span> <span style="color:${VESSEL_STATE_COLOR[props.state]}">${props.state.toUpperCase()}</span></div>
+      <div class="mb-1"><span class="text-[var(--text-dim)]">Last observed:</span> ${new Date(props.observed_at).toISOString().slice(0,19)}Z</div>
+    `;
+  } else if (props.kind === 'reference-point') {
+    title.textContent = props.name;
+    body.innerHTML = `<div class="text-[var(--text-dim)]">Static geographic reference point.</div>`;
+  } else {
+    return;
+  }
+  panel.classList.remove('hidden');
+}
+
+document.getElementById('info-panel-close').addEventListener('click', () => {
+  document.getElementById('entity-info-panel').classList.add('hidden');
+});
+
+const clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+clickHandler.setInputAction((movement) => {
+  const picked = viewer.scene.pick(movement.position);
+  if (!Cesium.defined(picked) || !picked.id || !picked.id.position) {
+    document.getElementById('entity-info-panel').classList.add('hidden');
+    return;
+  }
+  const entity = picked.id;
+  showInfoPanel(entity);
+
+  const position = entity.position.getValue(viewer.clock.currentTime);
+  if (position) {
+    const carto = Cesium.Cartographic.fromCartesian(position);
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, 80000),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-55), roll: 0 },
+      duration: 2.2,
+    });
+  }
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+document.getElementById('show-filtered-toggle').addEventListener('change', refreshLeads);
+
 document.getElementById('globe-refresh-btn').addEventListener('click', async (e) => {
   e.target.disabled = true;
   e.target.textContent = 'Sweeping...';
@@ -318,7 +559,7 @@ document.getElementById('globe-refresh-btn').addEventListener('click', async (e)
   try {
     const data = await fetchJSON('/api/globe/refresh', { method: 'POST' });
     statusDiv.textContent = 'Ingested: ' + Object.entries(data.ingested).map(([s, r]) => r.error ? `${s}:ERROR(${r.error})` : `${s}:${r.count}`).join(', ');
-    await renderSignals();
+    await Promise.all([renderSignals(), refreshLeads(), refreshVessels()]);
   } catch (err) {
     statusDiv.textContent = 'Refresh failed: ' + err.message;
   } finally {
@@ -327,78 +568,32 @@ document.getElementById('globe-refresh-btn').addEventListener('click', async (e)
   }
 });
 
-// Slow continuous spin, per spec -- plus basic click-drag to look around.
-let dragging = false, lastX = 0, lastY = 0, rotY = 0, rotX = 0;
-renderer.domElement.addEventListener('pointerdown', (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
-window.addEventListener('pointerup', () => dragging = false);
-window.addEventListener('pointermove', (e) => {
-  if (!dragging) return;
-  rotY += (e.clientX - lastX) * 0.005;
-  rotX += (e.clientY - lastY) * 0.005;
-  rotX = Math.max(-1, Math.min(1, rotX));
-  lastX = e.clientX; lastY = e.clientY;
+// ---------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------
+// Cesium's default home view is an extreme whole-earth distance that
+// reads as a tiny dot in a black void at this panel's size -- start
+// framed over North America instead (similar spirit to the old globe's
+// default framing), close enough that the surface/borders are legible
+// immediately without requiring a manual zoom-in first.
+viewer.camera.setView({
+  destination: Cesium.Cartesian3.fromDegrees(-97, 38, 9000000),
 });
-
-// Scroll/pinch (trackpad pinch reports as wheel+ctrlKey in Chromium/Firefox)
-// to zoom -- dollies the camera along its existing view vector, clamped
-// so you can't clip through the globe or zoom out past the starting view.
-renderer.domElement.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  const dist = camera.position.length();
-  const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, dist + e.deltaY * 0.0025 * dist));
-  camera.position.setLength(next);
-}, { passive: false });
-
-// Hover a port, USACE river port, or capital to see its name.
-const raycaster = new THREE.Raycaster();
-const pointerNDC = new THREE.Vector2();
-const tooltip = document.getElementById('port-tooltip');
-const hoverables = [portMeshes, usaceMeshes, capitalMeshes];
-renderer.domElement.addEventListener('pointermove', (e) => {
-  const rect = renderer.domElement.getBoundingClientRect();
-  pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(pointerNDC, camera);
-  const hit = raycaster.intersectObjects(hoverables.flatMap(g => g.children))[0];
-  if (hit) {
-    tooltip.textContent = hit.object.userData.tooltip;
-    tooltip.style.borderColor = hit.object.userData.color;
-    tooltip.style.color = hit.object.userData.color;
-    tooltip.style.left = (e.clientX - rect.left + 12) + 'px';
-    tooltip.style.top = (e.clientY - rect.top + 12) + 'px';
-    tooltip.classList.remove('hidden');
-  } else {
-    tooltip.classList.add('hidden');
-  }
-});
-renderer.domElement.addEventListener('pointerleave', () => tooltip.classList.add('hidden'));
-
-function animate() {
-  requestAnimationFrame(animate);
-  if (!dragging) rotY += 0.0015;
-  globeGroup.rotation.y = rotY;
-  globeGroup.rotation.x = rotX;
-  globeGroup.updateMatrixWorld();
-  updateMarkers();
-  renderer.render(scene, camera);
-  labelRenderer.render(scene, camera);
-}
-
-window.addEventListener('resize', () => {
-  camera.aspect = container.clientWidth / container.clientHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(container.clientWidth, container.clientHeight);
-  labelRenderer.setSize(container.clientWidth, container.clientHeight);
-});
-
+renderStatusLegend();
 renderCountryBorders();
 renderAdmin1Borders();
 renderSeaRoutes();
-renderMajorPorts();
-renderUSACERiverPorts();
-renderCapitals();
+renderPointLayer('/static/data/major-ports.json', '#4aff7a');
+renderPointLayer('/static/data/usace-river-ports.json', '#2dd4bf', ' (USACE river port)');
+renderPointLayer('/static/data/capitals.json', '#4aa3ff');
 renderSourceStatus();
 renderSignals();
-animate();
+refreshLeads();
+refreshVessels();
+
+// Poll live-moving data on an interval -- leads and vessels change
+// state/position over time even without a manual refresh click.
+setInterval(refreshVessels, 30000);
+setInterval(refreshLeads, 60000);
 </script>
 {% endblock %}

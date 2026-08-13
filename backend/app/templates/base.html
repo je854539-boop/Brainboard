@@ -13,6 +13,7 @@
   <script src="/static/vendor/htmx/htmx.min.js"></script>
   <script src="/static/vendor/htmx/json-enc.js"></script>
   <script defer src="/static/vendor/alpine/alpine.min.js"></script>
+  {% block extra_head %}{% endblock %}
 </head>
 <body class="text-sm" hx-ext="json-enc">
   <div class="warning-stripe"></div>

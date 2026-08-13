@@ -16,6 +16,7 @@ from app.routers import (
     surveillance,
     webhooks,
 )
+from app.routers import river_surveillance as river_surveillance_router
 from app.services import river_surveillance
 
 
@@ -43,6 +44,7 @@ app.include_router(enrichment.router)
 app.include_router(brain.router)
 app.include_router(globe.router)
 app.include_router(calls.router)
+app.include_router(river_surveillance_router.router)
 
 
 @app.get("/healthz")

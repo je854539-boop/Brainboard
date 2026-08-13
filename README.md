@@ -205,25 +205,72 @@ apps_script/
   telephony integration, it doesn't place/receive/route calls. Optionally
   tag a call with a lead so it lands on that lead's activity ledger.
 - **Brain** (`/brain`) -- the shadow-mode scoring engine (see below).
-- **Globe** (`/globe`) -- a spinning, zoomable 3D globe (vendored Three.js)
-  plotting GFW 4Wings, Datalastic, and VesselFinder marine/AIS traffic
-  plus GDELT conflict-zone events (last 24h), with country border
-  outlines (Natural Earth 50m via `world-atlas`),
-  state/province ("admin-1") border outlines for every country Natural
-  Earth tracks them for -- including all 50 US states + DC -- major global
-  trade corridors, ~45 major world ocean container ports, ~23 USACE inland
-  river ports (Mississippi/Ohio/Illinois/Tennessee/Arkansas/Columbia-Snake
-  systems), and all 241 national capitals. Scroll/pinch to zoom; ports,
-  USACE ports, and capitals are hoverable for name always, and additionally
-  show a persistent name label once you're zoomed in close (labels scale-
-  compensate so point markers don't balloon at close range, and only show
-  on the camera-facing hemisphere). The borders/routes/ports/capitals
-  layers are static reference geometry pre-flattened at build time -- see
-  "Frontend dependencies" below -- not live-routed shipping data (that's
-  what the amber marine-traffic signal dots, fed by GFW 4Wings/
-  Datalastic/VesselFinder, are for). There is a genuine *live* USACE
-  signal in the app, just not on this page -- see the CME Macro Funnel
-  entry in "Silo Grid" below for the lock-congestion adapter.
+- **Globe** (`/globe`) -- a true 3D globe rendered with **CesiumJS**
+  (vendored locally like everything else, no runtime CDN), replacing the
+  earlier Three.js implementation. Plots:
+  - **Every Master Log V2 lead**, color-coded and animated by its exact
+    pipeline status -- see "13-status pipeline" below. Leads are placed
+    at their state's approximate centroid (`app/services/globe_geo.py`)
+    since Master Log V2 stores a state, not a geocoded address; several
+    leads in the same state render near the same point.
+  - **Live river/AIS vessel traffic** from the River Surveillance engine
+    (`/api/river-surveillance/vessels`), green/amber/red by
+    `river_surveillance.py::classify_vessel_state`.
+  - GFW 4Wings/Datalastic/VesselFinder marine-traffic signals and GDELT
+    conflict-zone events (last 24h) -- the original `globe_signals` feed,
+    unchanged.
+  - Static reference layers (unchanged data, re-rendered through Cesium's
+    entity API instead of Three.js): country borders (Natural Earth 50m),
+    state/province ("admin-1") borders for every country Natural Earth
+    tracks them for, major trade corridors, ~45 major ocean container
+    ports, ~23 USACE inland river ports, and all 241 national capitals.
+    Port/capital name labels use Cesium's native `DistanceDisplayCondition`
+    (only render once zoomed in close) instead of the old custom
+    CSS2D zoom-gating logic.
+
+  Click any lead or vessel to orbit-dive in (`camera.flyTo`) and open a
+  detail panel with its real audit trail and behavioral signals --
+  **not biometric data**: this system has no biometric data source
+  anywhere, so nothing here is labeled or implied to be one. What's
+  actually shown is real: Master Log activity-ledger event counts, the
+  Brain's latest funded-probability score, Deepgram call sentiment when
+  available, and the lead's `notes` field (which River Surveillance
+  triggers already append themselves to).
+
+  Without a `CESIUM_ION_TOKEN` configured, the globe still renders fully
+  -- using Cesium's own bundled offline Natural Earth II imagery (lower
+  resolution, no terrain) instead of failing to show a basemap at all.
+  Set `CESIUM_ION_TOKEN` (from your own Cesium ion account -- this
+  project can't generate one for you) for full-resolution satellite
+  imagery and real terrain. Note this is inherently a client-visible
+  token, not a hidden server secret -- ion tokens are meant to be used in
+  browser JS and restricted by referrer/domain in your ion dashboard.
+
+  #### 13-status pipeline visualization
+
+  Every `MasterLogStatus` enum value maps 1:1 to a color and animation
+  (verified by an automated check against the real enum, not just
+  eyeballed -- see `app/templates/globe.html`'s `STATUS_STYLE`):
+
+  | Status | Color | Animation |
+  |---|---|---|
+  | New lead | Ghost Gray `#A0AEC0` | small static node |
+  | App Sent | Electric Blue `#00B4D8` | steady pulse |
+  | Docs Owed | Warning Amber `#FFB703` | slow pulse |
+  | Chase Docs | Deep Orange `#FB8500` | rapid flash |
+  | Docs in | Vivid Lime Green `#38A3A5` | solid anchor |
+  | In negotiation | Electric Violet `#7209B7` | spinning halo (a real rotating billboard, not a simulated spin -- Cesium points have no orientation, billboards do) |
+  | Offer Made Not Sold | Hot Magenta `#F72585` | neon ring |
+  | Sold Deal Killed | Muted Slate `#4A5568` | graveyard node (dim, static) |
+  | Deal Stalled Proxy Pass | Toxic Yellow-Green `#CCFF00` | intermittent flicker |
+  | Funded | Gold Beacon `#4CC9F0` | crown-jewel beacon pulse, **and** a real live-updating line to any vessel whose cargo cross-reference resolved to this lead (see River Surveillance's `_resolve_entity`) -- not cosmetic, an actual data link |
+  | Ghosted | Dark Industrial Steel `#2D333B` | low-opacity node |
+  | Loss to Competitor | Blood Crimson `#D90429` | X-marker |
+  | Dog Shit | Dead Black `#121417` | hidden by default -- "Show Dog Shit (filtered)" checkbox reveals it |
+
+  There is a genuine *live* USACE signal in the app beyond this page too
+  -- see the CME Macro Funnel entry in "Silo Grid" below for the
+  lock-congestion adapter, and "River Surveillance" for the full engine.
 - **Analytics** (`/analytics`) -- Kaplan-Meier curves, Markov transition
   matrix, deal-velocity bottlenecks, silo friction correlation, and the
   time-varying Cox engagement-hazard panel.
@@ -255,10 +302,18 @@ time-varying Cox model consumes as covariates.
 
 ### Frontend dependencies are fully vendored -- no runtime CDN calls
 
-`app/static/vendor/{htmx,alpine}`, `app/static/fonts/jetbrains-mono/`, and
-`app/static/css/tailwind.css` are committed, built artifacts. The dashboard
-never fetches from unpkg/cdn.tailwindcss.com/fonts.googleapis.com at
-runtime, so it keeps working on a VPS behind a locked-down egress policy.
+`app/static/vendor/{htmx,alpine,cesium}`, `app/static/fonts/jetbrains-mono/`,
+and `app/static/css/tailwind.css` are committed, built artifacts. The
+dashboard never fetches from unpkg/cdn.tailwindcss.com/fonts.googleapis.com/
+cesium.com at runtime, so it keeps working on a VPS behind a locked-down
+egress policy -- `vendor-assets.js` copies Cesium's entire pre-built
+`Build/Cesium` output (Cesium.js + Widgets CSS + Assets/Workers/ThirdParty,
+~23MB) the same way it copies htmx/Alpine. The one runtime exception is
+Cesium ion's own imagery/terrain *tile* streaming when `CESIUM_ION_TOKEN`
+is set -- that data genuinely can't be vendored (it's not static reference
+geometry, it's the whole planet's satellite imagery), so the globe makes
+live requests to Cesium's servers for it. Without a token it falls back to
+Cesium's bundled offline imagery instead, staying fully local.
 Rebuild them after changing a template's utility classes or bumping a
 vendored version:
 

@@ -41,6 +41,29 @@ copy(
   console.log(`vendored ${path.relative(ROOT, dest)} (patched 'three' import)`);
 }
 
+// CesiumJS -- vendored the same way as everything else here (no runtime
+// CDN dependency). Cesium's own npm package ships a pre-built,
+// bundler-free `Build/Cesium` folder (Cesium.js + Widgets CSS + Assets/
+// Workers/ThirdParty) that's meant to be served as static files exactly
+// like this, so it's a directory copy rather than a single-file copy.
+// Includes Assets/Textures/NaturalEarthII, Cesium's bundled offline
+// basemap imagery -- what the globe falls back to when CESIUM_ION_TOKEN
+// isn't set, instead of failing to render any imagery at all.
+function copyDir(from, to) {
+  fs.mkdirSync(to, { recursive: true });
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    const src = path.join(from, entry.name);
+    const dest = path.join(to, entry.name);
+    if (entry.isDirectory()) copyDir(src, dest);
+    else fs.copyFileSync(src, dest);
+  }
+}
+copyDir(
+  path.join(ROOT, "node_modules/cesium/Build/Cesium"),
+  path.join(ROOT, "app/static/vendor/cesium")
+);
+console.log("vendored app/static/vendor/cesium (CesiumJS static build)");
+
 const fontWeights = ["400", "500", "700"];
 for (const weight of fontWeights) {
   copy(
