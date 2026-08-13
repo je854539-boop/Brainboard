@@ -69,10 +69,11 @@ apps_script/
   itself: GDELT (conflict/supply-chain-shock news), GFW 4Wings/Datalastic/
   VesselFinder (AIS vessel traffic on grain-export corridors), SeaVantage
   (vessel/port-call activity), Import Genius (import/export flow), USACE
-  (lock closures/delays on the Mississippi/Illinois barge system), Regrid
-  (agricultural land data), and Cobalt Intelligence/Apollo.io (company
-  status and commodities-adjacent business discovery). See
-  `app/services/silo_leadgen.py::SOURCE_TO_SILOS` for the full mapping.
+  (barge congestion at Mississippi/Illinois Waterway locks, detected as
+  an AIS proxy -- see below), Regrid (agricultural land data), and
+  Cobalt Intelligence/Apollo.io (company status and commodities-adjacent
+  business discovery). See `app/services/silo_leadgen.py::SOURCE_TO_SILOS`
+  for the full mapping.
 - **Enrichment** (`/enrichment`) -- CSV lead upload and per-lead enrichment
   against all 14 providers (Cobalt Intelligence, Interzoid, Apollo.io,
   openFDA, Deepgram Nova, CME Globex, Import Genius, SeaVantage, Regrid,
@@ -104,9 +105,11 @@ apps_script/
   compensate so point markers don't balloon at close range, and only show
   on the camera-facing hemisphere). The borders/routes/ports/capitals
   layers are static reference geometry pre-flattened at build time -- see
-  "Frontend dependencies" below -- not live-routed shipping data or a
-  live USACE feed (that's what the amber marine-traffic signal dots,
-  fed by GFW 4Wings/Datalastic/VesselFinder, are for).
+  "Frontend dependencies" below -- not live-routed shipping data (that's
+  what the amber marine-traffic signal dots, fed by GFW 4Wings/
+  Datalastic/VesselFinder, are for). There is a genuine *live* USACE
+  signal in the app, just not on this page -- see the CME Macro Funnel
+  entry in "Silo Grid" below for the lock-congestion adapter.
 - **Analytics** (`/analytics`) -- Kaplan-Meier curves, Markov transition
   matrix, deal-velocity bottlenecks, silo friction correlation, and the
   time-varying Cox engagement-hazard panel.
@@ -212,24 +215,27 @@ Everything is inert (no-ops, not errors) until configured:
 - **Telemetry providers** (macro silo sweeps): set `CME_GLOBEX_API_KEY`,
   `IMPORT_GENIUS_API_KEY`, `SEAVANTAGE_API_KEY`, `REGRID_API_KEY`,
   `HIGHERGOV_API_KEY`, `DATALASTIC_API_KEY`, `VESSELFINDER_API_KEY`,
-  `GFW_API_KEY`, `USACE_API_KEY`. `OPENFDA_API_KEY` and `GDELT_API_KEY`
-  are optional (both work unauthenticated/keyless at normal volume).
-  `OPENFDA_API_KEY` feeds Healthcare & Pharma Silo lead-gen -- a recall
-  is treated as a financing-need signal. SeaVantage/Datalastic/
-  VesselFinder feed Oil & Gas / Refining Silo lead-gen (AIS vessel
-  activity as a financing-need signal for maritime-adjacent leads), and
-  the same three plus GDELT/GFW 4Wings/USACE/Cobalt Intelligence/
-  Apollo.io all feed **CME Macro Funnel** lead-gen -- see the Silo Grid
-  section above for why. Two of those need extra setup beyond an API key:
-  `USACE_API_KEY` also needs `MONITORED_LOCKS` reviewed in
-  `app/services/telemetry/usace.py` (defaults to grain-corridor locks on
-  the Mississippi/Illinois Waterway), and Cobalt Intelligence's telemetry
-  sweep is empty until you populate `MONITORED_SEARCHES` in
-  `app/services/telemetry/cobalt_intelligence.py` -- it's a per-entity
-  lookup API with no bulk endpoint, so the sweep works by looping a
-  configured watch-list of (state, search-term) pairs. UCC filings / SOS
-  registries are per-state -- configure `STATE_ENDPOINTS` in
-  `app/services/telemetry/{ucc_filings,sos_registries}.py`.
+  `GFW_API_KEY`. `OPENFDA_API_KEY` and `GDELT_API_KEY` are optional (both
+  work unauthenticated/keyless at normal volume). `OPENFDA_API_KEY` feeds
+  Healthcare & Pharma Silo lead-gen -- a recall is treated as a
+  financing-need signal. SeaVantage/Datalastic/VesselFinder feed
+  Oil & Gas / Refining Silo lead-gen (AIS vessel activity as a
+  financing-need signal for maritime-adjacent leads), and the same three
+  plus GDELT/GFW 4Wings/USACE/Cobalt Intelligence/Apollo.io all feed
+  **CME Macro Funnel** lead-gen -- see the Silo Grid section above for
+  why. Two of those need extra setup beyond an API key: USACE has no API
+  key of its own -- it detects lock congestion as an AIS proxy off the
+  `DATALASTIC_API_KEY`/`VESSELFINDER_API_KEY` you already set (barges
+  queuing at a lock rather than a direct USACE feed, since there's no
+  confirmed public USACE API to wire up directly), configurable via
+  `MONITORED_LOCKS` in `app/services/telemetry/usace.py` (defaults to
+  grain-corridor locks on the Mississippi/Illinois Waterway). Cobalt
+  Intelligence's telemetry sweep is empty until you populate
+  `MONITORED_SEARCHES` in `app/services/telemetry/cobalt_intelligence.py`
+  -- it's a per-entity lookup API with no bulk endpoint, so the sweep
+  works by looping a configured watch-list of (state, search-term) pairs.
+  UCC filings / SOS registries are per-state -- configure
+  `STATE_ENDPOINTS` in `app/services/telemetry/{ucc_filings,sos_registries}.py`.
 - **Enrichment providers** (per-lead lookups, run at intake against leads
   sourced off the dialer): `COBALT_INTELLIGENCE_API_KEY`,
   `INTERZOID_API_KEY`, `APOLLO_API_KEY`, `OPENFDA_API_KEY` (optional),
