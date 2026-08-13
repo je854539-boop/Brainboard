@@ -212,7 +212,7 @@ Everything is inert (no-ops, not errors) until configured:
   access on the Master Log V2 spreadsheet, the target Calendar, and the
   Drive dossier root folder. Set `GOOGLE_MASTER_LOG_SHEET_ID`,
   `GOOGLE_CALENDAR_ID`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`.
-- **Telemetry providers** (macro silo sweeps): set `CME_GLOBEX_API_KEY`,
+- **Telemetry providers** (macro silo sweeps): set `DATABENTO_API_KEY`,
   `IMPORT_GENIUS_API_KEY`, `SEAVANTAGE_API_KEY`, `REGRID_API_KEY`,
   `HIGHERGOV_API_KEY`, `DATALASTIC_API_KEY`, `VESSELFINDER_API_KEY`,
   `GFW_API_KEY`. `OPENFDA_API_KEY` and `GDELT_API_KEY` are optional (both
@@ -243,10 +243,20 @@ Everything is inert (no-ops, not errors) until configured:
   configured watch-list of (state, search-term) pairs.
   UCC filings / SOS registries are per-state -- configure
   `STATE_ENDPOINTS` in `app/services/telemetry/{ucc_filings,sos_registries}.py`.
+  `DATABENTO_API_KEY` powers CME Globex (get one at databento.com --
+  Databento is a licensed redistributor of the CME Globex MDP 3.0 feed
+  over plain HTTPS, avoiding the direct-exchange license + colocation a
+  raw CME market-data agreement would require; verified against the real
+  [databento-python](https://github.com/databento/databento-python)
+  client source, not guessed -- see
+  `app/services/telemetry/cme_globex.py`). It sweeps daily OHLCV bars for
+  the CBOT grain/oilseed continuous front-month contracts (corn, soybeans,
+  wheat, soybean meal, soybean oil) that anchor the "Chicago commodities
+  market swings and crashes" framing.
 - **Enrichment providers** (per-lead lookups, run at intake against leads
   sourced off the dialer): `COBALT_INTELLIGENCE_API_KEY`,
   `INTERZOID_API_KEY`, `APOLLO_API_KEY`, `OPENFDA_API_KEY` (optional),
-  `DEEPGRAM_API_KEY`, plus the same `CME_GLOBEX_API_KEY`,
+  `DEEPGRAM_API_KEY`, plus the same `DATABENTO_API_KEY`,
   `IMPORT_GENIUS_API_KEY`, `SEAVANTAGE_API_KEY`, `REGRID_API_KEY`,
   `HIGHERGOV_API_KEY`, `GFW_API_KEY`, `DATALASTIC_API_KEY`,
   `VESSELFINDER_API_KEY` used by the telemetry/globe adapters above --

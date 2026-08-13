@@ -28,7 +28,7 @@ def all_enrichment_adapters() -> list[EnrichmentAdapter]:
         ApolloAdapter(api_key=settings.apollo_api_key),
         OpenFDAAdapter(api_key=settings.openfda_api_key),
         DeepgramNovaAdapter(api_key=settings.deepgram_api_key),
-        CMEGlobexEnrichmentAdapter(api_key=settings.cme_globex_api_key),
+        CMEGlobexEnrichmentAdapter(api_key=settings.databento_api_key),
         ImportGeniusEnrichmentAdapter(api_key=settings.import_genius_api_key),
         SeaVantageEnrichmentAdapter(api_key=settings.seavantage_api_key),
         RegridEnrichmentAdapter(api_key=settings.regrid_api_key),

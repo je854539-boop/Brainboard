@@ -17,7 +17,11 @@ class Settings(BaseSettings):
     google_calendar_id: str = "primary"
     google_drive_root_folder_id: str = ""
 
-    cme_globex_api_key: str = ""
+    # CME Globex MDP 3.0 futures data, via Databento (databento.com) -- a
+    # licensed redistributor. Raw CME MDP 3.0 access requires a direct
+    # exchange license + colocation, which Databento's plain HTTPS
+    # historical API avoids. See app/services/telemetry/cme_globex.py.
+    databento_api_key: str = ""
     import_genius_api_key: str = ""
     seavantage_api_key: str = ""
     regrid_api_key: str = ""

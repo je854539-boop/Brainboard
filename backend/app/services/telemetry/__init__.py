@@ -20,7 +20,7 @@ from app.services.telemetry.vesselfinder import VesselFinderAdapter
 def all_adapters() -> list[TelemetryAdapter]:
     settings = get_settings()
     return [
-        CMEGlobexAdapter(api_key=settings.cme_globex_api_key),
+        CMEGlobexAdapter(api_key=settings.databento_api_key),
         ImportGeniusAdapter(api_key=settings.import_genius_api_key),
         SeaVantageAdapter(api_key=settings.seavantage_api_key),
         UCCFilingsAdapter(),
