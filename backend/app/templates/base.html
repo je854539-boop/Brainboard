@@ -20,7 +20,7 @@
   <header class="tactical-panel border-b border-[var(--panel-border)]">
     <div class="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
       <div>
-        <div class="stencil-header text-[var(--amber)] text-base">BRAINBOARD</div>
+        <div class="stencil-header text-[var(--amber)] text-base glitch" data-text="BRAINBOARD">BRAINBOARD</div>
         <div class="text-[10px] tracking-[0.2em] text-[var(--text-dim)] uppercase">Institutional Credit Arbitrage // Macro-Surveillance Grid</div>
       </div>
       <nav class="flex flex-wrap justify-end">
@@ -56,7 +56,13 @@
        it fires an ad hoc call under whichever campaign is picked in the header selector above.
        Screen pop: polls for that call going live and floats this panel with notes/activity/enrichment
        for the entity being called, so it's on screen while the call is happening. -->
-  <div id="screen-pop-panel" class="hidden fixed bottom-4 right-4 w-[360px] max-h-[70vh] overflow-y-auto tactical-panel p-4 z-50" style="box-shadow: 0 0 24px rgba(0,0,0,0.6);"></div>
+  <div id="screen-pop-panel" class="hidden fixed bottom-4 right-4 w-[360px] max-h-[70vh] hud-frame z-50" style="box-shadow: 0 0 24px rgba(0,0,0,0.6);">
+    <span class="hud-corner hud-corner-tl"></span>
+    <span class="hud-corner hud-corner-tr"></span>
+    <span class="hud-corner hud-corner-bl"></span>
+    <span class="hud-corner hud-corner-br"></span>
+    <div id="screen-pop-content" class="max-h-[70vh] overflow-y-auto p-4"></div>
+  </div>
 
   <script>
   (function() {
@@ -101,6 +107,7 @@
 
     function renderScreenPop(attempt, data) {
       const panel = document.getElementById("screen-pop-panel");
+      const content = document.getElementById("screen-pop-content");
       const needsBroker = data.kind === "silo_candidate";
       const activityLines = (data.activity || []).slice(0, 6).map(a =>
         `<div class="text-[var(--text-dim)]">${a.occurred_at.slice(0,16).replace('T',' ')} — ${a.event_type}${a.field_name ? ' ('+a.field_name+')' : ''}${a.new_value ? ': '+a.new_value : ''}</div>`
@@ -110,9 +117,9 @@
       ).join("") || '<div class="text-[var(--text-dim)]">No enrichment on file.</div>';
       const brokerOptions = {{ CO_BROKERS|tojson }}.map(cb => `<option value="${cb}">${cb}</option>`).join("");
 
-      panel.innerHTML = `
+      content.innerHTML = `
         <div class="flex items-center justify-between mb-2">
-          <div class="stencil-header text-[var(--amber)] text-xs">LIVE CALL // ${data.company_name}</div>
+          <div class="stencil-header text-[var(--amber)] text-xs glitch" data-text="LIVE CALL // ${data.company_name}">LIVE CALL // ${data.company_name}</div>
           <button onclick="document.getElementById('screen-pop-panel').classList.add('hidden')" class="text-[var(--text-dim)] hover:text-[var(--crimson)]">✕</button>
         </div>
         <div class="text-[10px] mb-2">
@@ -128,6 +135,9 @@
           <button class="tactical-select text-[10px] py-1 border-[var(--crimson)] text-[var(--crimson)]" onclick="brainboardDisposition('${attempt.id}','purge',${needsBroker})">Purge</button>
         </div>`;
       panel.classList.remove("hidden");
+      panel.classList.remove("glitch-in");
+      void panel.offsetWidth; // restart the animation even if it's already been played once
+      panel.classList.add("glitch-in");
     }
 
     window.brainboardDisposition = async function(attemptId, disposition, needsBroker) {

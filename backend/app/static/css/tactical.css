@@ -203,3 +203,124 @@ body::before {
   display: none;
   color: var(--amber);
 }
+
+/* ---- HUD framing: corner brackets + scan sweep for floating info/pop
+   panels (screen-pop widget, globe entity panel). Corner spans are static
+   siblings of whatever content div gets swapped, so they survive
+   innerHTML replacement on refresh. ---- */
+.hud-frame {
+  /* No position here deliberately -- this class loads after Tailwind's
+     utility CSS, so setting position here would win the cascade over a
+     "fixed"/"absolute" utility class on the same element and silently
+     break it. Both current consumers already set their own position
+     (fixed / absolute), which is all .hud-corner's absolute children need. */
+  overflow: hidden;
+  background-color: var(--panel-bg);
+  border: 1px solid rgba(0, 224, 255, 0.25);
+  box-shadow: 0 0 16px rgba(0, 224, 255, 0.12), inset 0 0 24px rgba(0, 224, 255, 0.04);
+}
+
+.hud-frame::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--amber), transparent);
+  opacity: 0.55;
+  animation: hud-scan 3s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+@keyframes hud-scan {
+  0% { top: 0%; }
+  100% { top: 100%; }
+}
+
+.hud-corner {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.hud-corner-tl { top: -1px; left: -1px; border-top: 2px solid var(--amber); border-left: 2px solid var(--amber); }
+.hud-corner-tr { top: -1px; right: -1px; border-top: 2px solid var(--amber); border-right: 2px solid var(--amber); }
+.hud-corner-bl { bottom: -1px; left: -1px; border-bottom: 2px solid var(--amber); border-left: 2px solid var(--amber); }
+.hud-corner-br { bottom: -1px; right: -1px; border-bottom: 2px solid var(--amber); border-right: 2px solid var(--amber); }
+
+/* One-shot "materializing" glitch burst -- chromatic-aberration jitter,
+   applied via JS when a HUD panel first appears. Not looped/continuous:
+   the point is a snap-into-existence moment, not distracting body copy
+   someone is trying to read mid-call. */
+@keyframes glitch-in {
+  0%   { transform: translate(0, 0); box-shadow: 0 0 0 rgba(0,0,0,0); }
+  15%  { transform: translate(-3px, 1px); box-shadow: 3px 0 0 var(--crimson), -3px 0 0 var(--amber); }
+  30%  { transform: translate(3px, -1px); box-shadow: -3px 0 0 var(--crimson), 3px 0 0 var(--amber); }
+  45%  { transform: translate(-2px, 0); box-shadow: 2px 0 0 var(--crimson), -2px 0 0 var(--amber); }
+  60%  { transform: translate(2px, 0); box-shadow: -2px 0 0 var(--crimson), 2px 0 0 var(--amber); }
+  75%  { transform: translate(0, 0); box-shadow: 0 0 0 rgba(0,0,0,0); }
+  100% { transform: translate(0, 0); box-shadow: 0 0 0 rgba(0,0,0,0); }
+}
+
+.glitch-in {
+  animation: glitch-in 0.35s ease-out 1;
+}
+
+/* Ambient text glitch -- RGB channel split via duplicated text layers,
+   fires briefly on a slow loop. Applied only to decorative headers
+   (brand title, panel titles), deliberately never to body copy someone
+   needs to read accurately (notes, numbers, activity ledger). */
+.glitch {
+  position: relative;
+  display: inline-block;
+}
+
+.glitch::before,
+.glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-deep);
+  clip-path: inset(0 0 100% 0);
+}
+
+.glitch::before {
+  color: var(--crimson);
+  animation: glitch-slice-1 9s infinite steps(1, end);
+}
+
+.glitch::after {
+  color: var(--amber);
+  animation: glitch-slice-2 9s infinite steps(1, end);
+}
+
+@keyframes glitch-slice-1 {
+  0%, 94%, 100% { clip-path: inset(0 0 100% 0); transform: translate(0, 0); }
+  95% { clip-path: inset(10% 0 60% 0); transform: translate(-2px, 0); }
+  96% { clip-path: inset(45% 0 15% 0); transform: translate(2px, 0); }
+  97% { clip-path: inset(70% 0 4% 0); transform: translate(-1px, 0); }
+  98% { clip-path: inset(0 0 100% 0); transform: translate(0, 0); }
+}
+
+@keyframes glitch-slice-2 {
+  0%, 92%, 100% { clip-path: inset(0 0 100% 0); transform: translate(0, 0); }
+  93% { clip-path: inset(20% 0 40% 0); transform: translate(2px, 0); }
+  94% { clip-path: inset(55% 0 8% 0); transform: translate(-2px, 0); }
+  95% { clip-path: inset(80% 0 2% 0); transform: translate(1px, 0); }
+  96% { clip-path: inset(0 0 100% 0); transform: translate(0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-frame::before,
+  .glitch-in,
+  .glitch::before,
+  .glitch::after {
+    animation: none;
+  }
+}

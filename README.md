@@ -282,6 +282,25 @@ apps_script/
     Purge buttons right there so you can disposition the call without
     leaving whatever page you were on. No websockets -- a phone actually
     ringing gives enough slack that a few-second poll is invisible.
+    Also wired to globe vessel entities with a `linked_lead_uid` (the
+    Funded supply-chain-link overlay) -- click a color-coded vessel node
+    tied to a lead and call it the same way.
+  - **HUD framing + cyberpunk glitch styling** (`tactical.css`). Floating
+    info panels (the screen-pop widget, the globe's entity click panel)
+    use a shared `.hud-frame` class -- corner brackets, a looping scan
+    line, a one-shot chromatic-aberration "glitch-in" burst when a panel
+    first appears. Decorative headers (brand title, panel titles) get an
+    ambient `.glitch` RGB-split text effect on a slow, brief loop --
+    deliberately never applied to body copy (notes, activity ledger,
+    numbers) someone needs to read accurately, especially mid-call.
+    Respects `prefers-reduced-motion`. One real gotcha hit while building
+    this: `.hud-frame` must never set its own `position` -- it's loaded
+    after Tailwind's compiled utilities, so doing so silently wins the
+    cascade over a `fixed`/`absolute` utility class on the same element
+    and breaks positioning with no visible error. Also: this project's
+    `tailwind.css` is a static compiled build (`npm run build-css`), not
+    a runtime JIT watcher -- new utility class combinations added to a
+    template don't take effect until that rebuild step runs.
   - SignalWire's REST API is a documented Twilio-compatible
     "Compatibility API" (same auth scheme, same `Calls.json` resource
     shape, same LaML/cXML call-control markup) -- verified against

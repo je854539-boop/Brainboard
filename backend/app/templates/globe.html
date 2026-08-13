@@ -63,12 +63,18 @@
 
 <div class="tactical-panel" style="height:680px; position:relative; overflow:hidden;">
   <div id="cesiumContainer" style="width:100%; height:100%;"></div>
-  <div id="entity-info-panel" class="tactical-panel hidden" style="position:absolute; top:12px; right:12px; width:340px; max-height:calc(100% - 24px); overflow-y:auto; z-index:20; padding:12px;">
-    <div class="flex items-center justify-between mb-2">
-      <div class="stencil-header text-[10px]" id="info-panel-title">--</div>
-      <button id="info-panel-close" class="text-[var(--text-dim)] hover:text-[var(--crimson)] text-xs">&times;</button>
+  <div id="entity-info-panel" class="hud-frame hidden" style="position:absolute; top:12px; right:12px; width:340px; max-height:calc(100% - 24px); z-index:20;">
+    <span class="hud-corner hud-corner-tl"></span>
+    <span class="hud-corner hud-corner-tr"></span>
+    <span class="hud-corner hud-corner-bl"></span>
+    <span class="hud-corner hud-corner-br"></span>
+    <div style="max-height:100%; overflow-y:auto; padding:12px;">
+      <div class="flex items-center justify-between mb-2">
+        <div class="stencil-header text-[10px] glitch" id="info-panel-title" data-text="--">--</div>
+        <button id="info-panel-close" class="text-[var(--text-dim)] hover:text-[var(--crimson)] text-xs">&times;</button>
+      </div>
+      <div id="info-panel-body" class="text-[10px] leading-relaxed"></div>
     </div>
-    <div id="info-panel-body" class="text-[10px] leading-relaxed"></div>
   </div>
 </div>
 
@@ -570,9 +576,10 @@ function showInfoPanel(entity) {
   const panel = document.getElementById('entity-info-panel');
   const title = document.getElementById('info-panel-title');
   const body = document.getElementById('info-panel-body');
+  const setTitle = (text) => { title.textContent = text; title.dataset.text = text; };
 
   if (props.kind === 'lead') {
-    title.textContent = props.business_name;
+    setTitle(props.business_name);
     const bs = props.behavioral_signals || {};
     const activity = Object.entries(bs.activity_event_counts || {}).map(([k, v]) => `${k}:${v}`).join(', ') || 'none logged';
     body.innerHTML = `
@@ -592,16 +599,17 @@ function showInfoPanel(entity) {
       ${props.lead_uid ? `<button class="tactical-select text-[10px] py-1 mt-2 border-[var(--amber)] text-[var(--amber)]" onclick="brainboardCallNow('lead', '${props.lead_uid}')">☎ Call via active line</button>` : ''}
     `;
   } else if (props.kind === 'vessel') {
-    title.textContent = props.vessel_name || `MMSI ${props.mmsi}`;
+    setTitle(props.vessel_name || `MMSI ${props.mmsi}`);
     body.innerHTML = `
       <div class="mb-1"><span class="text-[var(--text-dim)]">MMSI:</span> ${props.mmsi}</div>
       <div class="mb-1"><span class="text-[var(--text-dim)]">Zone:</span> ${props.zone_name}</div>
       <div class="mb-1"><span class="text-[var(--text-dim)]">Speed:</span> ${props.speed_knots != null ? props.speed_knots.toFixed(1) + ' kt' : '--'}</div>
       <div class="mb-1"><span class="text-[var(--text-dim)]">State:</span> <span style="color:${VESSEL_STATE_COLOR[props.state]}">${props.state.toUpperCase()}</span></div>
       <div class="mb-1"><span class="text-[var(--text-dim)]">Last observed:</span> ${new Date(props.observed_at).toISOString().slice(0,19)}Z</div>
+      ${props.linked_lead_uid ? `<button class="tactical-select text-[10px] py-1 mt-2 border-[var(--amber)] text-[var(--amber)]" onclick="brainboardCallNow('lead', '${props.linked_lead_uid}')">☎ Call linked lead via active line</button>` : ''}
     `;
   } else if (props.kind === 'silo-candidate') {
-    title.textContent = props.company_name;
+    setTitle(props.company_name);
     const color = SILO_CANDIDATE_COLOR[props.status] || SILO_CANDIDATE_COLOR.pending;
     body.innerHTML = `
       <div class="mb-1"><span class="text-[var(--text-dim)]">Silo:</span> ${props.silo}</div>
@@ -612,12 +620,15 @@ function showInfoPanel(entity) {
       ${props.candidate_uid ? `<button class="tactical-select text-[10px] py-1 mt-2 border-[var(--amber)] text-[var(--amber)]" onclick="brainboardCallNow('silo_candidate', '${props.candidate_uid}')">☎ Call via active line</button>` : ''}
     `;
   } else if (props.kind === 'reference-point') {
-    title.textContent = props.name;
+    setTitle(props.name);
     body.innerHTML = `<div class="text-[var(--text-dim)]">Static geographic reference point.</div>`;
   } else {
     return;
   }
   panel.classList.remove('hidden');
+  panel.classList.remove('glitch-in');
+  void panel.offsetWidth;
+  panel.classList.add('glitch-in');
 }
 
 document.getElementById('info-panel-close').addEventListener('click', () => {
