@@ -508,7 +508,15 @@ docker compose exec api alembic upgrade head
 
 `docker-compose.yml` runs Postgres (`pgvector/pgvector:pg16`) and the API.
 Put a reverse proxy (nginx/Caddy) with TLS in front of the `api` service for
-production.
+production -- required before `DIALER_PUBLIC_BASE_URL` can be a real
+`https://` address SignalWire can call back into.
+
+**Updating an already-deployed VPS**: run `./deploy.sh` from the repo root
+on the box (or `ssh <vps> 'cd /path/to/Brainboard && ./deploy.sh'` remotely)
+-- pulls the latest commit, rebuilds the API image, runs pending Alembic
+migrations, restarts. Deliberately manual/one-command rather than
+auto-deploying on every push: a human decides when a build goes live on the
+box placing real calls to real merchants, not CI.
 
 ## Configuring integrations
 
