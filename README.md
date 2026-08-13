@@ -62,33 +62,60 @@ apps_script/
 - **Master Log** (`/master-log`) -- the pipeline command view.
 - **Silo Grid** (`/silo-grid`) -- the 9 macro silos, plus a "Run Lead-Gen
   Sweep" button that runs every configured telemetry adapter and derives
-  new SiloCandidate rows from what it ingests. 8 of the 9 silos use a flat
+  new SiloCandidate rows from what it ingests. 7 of the 9 silos use a flat
   1-event-to-1-candidate mapping (`app/services/silo_leadgen.py::SOURCE_TO_SILOS`)
   -- the right model when one provider's record IS the lead signal (a UCC
   filing, an SOS status change, an openFDA recall).
 
-  **CME Macro Funnel** is not flat -- it's a genuine sequential waterfall
-  (`run_cme_macro_funnel_waterfall()`), because "Chicago commodities market
-  swings and crashes" is a dependency chain, not one signal:
+  **CME Macro Funnel** and **Agriculture & Grain Handling** are not flat --
+  both are genuine sequential waterfalls, because a price move alone isn't a
+  lead and a company name alone isn't a lead.
+
+  **CME Macro Funnel** (`run_cme_macro_funnel_waterfall()`) -- "Chicago
+  commodities market swings and crashes" is a dependency chain, not one
+  signal:
   1. **Signal** -- CME Globex price-shock (>=2% intraday move on the CBOT
      grain/oilseed complex) + GDELT commodity-shock news + GFW 4Wings ocean/
      vessel-traffic anomalies. No active signal = the waterfall stops here,
      zero candidates created.
-  2. **Identify** -- Import Genius customs manifests + Regrid parcel
-     ownership turn the signal into actual company names, corroborated (not
-     identified) by fresh SeaVantage/Datalastic/VesselFinder/USACE vessel
-     and barge activity in the same window -- USACE covers Midwest
-     river-port-dependent businesses specifically (gate-change activity +
-     AIS barge queuing at Mississippi/Illinois Waterway locks, see below).
+  2. **Identify** -- Import Genius customs manifests + Regrid parcel data
+     (address-matched, see below) turn the signal into actual company names,
+     corroborated (not identified) by fresh SeaVantage/Datalastic/
+     VesselFinder/USACE vessel and barge activity in the same window --
+     USACE covers Midwest river-port-dependent businesses specifically
+     (gate-change activity + AIS barge queuing at Mississippi/Illinois
+     Waterway locks).
   3. **Filter** -- Cobalt Intelligence SOS standing: a company in suspended/
      dissolved standing is dismissed here regardless of signal strength,
      since it isn't fundable no matter how loud the macro signal is.
   4. **Contact** -- Apollo.io org search attaches phone/contact info to
      whatever survives the filter.
 
-  Every CME Macro Funnel candidate's `notes` field records exactly which
-  signal gated it in, which trade-data source identified it, and what the
-  lending-appetite check found -- nothing is a black box.
+  **Agriculture & Grain Handling** (`run_agriculture_grain_handling_waterfall()`)
+  -- a narrower, more direct version of the same pattern. CME Globex's
+  tracked symbols are already scoped to just the CBOT grain/oilseed complex,
+  and USACE's monitored locks default to the Mississippi/Illinois grain
+  corridor, so for this silo specifically both are direct operating-condition
+  indicators for grain handlers, not just leading indicators of a broader
+  macro trend:
+  1. **Signal** -- CME Globex grain-price shock + USACE grain-corridor
+     disruption (gate-change activity or barge queuing).
+  2. **Identify** -- Regrid parcel data, address-matched (see below).
+
+  **Regrid address matching** (`_identify_via_regrid()`, shared by both
+  waterfalls) -- a parcel's owner-of-record is a land-ownership fact, not
+  proof that the owner is the business operating there (a tenant doesn't
+  own the land it leases). Identification is address-first: the parcel's
+  site address is matched against a business address on file from Import
+  Genius, and that matched company is surfaced -- not the landowner. When
+  no address match is found, the parcel owner is still surfaced rather than
+  dropped, but flagged explicitly in notes as land-ownership-only /
+  operator-unconfirmed, so a converted lead's provenance is honest about
+  which case it was.
+
+  Every waterfall candidate's `notes` field records exactly which signal
+  gated it in, which trade-data source identified it, and (for CME Macro
+  Funnel) what the lending-appetite check found -- nothing is a black box.
 - **Enrichment** (`/enrichment`) -- CSV lead upload and per-lead enrichment
   against all 14 providers (Cobalt Intelligence, Interzoid, Apollo.io,
   openFDA, Deepgram Nova, CME Globex, Import Genius, SeaVantage, Regrid,

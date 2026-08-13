@@ -67,10 +67,14 @@ document.getElementById("leadgen-btn").addEventListener("click", async (e) => {
     const data = await res.json();
     const ingested = Object.entries(data.telemetry_ingested).map(([s, r]) => r.error ? `${s}:ERROR(${r.error})` : `${s}:${r.count}`).join(", ");
     const created = Object.entries(data.candidates_created).filter(([, n]) => n > 0).map(([s, n]) => `${s}:+${n}`).join(", ");
-    const wf = data.cme_macro_funnel_waterfall;
-    const wfLine = wf ? `CME Macro Funnel waterfall -- ${wf.detail}${wf.signal_summary ? ` (${wf.signal_summary})` : ""}` : "";
+    const cmeWf = data.cme_macro_funnel_waterfall;
+    const grainWf = data.agriculture_grain_handling_waterfall;
+    const wfLines = [
+      cmeWf ? `CME Macro Funnel waterfall -- ${cmeWf.detail}${cmeWf.signal_summary ? ` (${cmeWf.signal_summary})` : ""}` : "",
+      grainWf ? `Agriculture & Grain Handling waterfall -- ${grainWf.detail}${grainWf.signal_summary ? ` (${grainWf.signal_summary})` : ""}` : "",
+    ].filter(Boolean);
     resultDiv.innerHTML = `Telemetry ingested -- ${ingested}. Candidates created -- ${created || "(none -- no sources configured or nothing new)"}` +
-      (wfLine ? `<div class="mt-1 text-[var(--amber)]">${wfLine}</div>` : "");
+      wfLines.map(line => `<div class="mt-1 text-[var(--amber)]">${line}</div>`).join("");
     htmx.trigger("#silo-filters", "change");
   } catch (err) {
     resultDiv.textContent = "Sweep failed: " + err.message;
