@@ -154,22 +154,17 @@ function shapeTexture(shape, color) {
 // flight sim), requestRenderMode for performance (only re-renders on
 // change, not every frame at 60fps regardless of activity).
 // ---------------------------------------------------------------------
-let baseLayer;
 if (CESIUM_ION_TOKEN) {
   Cesium.Ion.defaultAccessToken = CESIUM_ION_TOKEN;
-} else {
-  // No token: fall back to Cesium's own bundled offline imagery
-  // (Assets/Textures/NaturalEarthII, shipped in the vendored static
-  // build) instead of failing to render any basemap at all. Lower
-  // resolution, no terrain -- upgrades automatically once a real
-  // CESIUM_ION_TOKEN is set (see app/config.py::cesium_ion_token).
-  baseLayer = Cesium.ImageryLayer.fromProviderAsync(
-    Cesium.TileMapServiceImageryProvider.fromUrl(Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'))
-  );
 }
 
 const viewer = new Cesium.Viewer('cesiumContainer', {
-  ...(baseLayer ? { baseLayer } : {}),
+  // No token: start with no base layer -- added explicitly below, after
+  // construction, once the offline provider actually resolves. See the
+  // comment on that block for why (short version: passing an
+  // ImageryLayer.fromProviderAsync(...) result as this constructor
+  // option silently never paints in this Cesium build).
+  ...(CESIUM_ION_TOKEN ? {} : { baseLayer: false }),
   baseLayerPicker: false,
   geocoder: false,
   homeButton: false,
@@ -184,6 +179,31 @@ const viewer = new Cesium.Viewer('cesiumContainer', {
   maximumRenderTimeChange: Infinity,
 });
 window.viewer = viewer;
+
+if (!CESIUM_ION_TOKEN) {
+  // No token: fall back to Cesium's own bundled offline imagery (Assets/
+  // Textures/NaturalEarthII, shipped in the vendored static build)
+  // instead of failing to render any basemap at all. Lower resolution,
+  // no terrain -- upgrades automatically once a real CESIUM_ION_TOKEN is
+  // set (see app/config.py::cesium_ion_token).
+  //
+  // Loaded here (awaited, then added via imageryLayers.addImageryProvider)
+  // rather than via `Cesium.ImageryLayer.fromProviderAsync(...)` passed as
+  // the Viewer constructor's `baseLayer` option -- empirically confirmed
+  // (pixel-sampled a screenshot: solid black globe, 0/0/0-ish everywhere
+  // except entity billboards) that the constructor-option pattern never
+  // actually paints in this Cesium build, even though the tiles
+  // themselves load fine (200s) and the resulting provider's
+  // tilingScheme/rectangle/maximumLevel all resolve correctly. Awaiting
+  // the provider ourselves and adding it post-construction renders
+  // correctly on the very next frame.
+  Cesium.TileMapServiceImageryProvider.fromUrl(Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII'))
+    .then((provider) => {
+      viewer.imageryLayers.addImageryProvider(provider);
+      viewer.scene.requestRender();
+    })
+    .catch((err) => console.error('Failed to load offline base imagery:', err));
+}
 
 viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#121417');
 viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0a0c0e');
