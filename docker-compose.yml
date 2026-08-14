@@ -27,10 +27,30 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "8000:8000"
     volumes:
       - ./backend:/app
+    # No published port here on purpose -- caddy is the only thing that
+    # should be reachable from outside the box, terminating TLS and
+    # proxying in over the docker network (api:8000). For local dev
+    # without Caddy, temporarily add `ports: ["8000:8000"]` back.
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: brainboard_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
 
 volumes:
   brainboard_pgdata:
+  caddy_data:
+  caddy_config:

@@ -499,17 +499,50 @@ Visit `http://localhost:8000`.
 
 ## VPS deployment
 
+**1. Provision the box.** Any provider works; DigitalOcean is the one
+assumed below. Ubuntu 24.04 LTS, 2 vCPU / 4GB RAM is enough to run
+Postgres+pgvector and the API on one box at this scale. Add your own SSH
+public key at creation time rather than a password.
+
+**2. Point a domain at it.** Add an A record for the domain/subdomain
+you're using (e.g. `brainboard.yourdomain.com`) to the droplet's IP.
+Required before Caddy can issue a real TLS cert, and before
+`DIALER_PUBLIC_BASE_URL` can be a real `https://` address SignalWire can
+call back into.
+
+**3. Install Docker**, from your own terminal over SSH:
 ```
-git clone <this repo> && cd Brainboard
-cp .env.example .env   # fill in real secrets
+ssh root@your-droplet-ip
+curl -fsSL https://get.docker.com | sh
+```
+
+**4. Clone and configure:**
+```
+git clone https://github.com/je854539-boop/Brainboard.git && cd Brainboard
+git checkout claude/dashboard-w86ryj
+cp .env.example .env   # fill in real secrets -- DOMAIN, DATABASE_URL password,
+                        # SECRET_KEY, WEBHOOK_SHARED_SECRET, SIGNALWIRE_*,
+                        # DIALER_PUBLIC_BASE_URL=https://<your DOMAIN>, and
+                        # whichever telemetry/enrichment provider keys you have
+```
+
+**5. First deploy:**
+```
 docker compose up -d --build
 docker compose exec api alembic upgrade head
 ```
 
-`docker-compose.yml` runs Postgres (`pgvector/pgvector:pg16`) and the API.
-Put a reverse proxy (nginx/Caddy) with TLS in front of the `api` service for
-production -- required before `DIALER_PUBLIC_BASE_URL` can be a real
-`https://` address SignalWire can call back into.
+`docker-compose.yml` runs three services: Postgres (`pgvector/pgvector:pg16`),
+the API, and `caddy` -- a reverse proxy that auto-issues and renews a Let's
+Encrypt TLS cert for `DOMAIN` and proxies HTTPS traffic in to the API over
+the internal docker network. The API container has no port published to the
+host on purpose; Caddy is the only thing reachable from outside the box.
+
+Visit `https://<your DOMAIN>` once Caddy finishes issuing its cert
+(usually under a minute).
+
+**Updating an already-deployed VPS**: run `./deploy.sh` from the repo root
+on the box (or `ssh <vps> 'cd /path/to/Brainboard && ./deploy.sh'` remotely)
 
 **Updating an already-deployed VPS**: run `./deploy.sh` from the repo root
 on the box (or `ssh <vps> 'cd /path/to/Brainboard && ./deploy.sh'` remotely)
