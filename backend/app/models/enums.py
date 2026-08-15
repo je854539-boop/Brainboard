@@ -32,7 +32,7 @@ class MasterLogStatus(str, Enum):
 
     NEW_LEAD = "New lead"
     APP_SENT = "App Sent"
-    DOCS_OWED = "Docs Owed"
+    DOCS_OWED = "Docs Being Chased"
     CHASE_DOCS = "Chase Docs"
     DOCS_IN = "Docs in"
     IN_NEGOTIATION = "In Negotiation"

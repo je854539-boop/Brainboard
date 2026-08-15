@@ -40,7 +40,7 @@ const CO_BROKERS = [
 ];
 
 const MASTER_LOG_STATUSES = [
-  "New lead", "App Sent", "Docs Owed", "Chase Docs", "Docs in", "In Negotiation",
+  "New lead", "App Sent", "Docs Being Chased", "Chase Docs", "Docs in", "In Negotiation",
   "Offer Made Not Sold", "Sold Deal Killed", "Deal Stalled Proxy Pass", "Funded",
   "Ghosted", "Lost To Competitor", "Dog Shit",
 ];

@@ -363,7 +363,7 @@ apps_script/
   |---|---|---|
   | New lead | Ghost Gray `#A0AEC0` | small static node |
   | App Sent | Electric Blue `#00B4D8` | steady pulse |
-  | Docs Owed | Warning Amber `#FFB703` | slow pulse |
+  | Docs Being Chased | Warning Amber `#FFB703` | slow pulse |
   | Chase Docs | Deep Orange `#FB8500` | rapid flash |
   | Docs in | Vivid Lime Green `#38A3A5` | solid anchor |
   | In Negotiation | Electric Violet `#7209B7` | spinning halo (a real rotating billboard, not a simulated spin -- Cesium points have no orientation, billboards do) |
