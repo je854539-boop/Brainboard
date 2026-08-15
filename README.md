@@ -12,7 +12,7 @@ below for what's built vs. explicitly deferred to a follow-up phase.
 ```
 backend/
   app/
-    models/           SQLAlchemy models + hardcoded enums (18 co-brokers,
+    models/           SQLAlchemy models + hardcoded enums (19 co-brokers,
                        13 pipeline statuses, 9 macro silos, 18 data-provider sources)
     services/
       hazard_engine.py     Kaplan-Meier survival curves + Markov transition matrix +
@@ -366,13 +366,13 @@ apps_script/
   | Docs Owed | Warning Amber `#FFB703` | slow pulse |
   | Chase Docs | Deep Orange `#FB8500` | rapid flash |
   | Docs in | Vivid Lime Green `#38A3A5` | solid anchor |
-  | In negotiation | Electric Violet `#7209B7` | spinning halo (a real rotating billboard, not a simulated spin -- Cesium points have no orientation, billboards do) |
+  | In Negotiation | Electric Violet `#7209B7` | spinning halo (a real rotating billboard, not a simulated spin -- Cesium points have no orientation, billboards do) |
   | Offer Made Not Sold | Hot Magenta `#F72585` | neon ring |
   | Sold Deal Killed | Muted Slate `#4A5568` | graveyard node (dim, static) |
   | Deal Stalled Proxy Pass | Toxic Yellow-Green `#CCFF00` | intermittent flicker |
   | Funded | Gold Beacon `#4CC9F0` | crown-jewel beacon pulse, **and** a real live-updating line to any vessel whose cargo cross-reference resolved to this lead (see River Surveillance's `_resolve_entity`) -- not cosmetic, an actual data link |
   | Ghosted | Dark Industrial Steel `#2D333B` | low-opacity node |
-  | Loss to Competitor | Blood Crimson `#D90429` | X-marker |
+  | Lost To Competitor | Blood Crimson `#D90429` | X-marker |
   | Dog Shit | Dead Black `#121417` | hidden by default -- "Show Dog Shit (filtered)" checkbox reveals it |
 
   There is a genuine *live* USACE signal in the app beyond this page too

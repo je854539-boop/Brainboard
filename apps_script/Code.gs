@@ -36,13 +36,13 @@ const SILO_TAB_NAMES = [
 
 const CO_BROKERS = [
   "Nick F", "Mike F", "Vinny", "Victor", "Gallo", "Shaun", "Kris", "DanStol",
-  "Roman", "James", "Alfred", "Marcus", "Ricky", "Zack", "Emilio", "Jorge", "Tony", "Seb",
+  "Roman", "James", "Alfred", "Marcus", "Ricky", "Zack", "Emilio", "Boula", "Ariel", "Tony", "Seb",
 ];
 
 const MASTER_LOG_STATUSES = [
-  "New lead", "App Sent", "Docs Owed", "Chase Docs", "Docs in", "In negotiation",
+  "New lead", "App Sent", "Docs Owed", "Chase Docs", "Docs in", "In Negotiation",
   "Offer Made Not Sold", "Sold Deal Killed", "Deal Stalled Proxy Pass", "Funded",
-  "Ghosted", "Loss to Competitor", "Dog Shit",
+  "Ghosted", "Lost To Competitor", "Dog Shit",
 ];
 
 // Master Log V2 column indices (1-based, A=1) -- confirmed against the

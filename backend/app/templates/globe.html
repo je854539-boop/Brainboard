@@ -91,13 +91,13 @@ const STATUS_STYLE = {
   "Docs Owed":                { color: "#FFB703", anim: "pulse",      pulseMs: 1400, label: "Warning Amber -- slow pulse" },
   "Chase Docs":               { color: "#FB8500", anim: "flash",      flashMs: 180,  label: "Deep Orange -- rapid flash" },
   "Docs in":                  { color: "#38A3A5", anim: "static",     label: "Vivid Lime Green -- solid anchor" },
-  "In negotiation":           { color: "#7209B7", anim: "halo",       label: "Electric Violet -- spinning halo" },
+  "In Negotiation":           { color: "#7209B7", anim: "halo",       label: "Electric Violet -- spinning halo" },
   "Offer Made Not Sold":      { color: "#F72585", anim: "ring",       label: "Hot Magenta -- neon ring" },
   "Sold Deal Killed":         { color: "#4A5568", anim: "dim",        label: "Muted Slate -- graveyard node" },
   "Deal Stalled Proxy Pass":  { color: "#CCFF00", anim: "flicker",    label: "Toxic Yellow-Green -- intermittent flicker" },
   "Funded":                   { color: "#4CC9F0", anim: "beacon",     pulseMs: 600,  label: "Gold Beacon -- crown jewel, tracks live cargo" },
   "Ghosted":                  { color: "#2D333B", anim: "dim",        label: "Dark Industrial Steel -- low-opacity node" },
-  "Loss to Competitor":       { color: "#D90429", anim: "x",          label: "Blood Crimson -- battleground X-marker" },
+  "Lost To Competitor":       { color: "#D90429", anim: "x",          label: "Blood Crimson -- battleground X-marker" },
   "Dog Shit":                 { color: "#121417", anim: "hidden",     label: "Dead Black -- filtered/hidden cluster" },
 };
 const VESSEL_STATE_COLOR = { normal: "#4aff7a", friction: "#FFB703", distress: "#D90429" };
@@ -361,7 +361,7 @@ function addLeadEntity(lead) {
   });
   leadEntityIds.push(id);
 
-  // "In negotiation" spinning halo -- a genuine rotating billboard
+  // "In Negotiation" spinning halo -- a genuine rotating billboard
   // (points have no orientation in Cesium, billboards do), not just an
   // oscillating shape standing in for "spin".
   if (style.anim === 'halo') {

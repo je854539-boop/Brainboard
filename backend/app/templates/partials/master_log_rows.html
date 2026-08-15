@@ -19,7 +19,7 @@
   <td>
     {% if e.status.value == 'Funded' %}
     <span class="status-badge status-badge--funded">{{ e.status.value }}</span>
-    {% elif e.status.value in ['Ghosted', 'Loss to Competitor', 'Dog Shit', 'Sold Deal Killed', 'Deal Stalled Proxy Pass'] %}
+    {% elif e.status.value in ['Ghosted', 'Lost To Competitor', 'Dog Shit', 'Sold Deal Killed', 'Deal Stalled Proxy Pass'] %}
     <span class="status-badge status-badge--attrition">{{ e.status.value }}</span>
     {% else %}
     <span class="status-badge status-badge--active">{{ e.status.value }}</span>
