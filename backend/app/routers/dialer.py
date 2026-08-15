@@ -248,7 +248,9 @@ def screen_pop(entity_uid: uuid.UUID, db: Session = Depends(get_db)):
             "email": lead.email,
             "status": lead.status.value,
             "notes": lead.notes,
-            "loan_amount_requested": float(lead.loan_amount_requested) if lead.loan_amount_requested is not None else None,
+            "dossier_drive_link": lead.dossier_drive_link,
+            "financials_link": lead.financials_link,
+            "transcripts_link": lead.transcripts_link,
             "activity": [
                 {
                     "event_type": a.event_type.value,

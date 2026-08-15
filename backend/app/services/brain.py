@@ -35,7 +35,7 @@ MODEL_VERSION = "logreg-v1"
 BASELINE_VERSION = "baseline-insufficient-data"
 MIN_TRAINING_EXAMPLES = 10  # need both classes represented and a minimum sample before trusting a real fit
 
-NUMERIC_FEATURES = ["loan_amount_requested", "annual_revenue", "credit_score", "open_positions", "current_balance", "payment_amt"]
+NUMERIC_FEATURES = ["annual_revenue", "credit_score", "open_positions", "current_balance", "payment_amt"]
 
 
 def current_mode(db: Session) -> tuple[BrainMode, int, int]:

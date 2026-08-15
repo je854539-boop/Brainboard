@@ -127,6 +127,11 @@
           <div class="text-[var(--text-dim)]">${data.kind === 'lead' ? data.status : data.silo + ' · ' + data.status}</div>
         </div>
         <div class="text-[10px] mb-2"><b class="text-[var(--text-dim)] uppercase tracking-widest">Notes</b><div class="mt-1">${data.notes || '—'}</div></div>
+        <div class="text-[10px] mb-2 flex gap-2">
+          ${data.dossier_drive_link ? `<a href="${data.dossier_drive_link}" target="_blank" class="text-[var(--amber)] hover:underline">DOSSIER ↗</a>` : ''}
+          ${data.financials_link ? `<a href="${data.financials_link}" target="_blank" class="text-[var(--amber)] hover:underline">FINANCIALS ↗</a>` : ''}
+          ${data.transcripts_link ? `<a href="${data.transcripts_link}" target="_blank" class="text-[var(--amber)] hover:underline">TRANSCRIPTS ↗</a>` : ''}
+        </div>
         <div class="text-[10px] mb-2"><b class="text-[var(--text-dim)] uppercase tracking-widest">Recent Activity</b><div class="mt-1 flex flex-col gap-0.5">${activityLines}</div></div>
         <div class="text-[10px] mb-3"><b class="text-[var(--text-dim)] uppercase tracking-widest">Enrichment</b><div class="mt-1 flex flex-col gap-0.5">${enrichmentLines}</div></div>
         <div class="flex items-center gap-1">

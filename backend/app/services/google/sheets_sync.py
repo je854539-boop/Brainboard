@@ -1,17 +1,12 @@
 """Bidirectional sync between Postgres and the Master Log V2 spreadsheet
 (Master Log V2 tab + the 9 macro silo tabs).
 
-Column layout below is the default mapping and MUST be confirmed against
-the live spreadsheet's header row before going to production -- only
-Column K (follow-up date), Column L (notes), and Column X (dossier link)
-are fixed by the stated spec. The MCA intake fields (state, revenue,
-lender, payment terms, balance, open positions, credit score) are placed
-at I/J/M-R following the field order of the lead-intake terminal, which is
-a stronger signal than a blind guess since that terminal posts straight to
-the real Master Log V2 sheet -- but it's still an inference, not a
-confirmed header read, so verify column-by-column before relying on it.
-Column A is used on both sheets as the anchor UUID column so rows can be
-matched between Sheets and Postgres without relying on row position.
+Column layout below is confirmed against the real, live spreadsheet (not
+inferred) -- see apps_script/Code.gs's matching ML_COL_* constants, which
+must be kept in lockstep with MASTER_LOG_COLUMN_FIELDS below if either one
+changes. Column A is used on both sheets as the anchor UUID column so rows
+can be matched between Sheets and Postgres without relying on row
+position.
 """
 
 import datetime as dt
@@ -27,33 +22,34 @@ from app.services import pipeline
 logger = logging.getLogger("brainboard.sheets_sync")
 
 MASTER_LOG_SHEET_NAME = "Master Log V2"
-MASTER_LOG_RANGE = f"{MASTER_LOG_SHEET_NAME}!A2:X"
+MASTER_LOG_RANGE = f"{MASTER_LOG_SHEET_NAME}!A2:T"
 
 # column index (0-based, A=0) -> MasterLogEntry field name. Indices not
 # listed here fall into extra_columns, keyed by their sheet column letter.
 MASTER_LOG_COLUMN_FIELDS: dict[int, str] = {
     0: "lead_uid",  # A
-    1: "business_name",  # B
-    2: "contact_name",  # C
-    3: "phone",  # D
-    4: "email",  # E
-    5: "co_broker",  # F
-    6: "status",  # G
-    7: "loan_amount_requested",  # H
-    8: "state",  # I
-    9: "annual_revenue",  # J
-    10: "follow_up_date",  # K
-    11: "notes",  # L
-    12: "lender",  # M
-    13: "payment_amt",  # N
-    14: "payment_freq",  # O
-    15: "current_balance",  # P
-    16: "open_positions",  # Q
-    17: "credit_score",  # R
-    23: "dossier_drive_link",  # X
+    1: "state",  # B
+    2: "business_name",  # C
+    3: "contact_name",  # D
+    4: "phone",  # E
+    5: "email",  # F
+    6: "co_broker",  # G
+    7: "status",  # H
+    8: "annual_revenue",  # I
+    9: "follow_up_date",  # J
+    10: "notes",  # K
+    11: "lender",  # L
+    12: "payment_amt",  # M
+    13: "payment_freq",  # N
+    14: "current_balance",  # O
+    15: "open_positions",  # P
+    16: "credit_score",  # Q
+    17: "dossier_drive_link",  # R
+    18: "financials_link",  # S
+    19: "transcripts_link",  # T
 }
-MASTER_LOG_COLUMN_COUNT = 24  # A..X
-_FLOAT_FIELDS = {"loan_amount_requested", "annual_revenue", "payment_amt", "current_balance"}
+MASTER_LOG_COLUMN_COUNT = 20  # A..T
+_FLOAT_FIELDS = {"annual_revenue", "payment_amt", "current_balance"}
 _INT_FIELDS = {"open_positions", "credit_score"}
 
 SILO_RANGE_SUFFIX = "!A2:H"
@@ -114,24 +110,25 @@ def row_to_master_log_fields(row: list[str]) -> dict:
 def master_log_entry_to_row(entry: MasterLogEntry) -> list[str]:
     row = [""] * MASTER_LOG_COLUMN_COUNT
     row[0] = str(entry.lead_uid)
-    row[1] = entry.business_name or ""
-    row[2] = entry.contact_name or ""
-    row[3] = entry.phone or ""
-    row[4] = entry.email or ""
-    row[5] = entry.co_broker.value if entry.co_broker else ""
-    row[6] = entry.status.value if entry.status else ""
-    row[7] = str(entry.loan_amount_requested) if entry.loan_amount_requested is not None else ""
-    row[8] = entry.state or ""
-    row[9] = str(entry.annual_revenue) if entry.annual_revenue is not None else ""
-    row[10] = entry.follow_up_date.strftime("%Y-%m-%d") if entry.follow_up_date else ""
-    row[11] = entry.notes or ""
-    row[12] = entry.lender or ""
-    row[13] = str(entry.payment_amt) if entry.payment_amt is not None else ""
-    row[14] = entry.payment_freq or ""
-    row[15] = str(entry.current_balance) if entry.current_balance is not None else ""
-    row[16] = str(entry.open_positions) if entry.open_positions is not None else ""
-    row[17] = str(entry.credit_score) if entry.credit_score is not None else ""
-    row[23] = entry.dossier_drive_link or ""
+    row[1] = entry.state or ""
+    row[2] = entry.business_name or ""
+    row[3] = entry.contact_name or ""
+    row[4] = entry.phone or ""
+    row[5] = entry.email or ""
+    row[6] = entry.co_broker.value if entry.co_broker else ""
+    row[7] = entry.status.value if entry.status else ""
+    row[8] = str(entry.annual_revenue) if entry.annual_revenue is not None else ""
+    row[9] = entry.follow_up_date.strftime("%Y-%m-%d") if entry.follow_up_date else ""
+    row[10] = entry.notes or ""
+    row[11] = entry.lender or ""
+    row[12] = str(entry.payment_amt) if entry.payment_amt is not None else ""
+    row[13] = entry.payment_freq or ""
+    row[14] = str(entry.current_balance) if entry.current_balance is not None else ""
+    row[15] = str(entry.open_positions) if entry.open_positions is not None else ""
+    row[16] = str(entry.credit_score) if entry.credit_score is not None else ""
+    row[17] = entry.dossier_drive_link or ""
+    row[18] = entry.financials_link or ""
+    row[19] = entry.transcripts_link or ""
     for letter, value in (entry.extra_columns or {}).items():
         index = ord(letter.upper()) - ord("A")
         if 0 <= index < MASTER_LOG_COLUMN_COUNT:

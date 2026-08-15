@@ -44,20 +44,21 @@
     <thead>
       <tr>
         <th>Lead UID</th>
+        <th>State</th>
         <th>Business</th>
         <th>Phone</th>
         <th>Co-Broker</th>
         <th>Status</th>
-        <th>Follow-Up (K)</th>
-        <th>Notes (L)</th>
-        <th>Dossier (X)</th>
+        <th>Follow-Up</th>
+        <th>Notes</th>
+        <th>Links</th>
         <th>Survival S(t)</th>
         <th>Days In Stage</th>
         <th>Next-Stage P</th>
       </tr>
     </thead>
     <tbody id="master-log-rows-body" hx-get="/partials/master-log-rows" hx-trigger="load" hx-indicator="#master-log-loading">
-      <tr><td colspan="11" class="text-center text-[var(--text-dim)] py-6">Loading pipeline telemetry...</td></tr>
+      <tr><td colspan="12" class="text-center text-[var(--text-dim)] py-6">Loading pipeline telemetry...</td></tr>
     </tbody>
   </table>
 </div>

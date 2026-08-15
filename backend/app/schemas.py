@@ -35,7 +35,6 @@ class MasterLogEntryOut(BaseModel):
     email: str | None
     co_broker: CoBroker
     status: MasterLogStatus
-    loan_amount_requested: float | None
     state: str | None
     annual_revenue: float | None
     lender: str | None
@@ -47,6 +46,8 @@ class MasterLogEntryOut(BaseModel):
     follow_up_date: datetime | None
     notes: str | None
     dossier_drive_link: str | None
+    financials_link: str | None
+    transcripts_link: str | None
     calendar_event_id: str | None
     created_at: datetime
     updated_at: datetime
@@ -61,7 +62,6 @@ class MasterLogEntryUpdate(BaseModel):
     email: str | None = None
     co_broker: CoBroker | None = None
     status: MasterLogStatus | None = None
-    loan_amount_requested: float | None = None
     state: str | None = None
     annual_revenue: float | None = None
     lender: str | None = None
@@ -73,6 +73,8 @@ class MasterLogEntryUpdate(BaseModel):
     follow_up_date: datetime | None = None
     notes: str | None = None
     dossier_drive_link: str | None = None
+    financials_link: str | None = None
+    transcripts_link: str | None = None
 
 
 class SiloCandidateOut(BaseModel):

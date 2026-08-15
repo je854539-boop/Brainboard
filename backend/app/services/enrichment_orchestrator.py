@@ -39,7 +39,10 @@ def enrich_lead(db: Session, lead: MasterLogEntry) -> list[EnrichmentResult]:
 
 
 REQUIRED_CSV_COLUMNS = {"business_name", "co_broker"}
-OPTIONAL_CSV_COLUMNS = {"contact_name", "phone", "email", "state", "annual_revenue", "loan_amount_requested"}
+OPTIONAL_CSV_COLUMNS = {
+    "contact_name", "phone", "email", "state", "annual_revenue",
+    "dossier_drive_link", "financials_link", "transcripts_link",
+}
 
 
 def import_leads_csv(db: Session, file_content: bytes) -> dict:
@@ -72,7 +75,7 @@ def import_leads_csv(db: Session, file_content: bytes) -> dict:
             value = (row.get(field) or "").strip()
             if not value:
                 continue
-            if field in ("annual_revenue", "loan_amount_requested"):
+            if field == "annual_revenue":
                 try:
                     value = float(value.replace(",", "").replace("$", ""))
                 except ValueError:

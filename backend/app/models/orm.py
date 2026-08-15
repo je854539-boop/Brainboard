@@ -36,15 +36,17 @@ def _pg_enum(enum_cls, name: str) -> SAEnum:
 
 
 class MasterLogEntry(Base):
-    """Mirrors Master Log V2 (columns A-X).
+    """Mirrors Master Log V2 (columns A-T -- see
+    app/services/google/sheets_sync.py::MASTER_LOG_COLUMN_FIELDS for the
+    exact column-to-field mapping, kept in lockstep with
+    apps_script/Code.gs's ML_COL_* constants).
 
-    Named columns below map to the fields with dedicated sync behavior:
-      Col K -> follow_up_date  (onMasterLogEdit pushes this to Calendar)
-      Col L -> notes           (onMasterLogEdit pushes this to Calendar description)
-      Col X -> dossier_drive_link (Macro Dossier Drive Link)
-    The remaining Master Log V2 columns are preserved verbatim in
-    `extra_columns` (JSONB) so the sheet's full 24-column shape round-trips
-    through sync without lossy remapping.
+    follow_up_date and notes push to the linked Calendar event on edit
+    (onMasterLogEdit); dossier_drive_link/financials_link/transcripts_link
+    are the three per-lead document links the dashboard surfaces as
+    clickable buttons. Any columns beyond the mapped set are preserved
+    verbatim in `extra_columns` (JSONB) so the sheet round-trips without
+    lossy remapping.
     """
 
     __tablename__ = "master_log_entries"
@@ -61,8 +63,6 @@ class MasterLogEntry(Base):
         _pg_enum(MasterLogStatus, "master_log_status"), nullable=False, default=MasterLogStatus.NEW_LEAD
     )
 
-    loan_amount_requested: Mapped[float | None] = mapped_column(Numeric(14, 2))
-
     # MCA intake fields (from the lead intake terminal)
     state: Mapped[str | None] = mapped_column(String(64))
     annual_revenue: Mapped[float | None] = mapped_column(Numeric(14, 2))
@@ -73,9 +73,11 @@ class MasterLogEntry(Base):
     open_positions: Mapped[int | None] = mapped_column()
     credit_score: Mapped[int | None] = mapped_column()
 
-    follow_up_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # Column K
-    notes: Mapped[str | None] = mapped_column(Text)  # Column L
-    dossier_drive_link: Mapped[str | None] = mapped_column(String(1024))  # Column X
+    follow_up_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[str | None] = mapped_column(Text)
+    dossier_drive_link: Mapped[str | None] = mapped_column(String(1024))
+    financials_link: Mapped[str | None] = mapped_column(String(1024))
+    transcripts_link: Mapped[str | None] = mapped_column(String(1024))
 
     calendar_event_id: Mapped[str | None] = mapped_column(String(256))
     extra_columns: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

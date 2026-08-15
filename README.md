@@ -648,22 +648,37 @@ Everything is inert (no-ops, not errors) until configured:
   paste in `apps_script/Code.gs`, set Script Properties `BACKEND_BASE_URL`
   and `WEBHOOK_SHARED_SECRET` (must match the backend's
   `WEBHOOK_SHARED_SECRET`), then run `setupTriggers()` once from the editor
-  to install the installable `onEdit` trigger. Deploy the script as a Web
-  App (Execute as: Me, Access: Anyone with the link) to get a URL for
-  inbound `doPost` lead intake.
+  to install the installable `onEdit` trigger, and `setupDropdowns()` once
+  to add Status/Co-Broker data-validation dropdowns to the sheet. Deploy
+  the script as a Web App (Execute as: Me, Access: Anyone with the link)
+  to get a URL for inbound `doPost` lead intake -- only needed if
+  something *outside* Brainboard (an external web form, say) creates
+  leads directly; leads created through `/intake` push into the Sheet
+  automatically and don't need this.
 
-## Data model notes / column mapping assumptions
+## Data model notes / column mapping
 
-Only Master Log V2 Column K (follow-up date), Column L (notes), and Column X
-(dossier link) are fixed by spec. The rest of the A-X mapping in
-`app/services/google/sheets_sync.py::MASTER_LOG_COLUMN_FIELDS` (and mirrored
-in `apps_script/Code.gs`'s `ML_COL_*` constants) places the MCA intake
-fields (state, revenue, lender, payment terms, balance, open positions,
-credit score) at I/J/M-R, following the field order of the lead-intake
-terminal -- a stronger signal than a blind guess since that terminal posts
-straight to the real sheet, but still an inference, not a confirmed header
-read. Verify column-by-column before relying on it in production. The
-8-column silo tab schema (Phone at Col C, Dossier at Col F) matches the
+The Master Log V2 column layout is confirmed against the real, live sheet
+(not an inference) -- 20 columns, A-T:
+
+```
+A: UID (auto-filled)   B: State   C: Business   D: Contact   E: Phone
+F: Email   G: Co-Broker   H: Status   I: Revenue   J: Follow-Up Date
+K: Notes   L: Lender   M: Payment Amt   N: Payment Freq   O: Current Balance
+P: Open Positions   Q: Credit Score   R: Dossier Link   S: Financials Link
+T: Transcripts Link
+```
+
+`app/services/google/sheets_sync.py::MASTER_LOG_COLUMN_FIELDS` and
+`apps_script/Code.gs`'s `ML_COL_*` constants must be kept in lockstep if
+this ever changes -- Column A is the row-matching anchor UUID both sides
+use to identify the same lead without relying on row position. Status
+(Column H) and Co-Broker (Column G) get real dropdown data-validation via
+`setupDropdowns()` in Code.gs (run once from the Apps Script editor,
+alongside `setupTriggers()`), restricting entry to the 13 canonical
+statuses / 18 canonical co-brokers instead of free text.
+
+The 8-column silo tab schema (Phone at Col C, Dossier at Col F) matches the
 spec exactly.
 
 Separately: the lead-intake terminal's co-broker/status `<select>` options

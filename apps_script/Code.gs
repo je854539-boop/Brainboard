@@ -5,13 +5,15 @@
  * tabs) to the FastAPI backend's /webhooks/* routes.
  *
  * IMPORTANT -- installation:
- *   The reserved simple-trigger function `onEdit(e)` runs in a
- *   restricted, unauthorized execution context and CANNOT call
- *   UrlFetchApp against an external host. This file therefore does NOT
- *   define `onEdit`. Instead run `setupTriggers()` once from the Apps
- *   Script editor (select it in the function dropdown and click Run) to
- *   install `installableOnEdit` as an installable "On edit" trigger,
- *   which runs with full authorization.
+ *   1. Run `setupTriggers()` once from the Apps Script editor (select it
+ *      in the function dropdown and click Run). The reserved simple-trigger
+ *      function `onEdit(e)` runs in a restricted, unauthorized execution
+ *      context and CANNOT call UrlFetchApp against an external host --
+ *      this installs `installableOnEdit` as an installable "On edit"
+ *      trigger instead, which runs with full authorization.
+ *   2. Run `setupDropdowns()` once to add data-validation dropdowns for
+ *      the Status and Co-Broker columns on Master Log V2 (restricts entry
+ *      to the canonical values below instead of free text).
  *
  * Script Properties required (Project Settings -> Script Properties):
  *   BACKEND_BASE_URL       e.g. https://your-vps-host/  (no trailing slash)
@@ -43,30 +45,31 @@ const MASTER_LOG_STATUSES = [
   "Ghosted", "Loss to Competitor", "Dog Shit",
 ];
 
-// Master Log V2 column indices (1-based, A=1). Only K, L, and X are fixed
-// by spec -- the rest (including the MCA fields at I/J/M-R) follow the
-// lead-intake terminal's field order and should be verified against the
-// live sheet's header row. See app/services/google/sheets_sync.py for the
-// matching backend-side mapping (MASTER_LOG_COLUMN_FIELDS).
+// Master Log V2 column indices (1-based, A=1) -- confirmed against the
+// real, live sheet (not inferred). Keep in lockstep with the matching
+// backend-side mapping in app/services/google/sheets_sync.py
+// (MASTER_LOG_COLUMN_FIELDS) if either one changes.
 const ML_COL_UID = 1; // A
-const ML_COL_BUSINESS = 2; // B
-const ML_COL_CONTACT = 3; // C
-const ML_COL_PHONE = 4; // D
-const ML_COL_EMAIL = 5; // E
-const ML_COL_COBROKER = 6; // F
-const ML_COL_STATUS = 7; // G
-const ML_COL_LOAN_AMOUNT = 8; // H
-const ML_COL_STATE = 9; // I
-const ML_COL_REVENUE = 10; // J
-const ML_COL_FOLLOWUP = 11; // K
-const ML_COL_NOTES = 12; // L
-const ML_COL_LENDER = 13; // M
-const ML_COL_PAYMENT_AMT = 14; // N
-const ML_COL_PAYMENT_FREQ = 15; // O
-const ML_COL_CURRENT_BALANCE = 16; // P
-const ML_COL_OPEN_POSITIONS = 17; // Q
-const ML_COL_CREDIT_SCORE = 18; // R
-const ML_COL_DOSSIER = 24; // X
+const ML_COL_STATE = 2; // B
+const ML_COL_BUSINESS = 3; // C
+const ML_COL_CONTACT = 4; // D
+const ML_COL_PHONE = 5; // E
+const ML_COL_EMAIL = 6; // F
+const ML_COL_COBROKER = 7; // G
+const ML_COL_STATUS = 8; // H
+const ML_COL_REVENUE = 9; // I
+const ML_COL_FOLLOWUP = 10; // J
+const ML_COL_NOTES = 11; // K
+const ML_COL_LENDER = 12; // L
+const ML_COL_PAYMENT_AMT = 13; // M
+const ML_COL_PAYMENT_FREQ = 14; // N
+const ML_COL_CURRENT_BALANCE = 15; // O
+const ML_COL_OPEN_POSITIONS = 16; // P
+const ML_COL_CREDIT_SCORE = 17; // Q
+const ML_COL_DOSSIER = 18; // R
+const ML_COL_FINANCIALS = 19; // S
+const ML_COL_TRANSCRIPTS = 20; // T
+const ML_COLUMN_COUNT = 20;
 
 // Silo tab column indices (1-based, A=1) -- 8-column schema
 const SILO_COL_UID = 1; // A
@@ -108,6 +111,31 @@ function setupTriggers() {
   ScriptApp.newTrigger("installableOnEdit").forSpreadsheet(SpreadsheetApp.getActive()).onEdit().create();
 }
 
+/**
+ * Run once from the Apps Script editor to add data-validation dropdowns
+ * for Status (Column H) and Co-Broker (Column G) on Master Log V2 --
+ * restricts entry to the canonical values instead of free text. Applies
+ * to rows 2-1000 (extend MAX_ROW below if you outgrow that). Safe to
+ * re-run any time -- it just replaces the existing validation rule.
+ */
+function setupDropdowns() {
+  const MAX_ROW = 1000;
+  const sheet = SpreadsheetApp.getActive().getSheetByName(MASTER_LOG_SHEET_NAME);
+  if (!sheet) throw new Error(`Sheet "${MASTER_LOG_SHEET_NAME}" not found.`);
+
+  const statusRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(MASTER_LOG_STATUSES, true)
+    .setAllowInvalid(false)
+    .build();
+  sheet.getRange(2, ML_COL_STATUS, MAX_ROW - 1, 1).setDataValidation(statusRule);
+
+  const coBrokerRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(CO_BROKERS, true)
+    .setAllowInvalid(false)
+    .build();
+  sheet.getRange(2, ML_COL_COBROKER, MAX_ROW - 1, 1).setDataValidation(coBrokerRule);
+}
+
 function installableOnEdit(e) {
   if (!e || !e.range) return;
   const sheetName = e.range.getSheet().getName();
@@ -120,7 +148,7 @@ function installableOnEdit(e) {
 }
 
 /**
- * Column K (follow-up date) or Column L (notes) mutated -> push to
+ * Follow-up date (Column J) or notes (Column K) mutated -> push to
  * Postgres + sync the linked Calendar event via lead_uid.
  */
 function onMasterLogEdit(e) {
@@ -205,9 +233,9 @@ function onSiloStatusEdit(e) {
  *
  * Expected JSON body (all but business_name/co_broker are optional):
  *   { business_name, co_broker, contact_name?/owner?, phone?, email?,
- *     state?, revenue?, loan_amount_requested?, status?, followUp?,
- *     notes?, lender?, paymentAmt?, paymentFreq?, currentBalance?,
- *     openPositions?, creditScore? }
+ *     state?, revenue?, status?, followUp?, notes?, lender?, paymentAmt?,
+ *     paymentFreq?, currentBalance?, openPositions?, creditScore?,
+ *     dossier_drive_link?, financials_link?, transcripts_link? }
  * Both the intake terminal's original field names (owner, revenue,
  * followUp, paymentAmt, paymentFreq, currentBalance, openPositions,
  * creditScore) and the backend's snake_case names are accepted.
@@ -245,16 +273,15 @@ function doPost(e) {
 
   const leadUid = Utilities.getUuid();
   const sheet = SpreadsheetApp.getActive().getSheetByName(MASTER_LOG_SHEET_NAME);
-  const row = new Array(24).fill("");
+  const row = new Array(ML_COLUMN_COUNT).fill("");
   row[ML_COL_UID - 1] = leadUid;
+  row[ML_COL_STATE - 1] = data.state || "";
   row[ML_COL_BUSINESS - 1] = data.business_name;
   row[ML_COL_CONTACT - 1] = contactName;
   row[ML_COL_PHONE - 1] = data.phone || "";
   row[ML_COL_EMAIL - 1] = data.email || "";
   row[ML_COL_COBROKER - 1] = data.co_broker;
   row[ML_COL_STATUS - 1] = status;
-  row[ML_COL_LOAN_AMOUNT - 1] = data.loan_amount_requested || "";
-  row[ML_COL_STATE - 1] = data.state || "";
   row[ML_COL_REVENUE - 1] = revenue || "";
   if (followUp) row[ML_COL_FOLLOWUP - 1] = followUp;
   row[ML_COL_NOTES - 1] = data.notes || "";
@@ -264,6 +291,9 @@ function doPost(e) {
   row[ML_COL_CURRENT_BALANCE - 1] = currentBalance || "";
   row[ML_COL_OPEN_POSITIONS - 1] = openPositions || "";
   row[ML_COL_CREDIT_SCORE - 1] = creditScore || "";
+  row[ML_COL_DOSSIER - 1] = data.dossier_drive_link || "";
+  row[ML_COL_FINANCIALS - 1] = data.financials_link || "";
+  row[ML_COL_TRANSCRIPTS - 1] = data.transcripts_link || "";
   sheet.appendRow(row);
 
   postToBackend_("/webhooks/lead-intake", {
@@ -276,7 +306,6 @@ function doPost(e) {
     email: data.email || null,
     state: data.state || null,
     annual_revenue: revenue != null ? revenue : null,
-    loan_amount_requested: data.loan_amount_requested != null ? data.loan_amount_requested : null,
     notes: data.notes || null,
     lender: data.lender || null,
     payment_amt: paymentAmt != null ? paymentAmt : null,
@@ -285,6 +314,9 @@ function doPost(e) {
     open_positions: openPositions != null ? openPositions : null,
     credit_score: creditScore != null ? creditScore : null,
     follow_up_date: followUp || null,
+    dossier_drive_link: data.dossier_drive_link || null,
+    financials_link: data.financials_link || null,
+    transcripts_link: data.transcripts_link || null,
   });
 
   return respond(201, { lead_uid: leadUid });
