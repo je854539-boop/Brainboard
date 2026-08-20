@@ -221,10 +221,38 @@ if (CESIUM_ION_TOKEN) {
   }
 }
 
-// requestRenderMode means Cesium only repaints on change -- force a
-// steady heartbeat so CallbackProperty-driven pulse/flash/spin/flicker
-// animations actually animate instead of freezing on the first frame.
-setInterval(() => viewer.scene.requestRender(), 100);
+// requestRenderMode means Cesium only repaints on change -- this single
+// heartbeat both forces the steady repaint CallbackProperty-driven
+// pulse/flash/spin/flicker animations need (they'd otherwise freeze on
+// the first frame) and drives the idle auto-rotate below, so the spin
+// renders every tick instead of waiting on a second, independent timer.
+//
+// Auto-rotate pauses the instant the user grabs the globe (drag/zoom/
+// scroll/pinch) and resumes on its own a few seconds after they let go,
+// so manual navigation always wins over the idle spin.
+let autoRotate = true;
+let resumeRotateTimer = null;
+const AUTO_ROTATE_RADIANS_PER_SEC = Cesium.Math.toRadians(2.5);
+
+function pauseAutoRotate() {
+  autoRotate = false;
+  if (resumeRotateTimer) clearTimeout(resumeRotateTimer);
+  resumeRotateTimer = setTimeout(() => { autoRotate = true; }, 4000);
+}
+['mousedown', 'wheel', 'touchstart'].forEach((evt) =>
+  viewer.scene.canvas.addEventListener(evt, pauseAutoRotate, { passive: true })
+);
+
+let lastFrameTime = performance.now();
+setInterval(() => {
+  const now = performance.now();
+  const dt = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+  if (autoRotate) {
+    viewer.scene.camera.rotate(Cesium.Cartesian3.UNIT_Z, -AUTO_ROTATE_RADIANS_PER_SEC * dt);
+  }
+  viewer.scene.requestRender();
+}, 30);
 
 // ---------------------------------------------------------------------
 // Static reference layers -- country borders, admin-1 (state/province)
