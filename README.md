@@ -543,9 +543,6 @@ Visit `https://<your DOMAIN>` once Caddy finishes issuing its cert
 
 **Updating an already-deployed VPS**: run `./deploy.sh` from the repo root
 on the box (or `ssh <vps> 'cd /path/to/Brainboard && ./deploy.sh'` remotely)
-
-**Updating an already-deployed VPS**: run `./deploy.sh` from the repo root
-on the box (or `ssh <vps> 'cd /path/to/Brainboard && ./deploy.sh'` remotely)
 -- pulls the latest commit, rebuilds the API image, runs pending Alembic
 migrations, restarts. Deliberately manual/one-command rather than
 auto-deploying on every push: a human decides when a build goes live on the
