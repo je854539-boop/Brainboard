@@ -25,6 +25,9 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
+echo "==> Backing up database before migrating (see backup.sh)"
+./backup.sh
+
 echo "==> Running Alembic migrations"
 docker compose exec -T api alembic upgrade head
 

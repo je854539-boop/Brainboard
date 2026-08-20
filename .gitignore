@@ -14,6 +14,13 @@ backend/secrets/
 *.pem
 *.p12
 
+# Database backups (backup.sh output) -- real lead/business data, never
+# belongs in git history. Copy these off-box yourself (see README's
+# Backups section), don't commit them.
+backups/
+*.sql.gz
+backup.log
+
 # Editor / OS
 .DS_Store
 *.swp

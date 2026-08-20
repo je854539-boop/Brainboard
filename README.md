@@ -543,10 +543,45 @@ Visit `https://<your DOMAIN>` once Caddy finishes issuing its cert
 
 **Updating an already-deployed VPS**: run `./deploy.sh` from the repo root
 on the box (or `ssh <vps> 'cd /path/to/Brainboard && ./deploy.sh'` remotely)
--- pulls the latest commit, rebuilds the API image, runs pending Alembic
-migrations, restarts. Deliberately manual/one-command rather than
-auto-deploying on every push: a human decides when a build goes live on the
-box placing real calls to real merchants, not CI.
+-- pulls the latest commit, rebuilds the API image, backs up the database
+(see Backups below), runs pending Alembic migrations, restarts.
+Deliberately manual/one-command rather than auto-deploying on every push:
+a human decides when a build goes live on the box placing real calls to
+real merchants, not CI.
+
+## Backups
+
+The Master Log data on this box is the actual business asset -- treat
+losing it as unacceptable, not just inconvenient.
+
+**`./backup.sh`** dumps the entire Postgres database to a gzip'd SQL file
+under `./backups/` and prunes local backups older than 14 days (override
+with `BACKUP_RETENTION_DAYS`). Safe to run while the app is live. Every
+`./deploy.sh` run calls it automatically right before running migrations,
+so a bad migration always has a same-second-old snapshot to fall back to.
+
+**Schedule it independently of deploys too** -- migrations aren't the only
+way to lose data; so is disk failure, a bad manual query, or the VPS
+itself going down. Add a cron job on the box:
+```
+crontab -e
+# every 6 hours:
+0 */6 * * * cd /path/to/Brainboard && ./backup.sh >> backup.log 2>&1
+```
+
+**Get backups off the box.** A backup living on the same disk as the
+database it backs up does not survive that disk, or the VPS, dying. Copy
+`./backups/` somewhere else on a schedule too -- e.g. with `rclone` to
+S3-compatible storage (DigitalOcean Spaces, Backblaze B2, AWS S3):
+```
+rclone sync ./backups remote:brainboard-backups
+```
+Add that as its own cron line, or append it to the bottom of `backup.sh`
+once `rclone` is configured on the box.
+
+**Restore** with `./restore.sh backups/brainboard_<timestamp>.sql.gz` --
+destructive (drops and recreates the database from the dump), so it
+requires typing the database name to confirm before touching anything.
 
 ## Configuring integrations
 
