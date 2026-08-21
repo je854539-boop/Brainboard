@@ -18,13 +18,14 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models.enums import ActivitySource, DialerCallStatus, DialerDisposition
+from app.models.enums import ActivitySource, DialerCallDirection, DialerCallStatus, DialerDisposition
 from app.models.orm import (
     DialerCallAttempt,
     DialerCampaign,
     DialerNumber,
     DialerNumberPool,
     EnrichmentResult,
+    InboundRingTarget,
     LeadActivityEvent,
     MasterLogEntry,
     SiloCandidate,
@@ -41,6 +42,8 @@ from app.schemas import (
     DialerNumberPoolCreate,
     DialerNumberPoolOut,
     DialerQueuePreviewEntry,
+    InboundRingTargetCreate,
+    InboundRingTargetOut,
 )
 from app.services import dialer
 from app.services.signalwire_adapter import get_signalwire_adapter
@@ -88,6 +91,34 @@ def add_number(payload: DialerNumberCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(number)
     return number
+
+
+# ---- inbound ring group -----------------------------------------------------
+
+
+@router.post("/inbound-roster", response_model=InboundRingTargetOut, status_code=201)
+def add_ring_target(payload: InboundRingTargetCreate, db: Session = Depends(get_db)):
+    target = InboundRingTarget(**payload.model_dump())
+    db.add(target)
+    db.commit()
+    db.refresh(target)
+    return target
+
+
+@router.get("/inbound-roster", response_model=list[InboundRingTargetOut])
+def list_ring_targets(db: Session = Depends(get_db)):
+    return db.execute(select(InboundRingTarget).order_by(InboundRingTarget.created_at)).scalars().all()
+
+
+@router.patch("/inbound-roster/{target_id}", response_model=InboundRingTargetOut)
+def update_ring_target(target_id: uuid.UUID, is_active: bool, db: Session = Depends(get_db)):
+    target = db.get(InboundRingTarget, target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="ring target not found")
+    target.is_active = is_active
+    db.commit()
+    db.refresh(target)
+    return target
 
 
 # ---- campaigns --------------------------------------------------------------
@@ -214,6 +245,7 @@ def active_attempts(db: Session = Depends(get_db)):
         {
             "id": str(a.id),
             "status": a.status.value,
+            "direction": a.direction.value,
             "to_number": a.to_number,
             "lead_uid": str(a.lead_uid) if a.lead_uid else None,
             "silo_candidate_uid": str(a.silo_candidate_uid) if a.silo_candidate_uid else None,
@@ -291,6 +323,20 @@ def screen_pop(entity_uid: uuid.UUID, db: Session = Depends(get_db)):
         }
 
     raise HTTPException(status_code=404, detail="entity not found")
+
+
+@router.get("/attempts/inbound", response_model=list[DialerCallAttemptOut])
+def list_inbound_attempts(limit: int = 30, db: Session = Depends(get_db)):
+    """Inbound calls have no campaign_id (they're not placed by any
+    outbound campaign), so they'd never show up in the per-campaign
+    attempts table -- this is their own view, most recent first."""
+    query = (
+        select(DialerCallAttempt)
+        .where(DialerCallAttempt.direction == DialerCallDirection.INBOUND)
+        .order_by(DialerCallAttempt.created_at.desc())
+        .limit(min(limit, 200))
+    )
+    return db.execute(query).scalars().all()
 
 
 @router.get("/campaigns/{campaign_id}/attempts", response_model=list[DialerCallAttemptOut])
@@ -388,4 +434,124 @@ async def call_status_webhook(attempt_id: uuid.UUID, request: Request, db: Sessi
     recording_url = form.get("RecordingUrl")
 
     dialer.process_call_status(db, attempt, call_status=call_status, duration_seconds=duration, recording_url=recording_url)
+    return {"ok": True}
+
+
+@router.api_route("/webhooks/inbound", methods=["GET", "POST"])
+async def inbound_call(request: Request, db: Session = Depends(get_db)):
+    """Fetched by SignalWire the instant a merchant calls one of your
+    numbers back -- before anyone has picked up. Identifies the caller
+    against known leads/silo candidates immediately (see
+    dialer.identify_inbound_caller), logs a DialerCallAttempt in
+    'ringing' status right away so the screen-pop widget can surface who's
+    calling while the phone is still ringing (not just once someone
+    answers, unlike the outbound flow -- see this module's dialer.py
+    import docstring for why that's possible here), then rings every
+    active roster phone simultaneously. First pickup wins; the rest stop
+    ringing automatically -- standard multi-<Number> <Dial> behavior. No
+    one answers within the timeout -> falls through to voicemail.
+
+    Not signature-checked, matching outbound_laml -- this endpoint only
+    reads/creates a call-attempt record, it doesn't mutate an existing
+    lead or disposition, so it follows the same "LaML fetch" trust level
+    as outbound_laml rather than the mutating webhooks below."""
+    form = await request.form()
+    from_number = form.get("From") or ""
+    settings = get_settings()
+
+    kind, entity_uid, _company_name = dialer.identify_inbound_caller(db, from_number)
+    attempt = DialerCallAttempt(
+        direction=DialerCallDirection.INBOUND,
+        to_number=from_number,
+        attempt_number=1,
+        status=DialerCallStatus.RINGING,
+        lead_uid=entity_uid if kind == "lead" else None,
+        silo_candidate_uid=entity_uid if kind == "silo_candidate" else None,
+    )
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
+
+    targets = dialer.active_ring_targets(db)
+    if not targets:
+        return _laml(
+            "<Response><Say>Thanks for calling. No one is available to take your call right now, "
+            "please try again shortly.</Say></Response>"
+        )
+
+    if not settings.dialer_public_base_url:
+        return _laml("<Response><Say>This line is not fully configured yet.</Say></Response>")
+
+    base = settings.dialer_public_base_url.rstrip("/")
+    outer_status_url = escape(f"{base}/api/dialer/webhooks/status/{attempt.id}")
+    numbers_xml = "".join(
+        f'<Number statusCallback="{escape(f"{base}/api/dialer/webhooks/inbound-leg-answered/{attempt.id}?ring_target_id={t.id}")}" '
+        f'statusCallbackEvent="answered">{escape(t.phone_number)}</Number>'
+        for t in targets
+    )
+    dial = (
+        f'<Dial timeout="25" record="record-from-answer" recordingStatusCallback="{outer_status_url}" '
+        f'action="{outer_status_url}">{numbers_xml}</Dial>'
+    )
+    voicemail_status_url = escape(f"{base}/api/dialer/webhooks/inbound-voicemail/{attempt.id}")
+    voicemail = (
+        '<Say>Sorry we missed you. Please leave a message after the tone.</Say>'
+        f'<Record maxLength="120" recordingStatusCallback="{voicemail_status_url}"/>'
+    )
+    return _laml(f"<Response>{dial}{voicemail}</Response>")
+
+
+@router.post("/webhooks/inbound-leg-answered/{attempt_id}")
+async def inbound_leg_answered(attempt_id: uuid.UUID, ring_target_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
+    """Per-<Number> statusCallback from the ring group (see this module's
+    dialer.py import docstring's HONESTY NOTE on this mechanism) -- fires
+    when THIS specific roster phone answers, which is how we know who won
+    the race without any polling or guessing."""
+    attempt = db.get(DialerCallAttempt, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="call attempt not found")
+    target = db.get(InboundRingTarget, ring_target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="ring target not found")
+
+    form = await request.form()
+    settings = get_settings()
+    adapter = get_signalwire_adapter()
+    signature = request.headers.get("X-SignalWire-Signature") or request.headers.get("X-Twilio-Signature") or ""
+    if not adapter.verify_webhook_signature(settings.signalwire_webhook_signing_key, str(request.url), dict(form), signature):
+        raise HTTPException(status_code=401, detail="invalid webhook signature")
+
+    call_status = form.get("CallStatus") or ""
+    if call_status not in ("answered", "in-progress"):
+        return {"ok": True, "note": f"leg status {call_status!r} is not an answer, ignored"}
+
+    dialer.record_inbound_answer(db, attempt, target.co_broker)
+    return {"ok": True}
+
+
+@router.post("/webhooks/inbound-voicemail/{attempt_id}")
+async def inbound_voicemail(attempt_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
+    """Fired when the fallback <Record> verb finishes -- nobody in the
+    ring group answered within the timeout. Distinct from
+    /webhooks/status because <Record>'s callback doesn't carry a
+    CallStatus/DialCallStatus field the way a Dial/Call callback does, so
+    reusing that endpoint would silently no-op instead of saving the
+    voicemail."""
+    attempt = db.get(DialerCallAttempt, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="call attempt not found")
+
+    form = await request.form()
+    settings = get_settings()
+    adapter = get_signalwire_adapter()
+    signature = request.headers.get("X-SignalWire-Signature") or request.headers.get("X-Twilio-Signature") or ""
+    if not adapter.verify_webhook_signature(settings.signalwire_webhook_signing_key, str(request.url), dict(form), signature):
+        raise HTTPException(status_code=401, detail="invalid webhook signature")
+
+    if attempt.status != DialerCallStatus.IN_PROGRESS:  # a leg may have answered a beat after Record started
+        attempt.status = DialerCallStatus.NO_ANSWER
+    attempt.recording_url = form.get("RecordingUrl")
+    duration_raw = form.get("RecordingDuration")
+    attempt.duration_seconds = float(duration_raw) if duration_raw and duration_raw.isdigit() else None
+    db.commit()
     return {"ok": True}

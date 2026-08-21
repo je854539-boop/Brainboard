@@ -13,10 +13,11 @@
   immediately on answer. The recording is a real recording of you pitching, not a synthetic/AI voice -- deliberate, see
   the compliance notes this was built from. After each call, mark it <b class="text-[var(--green)]">Advance</b> (converts
   a silo candidate into Master Log V2, or moves an existing lead forward) or <b class="text-[var(--crimson)]">Purge</b>
-  (dismisses/ghosts it) -- same disposition path the Targets grid's Convert/Dismiss buttons already use. Not yet built
-  (deferred, not silently skipped): concurrent inbound campaigns, SMS/10DLC, and real predictive volume pacing -- "max
-  calls per run" below is a manual batch cap, not an optimizer. Run several campaigns with different caller_connect_number
-  values (your different phones) to work multiple lines at once.
+  (dismisses/ghosts it) -- same disposition path the Targets grid's Convert/Dismiss buttons already use. Run several
+  campaigns with different caller_connect_number values (your different phones) to work multiple lines at once. Not yet
+  built (deferred, not silently skipped): SMS/10DLC and real predictive volume pacing -- "max calls per run" below is a
+  manual batch cap, not an optimizer. Inbound calling <i>is</i> built (below) -- every ring target rings simultaneously,
+  first pickup wins, and the caller is identified before anyone answers.
 </p>
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
@@ -69,6 +70,35 @@
       </select>
       <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)] mt-1">Create Campaign</button>
     </form>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+  <div class="tactical-panel p-4">
+    <div class="stencil-header text-[var(--amber)] text-xs mb-3">Inbound Ring Group</div>
+    <p class="text-[10px] text-[var(--text-dim)] mb-3 leading-relaxed">
+      Every phone below rings simultaneously the instant a merchant calls one of your SignalWire numbers back --
+      first pickup wins, the rest stop ringing automatically. The caller is identified against Master Log/silo
+      candidates before anyone answers (see the screen-pop panel). Nobody picks up within 25s -&gt; voicemail.
+      Whoever answers gets added to the deal as a contributor -- never replaces the lead's primary co-broker.
+    </p>
+    <form id="ring-target-form" class="flex flex-col gap-2 mb-3">
+      <select name="co_broker" required class="tactical-select w-full">
+        <option value="">— select broker —</option>
+        {% for cb in co_brokers %}<option value="{{ cb.value }}">{{ cb.value }}</option>{% endfor %}
+      </select>
+      <input name="phone_number" required placeholder="+19175551234" class="tactical-select w-full" />
+      <button type="submit" class="tactical-select border-[var(--amber)] text-[var(--amber)]">Add to Ring Group</button>
+    </form>
+    <div id="ring-target-list" class="text-[10px] flex flex-col gap-1 max-h-[180px] overflow-y-auto"></div>
+  </div>
+
+  <div class="tactical-panel scroll-panel">
+    <div class="stencil-header text-[var(--amber)] text-xs p-4 pb-2">Recent Inbound Calls</div>
+    <table class="tactical-table">
+      <thead><tr><th>From</th><th>Status</th><th>Answered By</th><th>Recording</th></tr></thead>
+      <tbody id="inbound-body"><tr><td colspan="4" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+    </table>
   </div>
 </div>
 
@@ -282,10 +312,57 @@ document.getElementById("campaign-form").addEventListener("submit", async (e) =>
   await renderCampaigns();
 });
 
+async function renderRingTargets() {
+  const targets = await fetchJSON("/api/dialer/inbound-roster");
+  document.getElementById("ring-target-list").innerHTML = targets.map(t => `
+    <div class="tactical-panel p-2 flex items-center justify-between">
+      <div>
+        <div class="font-medium text-[var(--amber)]">${t.co_broker}</div>
+        <div class="text-[var(--text-dim)]">${t.phone_number}</div>
+      </div>
+      <button class="tactical-select text-[10px] py-1 ${t.is_active ? 'border-[var(--green)] text-[var(--green)]' : 'border-[var(--text-dim)] text-[var(--text-dim)]'}"
+        onclick="toggleRingTarget('${t.id}', ${!t.is_active})">${t.is_active ? 'ACTIVE' : 'PAUSED'}</button>
+    </div>`).join("") || `<div class="text-[var(--text-dim)]">No ring targets yet -- inbound calls will get a "no one available" message until at least one is added.</div>`;
+}
+
+window.toggleRingTarget = async (id, newActive) => {
+  await fetchJSON(`/api/dialer/inbound-roster/${id}?is_active=${newActive}`, { method: "PATCH" });
+  await renderRingTargets();
+};
+
+document.getElementById("ring-target-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  await fetchJSON("/api/dialer/inbound-roster", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ co_broker: form.get("co_broker"), phone_number: form.get("phone_number") }),
+  });
+  e.target.reset();
+  await renderRingTargets();
+});
+
+async function renderInboundCalls() {
+  const attempts = await fetchJSON("/api/dialer/attempts/inbound");
+  document.getElementById("inbound-body").innerHTML = attempts.map(a => {
+    const statusColor = a.status === "in-progress" || a.status === "completed" ? "status-badge--funded"
+      : a.status === "no-answer" || a.status === "failed" ? "status-badge--attrition" : "status-badge--active";
+    return `
+      <tr>
+        <td>${a.to_number}</td>
+        <td><span class="status-badge ${statusColor}">${a.status}</span></td>
+        <td>${a.answered_by_co_broker || '—'}</td>
+        <td>${a.recording_url ? `<a href="${a.recording_url}" target="_blank" class="text-[var(--amber)] hover:underline">REC ↗</a>` : '—'}</td>
+      </tr>`;
+  }).join("") || `<tr><td colspan="4" class="text-center text-[var(--text-dim)] py-6">No inbound calls yet.</td></tr>`;
+}
+
 (async () => {
   await renderProviderStatus();
   await renderPools();
   await renderCampaigns();
+  await renderRingTargets();
+  await renderInboundCalls();
+  setInterval(renderInboundCalls, 8000);
 })();
 </script>
 {% endblock %}

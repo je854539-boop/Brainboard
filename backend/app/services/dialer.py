@@ -11,12 +11,28 @@ Phase 1 scope only: outbound calling, local-presence number selection,
 manual per-call disposition. Explicitly NOT built here (deferred to a
 follow-up phase on a fresh request): live patch-in/double-dial
 conferencing (bridging the user's own in-progress "company dialer" call to
-a live-answered lead), concurrent inbound campaigns, SMS/10DLC, and a real
-predictive volume-pacing algorithm -- `run_campaign`'s `max_calls` is a
-manual batch-size cap, not automatic pacing.
+a live-answered lead), SMS/10DLC, and a real predictive volume-pacing
+algorithm -- `run_campaign`'s `max_calls` is a manual batch-size cap, not
+automatic pacing.
+
+Inbound (ring-group) IS built here, on a fresh follow-up request -- see
+routers/dialer.py's /webhooks/inbound. HONESTY NOTE on the "which phone
+answered" mechanism: a simultaneous multi-<Number> <Dial> is standard,
+well-documented Twilio-compatible LaML, and giving each <Number> its own
+statusCallback is the standard documented way to identify which leg
+connected (the other legs' callbacks report no-answer/canceled, never
+in-progress). SignalWire advertises Twilio REST/LaML compatibility, so
+this should carry over -- but this sandbox cannot reach signalwire.com to
+confirm that specific behavior against their live docs, unlike CWMS
+(verified earlier this project against USACE's own open-source client).
+Smoke-test this against a real SignalWire account before trusting
+attribution in production; the rest of the ring-group flow (caller
+lookup, LaML structure, credit ledger) doesn't depend on that assumption
+being right and is fully verified here.
 """
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,12 +43,23 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models.enums import (
     ActivitySource,
+    CoBroker,
+    DialerCallDirection,
     DialerCallStatus,
     DialerDisposition,
+    LeadContributionReason,
     MasterLogStatus,
     SiloCandidateStatus,
 )
-from app.models.orm import DialerCallAttempt, DialerCampaign, DialerNumber, MasterLogEntry, SiloCandidate
+from app.models.orm import (
+    DialerCallAttempt,
+    DialerCampaign,
+    DialerNumber,
+    InboundRingTarget,
+    LeadContributor,
+    MasterLogEntry,
+    SiloCandidate,
+)
 from app.services import pipeline
 from app.services.signalwire_adapter import SignalWireAdapter, get_signalwire_adapter
 
@@ -60,6 +87,81 @@ def _area_code(phone: str | None) -> str | None:
     if len(digits) == 10:
         return digits[:3]
     return None
+
+
+def _last10_digits(phone: str | None) -> str | None:
+    """Normalizes any NANP phone representation to its bare last-10-digit
+    form so formats can be compared regardless of source -- Master Log
+    stores "(917) 555-1234", SignalWire's inbound Caller ID arrives as
+    E.164 "+19175551234". Returns None if there aren't at least 10
+    digits, rather than matching on a partial/garbage number."""
+    if not phone:
+        return None
+    digits = re.sub(r"\D", "", phone)
+    return digits[-10:] if len(digits) >= 10 else None
+
+
+def identify_inbound_caller(db: Session, from_number: str) -> tuple[str | None, uuid.UUID | None, str | None]:
+    """Matches an inbound caller's number against known leads first, then
+    silo candidates, by normalized last-10-digits (see _last10_digits) --
+    a full-table scan-and-compare rather than a SQL-side digit-strip,
+    since lead volume here doesn't warrant the extra index/computed-column
+    complexity. Returns (kind, entity_uid, company_name); (None, None,
+    None) for an unrecognized number -- not an error, just an unknown
+    caller who gets ring-grouped like anyone else without pre-fill."""
+    target = _last10_digits(from_number)
+    if target is None:
+        return None, None, None
+
+    for lead in db.execute(select(MasterLogEntry.lead_uid, MasterLogEntry.phone, MasterLogEntry.business_name)).all():
+        if _last10_digits(lead.phone) == target:
+            return "lead", lead.lead_uid, lead.business_name
+
+    for candidate in db.execute(
+        select(SiloCandidate.candidate_uid, SiloCandidate.phone, SiloCandidate.company_name)
+    ).all():
+        if _last10_digits(candidate.phone) == target:
+            return "silo_candidate", candidate.candidate_uid, candidate.company_name
+
+    return None, None, None
+
+
+def active_ring_targets(db: Session) -> list[InboundRingTarget]:
+    return db.execute(
+        select(InboundRingTarget).where(InboundRingTarget.is_active.is_(True)).order_by(InboundRingTarget.created_at)
+    ).scalars().all()
+
+
+def credit_contributor(
+    db: Session, lead_uid: uuid.UUID, co_broker: CoBroker, reason: LeadContributionReason
+) -> LeadContributor | None:
+    """Additive credit only -- per the explicit product decision this was
+    built from ("whoever answers gets added to the deal, there's enough $
+    to go around"), never replaces MasterLogEntry.co_broker. Returns None
+    (no-op, not an error) if co_broker is already the lead's primary
+    assignment -- crediting someone for a lead they already own would
+    just be noise -- or if this exact (lead, broker, reason) credit
+    already exists, so re-processing a webhook retry can't double-credit
+    the same pickup."""
+    lead = db.get(MasterLogEntry, lead_uid)
+    if lead is None or lead.co_broker == co_broker:
+        return None
+
+    already = db.execute(
+        select(LeadContributor).where(
+            LeadContributor.lead_uid == lead_uid,
+            LeadContributor.co_broker == co_broker,
+            LeadContributor.reason == reason,
+        )
+    ).scalar_one_or_none()
+    if already is not None:
+        return None
+
+    contributor = LeadContributor(lead_uid=lead_uid, co_broker=co_broker, reason=reason)
+    db.add(contributor)
+    db.commit()
+    db.refresh(contributor)
+    return contributor
 
 
 def _attempt_counts(db: Session, campaign_id: uuid.UUID) -> dict[uuid.UUID, tuple[int, DialerDisposition]]:
@@ -212,6 +314,24 @@ def place_outbound_call(
         logger.exception("SignalWire call placement failed for campaign %s", campaign.id)
 
     db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
+def record_inbound_answer(db: Session, attempt: DialerCallAttempt, co_broker: CoBroker) -> DialerCallAttempt:
+    """Called from the per-ring-target statusCallback once a specific leg
+    reports answered (see this module's HONESTY NOTE on that mechanism).
+    Idempotent against duplicate webhook deliveries -- SignalWire, like
+    Twilio, does not guarantee exactly-once webhook delivery -- since
+    setting the same status/broker twice is harmless and
+    credit_contributor already no-ops a repeat credit."""
+    attempt.status = DialerCallStatus.IN_PROGRESS
+    attempt.answered_by_co_broker = co_broker
+    db.commit()
+
+    if attempt.lead_uid is not None:
+        credit_contributor(db, attempt.lead_uid, co_broker, LeadContributionReason.INBOUND_CALL_ANSWERED)
+
     db.refresh(attempt)
     return attempt
 

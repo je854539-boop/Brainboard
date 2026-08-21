@@ -260,3 +260,24 @@ class DialerDisposition(str, Enum):
     UNSET = "unset"
     ADVANCE = "advance"
     PURGE = "purge"
+
+
+class DialerCallDirection(str, Enum):
+    """OUTBOUND = existing Phase 1 behavior (place_outbound_call). INBOUND
+    = a merchant calling one of your SignalWire numbers back -- see
+    routers/dialer.py's /webhooks/inbound and services/dialer.py's
+    ring-group logic."""
+
+    OUTBOUND = "outbound"
+    INBOUND = "inbound"
+
+
+class LeadContributionReason(str, Enum):
+    """Why a co_broker was added to LeadContributor for a lead beyond its
+    single primary MasterLogEntry.co_broker -- an additive credit ledger,
+    never a replacement for the primary assignment. Deliberately a real
+    enum (not free text) so the reason is queryable for commission-split
+    reporting later, the same reasoning as every other enum in this
+    codebase over a notes-field convention."""
+
+    INBOUND_CALL_ANSWERED = "inbound_call_answered"

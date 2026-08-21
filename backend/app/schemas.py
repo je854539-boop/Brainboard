@@ -6,9 +6,11 @@ from pydantic import BaseModel, ConfigDict
 from app.models.enums import (
     CallAnalysisStatus,
     CoBroker,
+    DialerCallDirection,
     DialerCallStatus,
     DialerCampaignType,
     DialerDisposition,
+    LeadContributionReason,
     MasterLogStatus,
     SiloCandidateStatus,
     SiloName,
@@ -270,7 +272,8 @@ class DialerCallAttemptOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    campaign_id: uuid.UUID
+    campaign_id: uuid.UUID | None
+    direction: DialerCallDirection
     lead_uid: uuid.UUID | None
     silo_candidate_uid: uuid.UUID | None
     from_number_id: uuid.UUID | None
@@ -281,6 +284,7 @@ class DialerCallAttemptOut(BaseModel):
     recording_url: str | None
     duration_seconds: float | None
     disposition: DialerDisposition
+    answered_by_co_broker: CoBroker | None
     error: str | None
     placed_at: datetime | None
     created_at: datetime
@@ -290,6 +294,31 @@ class DialerCallAttemptOut(BaseModel):
 class DialerDispositionUpdate(BaseModel):
     disposition: DialerDisposition
     co_broker: CoBroker | None = None  # required only when disposition=advance on a silo candidate
+
+
+class InboundRingTargetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    co_broker: CoBroker
+    phone_number: str
+    is_active: bool
+    created_at: datetime
+
+
+class InboundRingTargetCreate(BaseModel):
+    co_broker: CoBroker
+    phone_number: str
+
+
+class LeadContributorOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    lead_uid: uuid.UUID
+    co_broker: CoBroker
+    reason: LeadContributionReason
+    credited_at: datetime
 
 
 class DialerQueuePreviewEntry(BaseModel):

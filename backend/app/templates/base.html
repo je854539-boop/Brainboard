@@ -105,7 +105,7 @@
       }
     };
 
-    function renderScreenPop(attempt, data) {
+    function renderScreenPop(attempt, data, isInbound) {
       const panel = document.getElementById("screen-pop-panel");
       const content = document.getElementById("screen-pop-content");
       const needsBroker = data.kind === "silo_candidate";
@@ -116,10 +116,11 @@
         `<div class="text-[var(--text-dim)]">${e.source}: <span class="text-[var(--text-primary)]">${JSON.stringify(e.payload).slice(0, 140)}</span></div>`
       ).join("") || '<div class="text-[var(--text-dim)]">No enrichment on file.</div>';
       const brokerOptions = {{ CO_BROKERS|tojson }}.map(cb => `<option value="${cb}">${cb}</option>`).join("");
+      const headerLabel = (isInbound ? "INCOMING // " : "LIVE CALL // ") + data.company_name;
 
       content.innerHTML = `
         <div class="flex items-center justify-between mb-2">
-          <div class="stencil-header text-[var(--amber)] text-xs glitch" data-text="LIVE CALL // ${data.company_name}">LIVE CALL // ${data.company_name}</div>
+          <div class="stencil-header text-[var(--amber)] text-xs glitch" data-text="${headerLabel}">${headerLabel}</div>
           <button onclick="document.getElementById('screen-pop-panel').classList.add('hidden')" class="text-[var(--text-dim)] hover:text-[var(--crimson)]">✕</button>
         </div>
         <div class="text-[10px] mb-2">
@@ -165,16 +166,40 @@
       try {
         const attempts = await fetchJSON("/api/dialer/attempts/active");
         for (const a of attempts) {
-          if (a.status !== "in-progress" || poppedAttempts.has(a.id)) continue;
+          // Outbound: pop once WE'RE connected (in-progress) -- the lead
+          // just answered. Inbound: pop the instant it starts ringing --
+          // the caller is already identified server-side before anyone
+          // picks up, so there's no reason to wait for pickup to show it.
+          const readyStatus = a.direction === "inbound" ? "ringing" : "in-progress";
+          if (a.status !== readyStatus || poppedAttempts.has(a.id)) continue;
           poppedAttempts.add(a.id);
           const entityUid = a.lead_uid || a.silo_candidate_uid;
-          if (!entityUid) continue;
+          if (!entityUid) {
+            if (a.direction === "inbound") renderUnknownCallerPop(a);
+            continue;
+          }
           const data = await fetchJSON(`/api/dialer/screen-pop/${entityUid}`);
-          renderScreenPop(a, data);
+          renderScreenPop(a, data, a.direction === "inbound");
         }
       } catch (err) {
         // Polling widget stays silent on failure -- dialer may not be configured yet.
       }
+    }
+
+    function renderUnknownCallerPop(attempt) {
+      const panel = document.getElementById("screen-pop-panel");
+      const content = document.getElementById("screen-pop-content");
+      content.innerHTML = `
+        <div class="flex items-center justify-between mb-2">
+          <div class="stencil-header text-[var(--amber)] text-xs glitch" data-text="INCOMING // UNKNOWN CALLER">INCOMING // UNKNOWN CALLER</div>
+          <button onclick="document.getElementById('screen-pop-panel').classList.add('hidden')" class="text-[var(--text-dim)] hover:text-[var(--crimson)]">✕</button>
+        </div>
+        <div class="text-[10px] mb-2">${attempt.to_number || '—'}</div>
+        <div class="text-[10px] text-[var(--text-dim)]">No matching lead or silo candidate on file for this number. Ringing the group now.</div>`;
+      panel.classList.remove("hidden");
+      panel.classList.remove("glitch-in");
+      void panel.offsetWidth;
+      panel.classList.add("glitch-in");
     }
 
     document.addEventListener("DOMContentLoaded", () => {

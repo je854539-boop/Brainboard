@@ -14,10 +14,12 @@ from app.models.enums import (
     BrainMode,
     CallAnalysisStatus,
     CoBroker,
+    DialerCallDirection,
     DialerCallStatus,
     DialerCampaignType,
     DialerDisposition,
     GeofenceEventType,
+    LeadContributionReason,
     MasterLogStatus,
     SiloCandidateStatus,
     SiloName,
@@ -513,7 +515,12 @@ class DialerCallAttempt(Base):
     __tablename__ = "dialer_call_attempts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dialer_campaigns.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Nullable: an inbound call isn't placed by any outbound campaign --
+    # see direction below. Every outbound attempt still always has one.
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("dialer_campaigns.id", ondelete="CASCADE"), index=True)
+    direction: Mapped[DialerCallDirection] = mapped_column(
+        _pg_enum(DialerCallDirection, "dialer_call_direction"), nullable=False, default=DialerCallDirection.OUTBOUND
+    )
     lead_uid: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("master_log_entries.lead_uid", ondelete="SET NULL"), index=True
     )
@@ -532,6 +539,12 @@ class DialerCallAttempt(Base):
     disposition: Mapped[DialerDisposition] = mapped_column(
         _pg_enum(DialerDisposition, "dialer_disposition"), nullable=False, default=DialerDisposition.UNSET
     )
+    # Inbound-only: which ring-group target actually answered, set by the
+    # per-leg statusCallback in the inbound webhook flow (see
+    # services/dialer.py's ring-group docstring for what's confirmed vs
+    # assumed about that mechanism). NULL for outbound, and NULL for an
+    # inbound call nobody picked up (falls to voicemail instead).
+    answered_by_co_broker: Mapped[CoBroker | None] = mapped_column(_pg_enum(CoBroker, "co_broker"))
     error: Mapped[str | None] = mapped_column(Text)
     placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
@@ -539,4 +552,43 @@ class DialerCallAttempt(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    campaign: Mapped["DialerCampaign"] = relationship(back_populates="attempts")
+    campaign: Mapped["DialerCampaign | None"] = relationship(back_populates="attempts")
+
+
+class InboundRingTarget(Base):
+    """One phone that rings when a merchant calls a SignalWire number back
+    -- the "5 cell phones" (you + 4 brokers) ring simultaneously; whoever
+    answers first gets connected, the rest stop ringing automatically
+    (see services/dialer.py's ring-group builder). co_broker links the
+    ringing phone to a name for attribution -- see LeadContributor."""
+
+    __tablename__ = "inbound_ring_targets"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    co_broker: Mapped[CoBroker] = mapped_column(_pg_enum(CoBroker, "co_broker"), nullable=False)
+    phone_number: Mapped[str] = mapped_column(String(32), nullable=False)  # E.164, e.g. +19175551234
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LeadContributor(Base):
+    """Additive credit ledger for a lead beyond its single primary
+    MasterLogEntry.co_broker -- e.g. "whoever answers an inbound call
+    gets added to the deal, there's enough $ to go around" per the
+    explicit product decision this was built from. Never replaces or
+    mutates the primary co_broker column; this is purely additive so
+    commission-split reporting has a real, queryable trail of who
+    touched a deal and why, instead of a single mutable owner field that
+    can only ever tell one story."""
+
+    __tablename__ = "lead_contributors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_uid: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("master_log_entries.lead_uid", ondelete="CASCADE"), nullable=False, index=True
+    )
+    co_broker: Mapped[CoBroker] = mapped_column(_pg_enum(CoBroker, "co_broker"), nullable=False)
+    reason: Mapped[LeadContributionReason] = mapped_column(
+        _pg_enum(LeadContributionReason, "lead_contribution_reason"), nullable=False
+    )
+    credited_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
