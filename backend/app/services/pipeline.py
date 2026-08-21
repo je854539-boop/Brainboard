@@ -200,6 +200,8 @@ def convert_or_update_silo_candidate(
             email=candidate.email,
             notes=f"Converted from silo candidate ({candidate.silo.value}). {candidate.notes or ''}".strip(),
             dossier_drive_link=candidate.dossier_drive_link,
+            source_silo=candidate.silo,
+            source_channel=candidate.origin_source,
             source=source,
         )
         candidate.converted_lead_uid = lead.lead_uid

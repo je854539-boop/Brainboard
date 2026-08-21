@@ -49,6 +49,8 @@ class MasterLogEntryOut(BaseModel):
     financials_link: str | None
     transcripts_link: str | None
     calendar_event_id: str | None
+    source_silo: SiloName | None
+    source_channel: TelemetrySource | None
     created_at: datetime
     updated_at: datetime
     hazard_snapshot: HazardSnapshotOut | None = None
@@ -91,6 +93,7 @@ class SiloCandidateOut(BaseModel):
     dossier_drive_link: str | None
     score: float | None
     status: SiloCandidateStatus
+    origin_source: TelemetrySource | None
     converted_lead_uid: uuid.UUID | None
     latitude: float | None
     longitude: float | None

@@ -26,7 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models.enums import BrainMode, CoBroker, MasterLogStatus, TERMINAL_ATTRITION_STATUSES, TERMINAL_STATUSES
+from app.models.enums import BrainMode, CoBroker, MasterLogStatus, SiloName, TERMINAL_ATTRITION_STATUSES, TERMINAL_STATUSES
 from app.models.orm import LeadActivityEvent, MasterLogEntry, ShadowScore
 
 logger = logging.getLogger("brainboard.brain")
@@ -59,6 +59,16 @@ def _lead_features(db: Session, leads: list[MasterLogEntry]) -> pd.DataFrame:
         row["activity_count"] = float(activity_counts.get(lead.lead_uid, 0))
         for cb in CoBroker:
             row[f"co_broker__{cb.value}"] = 1.0 if lead.co_broker == cb else 0.0
+        # source_silo is NULL for a lead entered directly (intake form,
+        # hand-typed Sheet row) -- leaving every indicator at 0.0 is the
+        # correct one-hot representation of "not silo-sourced", not a
+        # missing-data gap, so no explicit "none" column is needed. This
+        # is what lets the model learn whether silo-sourced leads
+        # fund/attrite differently than manually-entered ones, and which
+        # silo specifically -- the actual mechanism for "smarter lead
+        # picking" once enough labeled examples exist.
+        for silo in SiloName:
+            row[f"source_silo__{silo.value}"] = 1.0 if lead.source_silo == silo else 0.0
         rows.append(row)
     return pd.DataFrame(rows, index=[lead.lead_uid for lead in leads])
 

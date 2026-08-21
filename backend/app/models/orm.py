@@ -82,6 +82,17 @@ class MasterLogEntry(Base):
     calendar_event_id: Mapped[str | None] = mapped_column(String(256))
     extra_columns: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
+    # Not sheet columns (the A-T mapping above is fixed) -- same "extra
+    # structured field beyond the sheet mirror" precedent as
+    # SiloCandidate.latitude/longitude. Set once, at conversion time, by
+    # pipeline.convert_or_update_silo_candidate; NULL for a lead entered
+    # directly (intake form, Sheet row typed by hand). This is what lets
+    # Brain know a lead originated from silo lead-gen instead of manual
+    # intake, and which silo/telemetry source specifically -- without
+    # touching the Master Log V2 sheet layout at all.
+    source_silo: Mapped[SiloName | None] = mapped_column(_pg_enum(SiloName, "silo_name"))
+    source_channel: Mapped[TelemetrySource | None] = mapped_column(_pg_enum(TelemetrySource, "telemetry_source"))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -153,6 +164,18 @@ class SiloCandidate(Base):
     converted_lead_uid: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("master_log_entries.lead_uid", ondelete="SET NULL")
     )
+
+    # Not a sheet column -- same precedent as email/latitude/longitude.
+    # The specific telemetry provider that identified this candidate,
+    # parsed once at creation time from source_reference's existing
+    # "[provider] ..." tag convention (see
+    # silo_leadgen.py::_infer_origin_source) into a real, queryable
+    # column instead of leaving conversion-rate-by-source analytics
+    # dependent on parsing free text every time. NULL only if a
+    # candidate's source_reference somehow doesn't carry a recognized
+    # tag -- shouldn't happen given every creation site sets one, but
+    # not force-defaulted to a guess if it does.
+    origin_source: Mapped[TelemetrySource | None] = mapped_column(_pg_enum(TelemetrySource, "telemetry_source"))
 
     # Nullable, populated only when the identifying telemetry actually
     # carried real coordinates (currently: Regrid parcel GeoJSON geometry,

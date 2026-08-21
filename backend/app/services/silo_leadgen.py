@@ -95,6 +95,30 @@ SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
 }
 
 
+_ORIGIN_SOURCE_TAG_RE = re.compile(r"\[([a-z0-9_]+)\]")
+
+
+def _infer_origin_source(source_reference: str | None) -> TelemetrySource | None:
+    """Every source_reference this module writes already embeds a
+    "[provider]" tag (see the flat-mapped path, _identify_via_regrid, and
+    _stage2_identify_companies above -- e.g. "telemetry_event:123
+    [import_genius] ..."). Parsed once here, at candidate-creation time,
+    into the real origin_source column instead of leaving
+    conversion-rate-by-source analytics dependent on re-parsing free text
+    on every query. Returns None (not a guess) if no recognized tag is
+    found -- shouldn't happen given every call site sets one, but this
+    function doesn't invent an answer if that invariant ever breaks."""
+    if not source_reference:
+        return None
+    match = _ORIGIN_SOURCE_TAG_RE.search(source_reference)
+    if not match:
+        return None
+    try:
+        return TelemetrySource(match.group(1))
+    except ValueError:
+        return None
+
+
 def _company_name_from_event(event: TelemetryEvent) -> str:
     for key in ("company_name", "consignee_name", "recalling_firm", "entity_name", "debtor_name", "symbol"):
         value = event.payload.get(key)
@@ -542,6 +566,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
                 notes=notes,
                 score=50.0 + score_delta,
                 status=status,
+                origin_source=_infer_origin_source(trade_source_ref),
                 latitude=coordinates[0] if coordinates else None,
                 longitude=coordinates[1] if coordinates else None,
             )
@@ -609,6 +634,7 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
                 company_name=company_name,
                 source_reference=source_reference,
                 notes=f"Gated by: {signal_summary} | {regrid_note}",
+                origin_source=_infer_origin_source(source_reference),
                 latitude=coordinates[0] if coordinates else None,
                 longitude=coordinates[1] if coordinates else None,
             )
@@ -660,6 +686,7 @@ def run_silo_leadgen(db: Session) -> dict:
                     silo=silo,
                     company_name=_company_name_from_event(event),
                     source_reference=source_reference,
+                    origin_source=event.source,
                 )
             )
             candidates_by_silo[silo.value] += 1

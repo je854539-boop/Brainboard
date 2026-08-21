@@ -1,14 +1,24 @@
 {% if not candidates %}
-<tr><td colspan="10" class="text-center text-[var(--text-dim)] py-6">No candidates match current filter parameters.</td></tr>
+<tr><td colspan="12" class="text-center text-[var(--text-dim)] py-6">No candidates match current filter parameters.</td></tr>
 {% endif %}
 {% for c in candidates %}
 <tr id="silo-row-{{ c.candidate_uid }}">
   <td class="text-[var(--text-dim)]">{{ c.candidate_uid|string|truncate(8, True, '') }}</td>
   <td class="max-w-[220px] truncate">{{ c.silo.value }}</td>
   <td class="text-[var(--text-primary)] font-medium">{{ c.company_name }}</td>
-  <td>{{ c.phone or '—' }}</td>
+  <td>
+    {% if c.phone %}
+    <button
+      class="text-[var(--amber)] hover:underline"
+      onclick="brainboardCallNow('silo_candidate', '{{ c.candidate_uid }}')"
+      title="Click to call via the active line"
+    >{{ c.phone }} ☎</button>
+    {% else %}—{% endif %}
+  </td>
   <td class="max-w-[160px] truncate" title="{{ c.email or '' }}">{{ c.email or '—' }}</td>
+  <td>{{ c.origin_source.value if c.origin_source else '—' }}</td>
   <td class="max-w-[180px] truncate" title="{{ c.source_reference or '' }}">{{ c.source_reference or '—' }}</td>
+  <td class="max-w-[220px] truncate" title="{{ c.notes or '' }}">{{ c.notes or '—' }}</td>
   <td>
     {% if c.dossier_drive_link %}
     <a href="{{ c.dossier_drive_link }}" target="_blank" class="text-[var(--amber)] hover:underline">DOSSIER ↗</a>
