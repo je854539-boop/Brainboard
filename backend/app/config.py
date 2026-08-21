@@ -108,6 +108,13 @@ class Settings(BaseSettings):
     # Required before any real outbound call can be placed -- the dialer
     # adapter refuses to place a call without it, see signalwire_adapter.py.
     dialer_public_base_url: str = ""
+    # Rough real daily throughput across the whole team (all phones,
+    # calls + texts combined) -- purely informational, powers the
+    # capacity-vs-pending-queue indicator on the Dialer page (see
+    # routers/dialer.py::capacity_summary). Never used to drop or hide
+    # leads -- a queue exceeding this just gets flagged visually so a
+    # human decides what to do about it, nothing is enforced silently.
+    dialer_daily_capacity: int = 50
 
 
 @lru_cache

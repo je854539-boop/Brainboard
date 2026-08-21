@@ -203,7 +203,17 @@ def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEnt
         ml_conditions.append(MasterLogEntry.co_broker.in_(filt["co_brokers"]))
 
     if ml_conditions:
-        query = select(MasterLogEntry).where(MasterLogEntry.phone.is_not(None), *ml_conditions)
+        # Prioritized, not arbitrary DB order: soonest follow-up due
+        # first, then whichever lead has gone longest without a touch --
+        # with 5 phones as the hard constraint, the software's job is
+        # making sure the next lead worked is the most urgent one on
+        # file, not just whichever one the query happened to return
+        # first.
+        query = (
+            select(MasterLogEntry)
+            .where(MasterLogEntry.phone.is_not(None), *ml_conditions)
+            .order_by(MasterLogEntry.follow_up_date.asc().nulls_last(), MasterLogEntry.updated_at.asc())
+        )
         source_label = "calendar" if filt.get("calendar") else "sheet_lead"
         for entry in db.execute(query).scalars().all():
             count, disposition = attempts.get(entry.lead_uid, (0, DialerDisposition.UNSET))
@@ -214,10 +224,17 @@ def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEnt
     if filt.get("silos"):
         from app.models.enums import SiloName
 
-        query = select(SiloCandidate).where(
-            SiloCandidate.silo.in_([SiloName(s) for s in filt["silos"]]),
-            SiloCandidate.status == SiloCandidateStatus.PENDING,
-            SiloCandidate.phone.is_not(None),
+        # Prioritized by score -- the real lending-appetite signal the
+        # waterfall already computed, not a fabricated ranking. Highest
+        # score (strongest signal) worked first.
+        query = (
+            select(SiloCandidate)
+            .where(
+                SiloCandidate.silo.in_([SiloName(s) for s in filt["silos"]]),
+                SiloCandidate.status == SiloCandidateStatus.PENDING,
+                SiloCandidate.phone.is_not(None),
+            )
+            .order_by(SiloCandidate.score.desc().nulls_last())
         )
         for candidate in db.execute(query).scalars().all():
             count, disposition = attempts.get(candidate.candidate_uid, (0, DialerDisposition.UNSET))

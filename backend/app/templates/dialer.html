@@ -20,6 +20,8 @@
   first pickup wins, and the caller is identified before anyone answers.
 </p>
 
+<div id="capacity-bar" class="tactical-panel p-3 mb-4 flex items-center gap-3 text-[10px]"></div>
+
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
   <div class="tactical-panel p-4">
     <div class="stencil-header text-[var(--amber)] text-xs mb-3">Number Pools</div>
@@ -139,6 +141,18 @@ async function renderProviderStatus() {
     </div>`;
 }
 
+async function renderCapacityBar() {
+  const c = await fetchJSON("/api/dialer/capacity-summary");
+  const color = c.over_capacity ? 'status-badge--attrition' : 'status-badge--funded';
+  const note = c.over_capacity
+    ? `${c.total_pending - c.daily_capacity} more pending than the team can realistically clear today -- consider pausing a sweep or working the overflow tomorrow, nothing here drops leads automatically.`
+    : `Within today's realistic capacity.`;
+  document.getElementById("capacity-bar").innerHTML = `
+    <span class="uppercase tracking-wide text-[var(--text-dim)]">pending across active campaigns</span>
+    <span class="status-badge ${color}">${c.total_pending} / ${c.daily_capacity}</span>
+    <span class="text-[var(--text-dim)]">${note}</span>`;
+}
+
 async function renderPools() {
   poolsCache = await fetchJSON("/api/dialer/pools");
   numbersById = {};
@@ -233,6 +247,7 @@ window.runCampaign = async (id) => {
     alert("Run failed: " + err.message);
   }
   await renderCampaigns();
+  await renderCapacityBar();
   if (selectedCampaignId === id) await renderAttempts(id);
 };
 
@@ -358,6 +373,7 @@ async function renderInboundCalls() {
 
 (async () => {
   await renderProviderStatus();
+  await renderCapacityBar();
   await renderPools();
   await renderCampaigns();
   await renderRingTargets();

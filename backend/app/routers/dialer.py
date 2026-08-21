@@ -65,6 +65,26 @@ def dialer_status():
     }
 
 
+@router.get("/capacity-summary")
+def capacity_summary(db: Session = Depends(get_db)):
+    """Total pending work across every active campaign's queue, against
+    the team's real daily capacity (settings.dialer_daily_capacity) --
+    purely informational. Never drops or hides a lead; a queue that
+    exceeds capacity just gets flagged so a human decides what to do,
+    same reasoning as everywhere else in this system that a silent cap
+    on real leads is worse than an honest overflow warning."""
+    settings = get_settings()
+    campaigns = db.execute(select(DialerCampaign).where(DialerCampaign.is_active.is_(True))).scalars().all()
+    per_campaign = [{"campaign_id": str(c.id), "name": c.name, "queue_size": len(dialer.build_dial_queue(db, c))} for c in campaigns]
+    total_pending = sum(c["queue_size"] for c in per_campaign)
+    return {
+        "daily_capacity": settings.dialer_daily_capacity,
+        "total_pending": total_pending,
+        "over_capacity": total_pending > settings.dialer_daily_capacity,
+        "campaigns": per_campaign,
+    }
+
+
 # ---- number pools / numbers ------------------------------------------------
 
 
