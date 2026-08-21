@@ -218,10 +218,14 @@ class WaterwayTriggerType(str, Enum):
 class DialerCampaignType(str, Enum):
     """SignalWire dialer campaign types (services/dialer.py). Phase 1 only
     implements OUTBOUND (queue-building + call placement + local-presence
-    caller ID). Concurrent inbound *campaigns* and live patch-in/double-dial
-    conferencing are deferred -- SignalWire numbers can still receive calls
-    (see routers/dialer.py's inbound webhook), there just isn't campaign
-    orchestration around it yet."""
+    caller ID). Inbound calling, SMS/text campaigns, and live patch-in/
+    double-dial conferencing are all deferred -- correction as of this
+    comment: there is currently no inbound webhook anywhere in
+    routers/dialer.py, despite an earlier version of this docstring
+    claiming one existed. A number with no inbound call handler
+    configured falls back to whatever default SignalWire's own dashboard
+    assigns it (typically nothing useful) -- inbound is not silently
+    working today, it is simply unbuilt."""
 
     OUTBOUND = "outbound"
 
