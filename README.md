@@ -530,7 +530,14 @@ cp .env.example .env   # fill in real secrets -- DOMAIN, DATABASE_URL password,
 ```
 docker compose up -d --build
 docker compose exec api alembic upgrade head
+docker compose exec api python scripts/setup_dialer_campaigns.py
 ```
+That last command creates the standard dialer campaign set (one per
+silo, plus Ghosted/Chase Docs/New Lead/Calendar Follow-Up) with no
+number pool attached yet -- idempotent, safe to re-run after any deploy.
+Attach a real number pool + caller_connect_number to each one you're
+ready to run from the Dialer page once your SignalWire numbers are
+provisioned.
 
 `docker-compose.yml` runs three services: Postgres (`pgvector/pgvector:pg16`),
 the API, and `caddy` -- a reverse proxy that auto-issues and renews a Let's
