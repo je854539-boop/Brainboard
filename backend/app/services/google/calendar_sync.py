@@ -296,22 +296,29 @@ def reconcile_all_events(db, service, calendar_id: str) -> dict:
         and any lead-data fields present are applied the same way
         pull_calendar_updates does, tagged WEBHOOK_CALENDAR so the loop-
         prevention check in pipeline.sync_calendar still holds.
-      - UUID present but no matching lead in Postgres -> "orphaned_uuid":
-        reported only, never auto-created -- a UUID with no row behind
-        it is more likely a deleted/renamed lead than a new one worth
-        materializing sight-unseen.
-      - No UUID at all (legacy event, pre-dates this convention) -> an
-        exact digits-only phone match against every lead's phone column
-        is attempted from the event summary ("{business_name} | {phone}"
-        -- see upsert_follow_up_event). A single match is reported as
-        "fallback_match_phone" for a HUMAN to confirm; this function
-        deliberately never auto-merges or writes back on a phone-only
-        match -- "looks like the same merchant" isn't the same
-        confidence as a UUID actually proving it. Ambiguous (2+ matches)
-        or no match at all both count as "unmatched".
+      - UUID present but no matching lead in Postgres -> an exact
+        digits-only phone match (see below) is tried as a RESCUE before
+        giving up. Caught against the real calendar: a UUID in the event
+        proves nothing about whether it's the CORRECT uuid -- real
+        events exist whose UUID doesn't match the uuid the same merchant
+        has in the Sheet today (re-created row, re-typed UUID, etc.), and
+        84% of this bucket (16/19 on the real calendar) turned out to be
+        exactly that, recoverable by phone alone. A phone match here is
+        reported as "orphaned_uuid_recovered_by_phone" (stale_lead_uid +
+        recovered_lead_uid) -- still never auto-merged, same reasoning as
+        the no-UUID case below. No phone match at all -> "orphaned_uuid".
+      - No UUID at all (legacy event, pre-dates this convention) -> the
+        same exact digits-only phone match against every lead's phone
+        column is attempted from the event summary ("{business_name} |
+        {phone}" -- see upsert_follow_up_event). A single match is
+        reported as "fallback_match_phone" for a HUMAN to confirm; this
+        function deliberately never auto-merges or writes back on ANY
+        phone-only match -- "looks like the same merchant" isn't the
+        same confidence as a UUID actually proving it. Ambiguous (2+
+        matches) or no match at all both count as "unmatched".
 
-    Returns counts plus the actual event/lead pairs for the orphan and
-    fallback buckets so a human reviews real cases, not an opaque total."""
+    Returns counts plus the actual event/lead pairs for every bucket so a
+    human reviews real cases, not an opaque total."""
     import re as _re
 
     from sqlalchemy import select
@@ -325,8 +332,15 @@ def reconcile_all_events(db, service, calendar_id: str) -> dict:
         if digits:
             leads_by_phone.setdefault(digits, []).append(str(lead_uid))
 
+    def _phone_match(summary: str) -> str | None:
+        phone_match = _re.search(r"\|\s*(.+)$", summary or "")
+        digits = _re.sub(r"\D", "", phone_match.group(1)) if phone_match else ""
+        candidates = leads_by_phone.get(digits, []) if digits else []
+        return candidates[0] if len(candidates) == 1 else None
+
     matched_by_uuid = 0
     orphaned_uuid: list[dict] = []
+    orphaned_uuid_recovered_by_phone: list[dict] = []
     fallback_match_phone: list[dict] = []
     unmatched = 0
     failed: list[tuple[str, str]] = []
@@ -342,11 +356,19 @@ def reconcile_all_events(db, service, calendar_id: str) -> dict:
             try:
                 parsed = parse_event_description(event.get("description") or "")
 
+                summary = event.get("summary") or ""
+
                 if parsed is not None:
                     lead_uid = parsed.pop("lead_uid")
                     entry = db.get(MasterLogEntry, lead_uid)
                     if entry is None:
-                        orphaned_uuid.append({"event_id": event_id, "lead_uid": lead_uid, "summary": event.get("summary", "")})
+                        recovered = _phone_match(summary)
+                        if recovered:
+                            orphaned_uuid_recovered_by_phone.append(
+                                {"event_id": event_id, "stale_lead_uid": lead_uid, "recovered_lead_uid": recovered, "summary": summary}
+                            )
+                        else:
+                            orphaned_uuid.append({"event_id": event_id, "lead_uid": lead_uid, "summary": summary})
                         continue
 
                     calendar_notes = parsed.pop("notes", None)
@@ -359,12 +381,9 @@ def reconcile_all_events(db, service, calendar_id: str) -> dict:
                     matched_by_uuid += 1
                     continue
 
-                summary = event.get("summary") or ""
-                phone_match = _re.search(r"\|\s*(.+)$", summary)
-                digits = _re.sub(r"\D", "", phone_match.group(1)) if phone_match else ""
-                candidates = leads_by_phone.get(digits, []) if digits else []
-                if len(candidates) == 1:
-                    fallback_match_phone.append({"event_id": event_id, "lead_uid": candidates[0], "summary": summary})
+                recovered = _phone_match(summary)
+                if recovered:
+                    fallback_match_phone.append({"event_id": event_id, "lead_uid": recovered, "summary": summary})
                 else:
                     unmatched += 1
             except Exception as exc:  # noqa: BLE001 -- one bad event must not abort a scan of the whole history
@@ -379,6 +398,7 @@ def reconcile_all_events(db, service, calendar_id: str) -> dict:
     return {
         "matched_by_uuid": matched_by_uuid,
         "orphaned_uuid": orphaned_uuid,
+        "orphaned_uuid_recovered_by_phone": orphaned_uuid_recovered_by_phone,
         "fallback_match_phone": fallback_match_phone,
         "unmatched": unmatched,
         "failed": failed,
