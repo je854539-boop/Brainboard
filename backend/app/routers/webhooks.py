@@ -14,8 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import verify_webhook_secret
-from app.models.enums import ActivitySource
+from app.dependencies import parse_optional_enum, verify_webhook_secret
+from app.models.enums import ActivitySource, MasterLogStatus
 from app.models.orm import MasterLogEntry, SiloCandidate
 from app.schemas import MasterLogEditWebhook, MasterLogEntryOut, MasterLogEntryUpdate, SiloCandidateOut, SiloStatusEditWebhook
 from app.services import pipeline
@@ -42,10 +42,14 @@ def lead_intake(payload: MasterLogEntryUpdate, db: Session = Depends(get_db)):
 
 @router.post("/master-log-edit", response_model=MasterLogEntryOut)
 def master_log_edit(payload: MasterLogEditWebhook, db: Session = Depends(get_db)):
-    """onMasterLogEdit: Column K (follow-up date), L (notes), W (original
-    funded amount), or X (funded date) changed on the sheet -- push the
-    update into Postgres and reflect follow-up/notes onto the linked
-    Calendar event via lead_uid."""
+    """onMasterLogEdit: Column J (status), K (follow-up date), L (notes),
+    W (original funded amount), or X (funded date) changed on the sheet
+    -- push the update into Postgres and reflect follow-up/notes onto
+    the linked Calendar event via lead_uid. A status edit routes through
+    pipeline.update_lead_fields's existing status-change handling, so it
+    still lands in StatusHistory (what the survival curves, transition
+    matrix, and any outcome backtest are actually built on) instead of
+    only updating the current-status column."""
     entry = db.get(MasterLogEntry, payload.lead_uid)
     if entry is None:
         raise HTTPException(status_code=404, detail="lead not found")
@@ -61,6 +65,8 @@ def master_log_edit(payload: MasterLogEditWebhook, db: Session = Depends(get_db)
         funded_date, precision = _parse_funded_date(payload.funded_date)
         updates["funded_date"] = funded_date
         updates["funded_date_precision"] = precision
+    if payload.status is not None:
+        updates["status"] = parse_optional_enum(payload.status, MasterLogStatus)
 
     return pipeline.update_lead_fields(db, entry, updates, source=ActivitySource.WEBHOOK_SHEET)
 

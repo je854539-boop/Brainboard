@@ -186,15 +186,23 @@ function installableOnEdit(e) {
  *     the backend (enrichment sweep, Brain scoring, dialer queue, Sheet/
  *     Calendar sync) instead of sitting invisibly in the Sheet until
  *     someone happens to also touch Notes/Follow-up on it.
- *   - Already has a lead_uid: existing behavior -- Column J (follow-up)
- *     or K (notes) changed -> push the update into Postgres and sync the
- *     linked Calendar event.
+ *   - Already has a lead_uid: existing behavior -- Column J (status), K
+ *     (follow-up), L (notes), W (funded amount), or X (funded date)
+ *     changed -> push the update into Postgres (a status change also
+ *     lands in StatusHistory, not just the current-status column -- see
+ *     /webhooks/master-log-edit) and sync the linked Calendar event.
  *
  * Known limitation: like the rest of this file's onEdit handling, this
- * reads e.range as a single cell -- a multi-row paste/fill operation
- * only processes its top-left cell. For bulk-adding many leads at once,
- * use the CSV upload on the Intelligence page instead, which doesn't
- * have this limitation.
+ * reads e.range as a single cell -- a multi-row paste/fill-down only
+ * processes its top-left cell, so relabeling many rows' Status at once
+ * this way will silently sync only the first one. For a bulk relabel
+ * (e.g. backfilling a batch of Funded/Offer Made Not Sold statuses),
+ * don't rely on this per-edit push at all -- just make the edits
+ * normally, then trigger a full sheet pull (POST /api/sync/sheet/pull,
+ * or wait for the daily background pull) once credentials are live; a
+ * full pull re-reads every row regardless of how it was edited, so it
+ * has no such limitation. For bulk-adding brand-new leads specifically,
+ * the CSV upload on the Intelligence page is still the right tool.
  */
 function onMasterLogEdit(e) {
   const sheet = e.range.getSheet();
@@ -208,9 +216,10 @@ function onMasterLogEdit(e) {
   }
 
   const col = e.range.getColumn();
-  const watchedCols = [ML_COL_FOLLOWUP, ML_COL_NOTES, ML_COL_FUNDED_AMOUNT, ML_COL_FUNDED_DATE];
+  const watchedCols = [ML_COL_STATUS, ML_COL_FOLLOWUP, ML_COL_NOTES, ML_COL_FUNDED_AMOUNT, ML_COL_FUNDED_DATE];
   if (watchedCols.indexOf(col) === -1) return;
 
+  const statusRaw = sheet.getRange(row, ML_COL_STATUS).getValue();
   const followUpRaw = sheet.getRange(row, ML_COL_FOLLOWUP).getValue();
   const notes = sheet.getRange(row, ML_COL_NOTES).getValue();
   const fundedAmountRaw = sheet.getRange(row, ML_COL_FUNDED_AMOUNT).getValue();
@@ -220,6 +229,9 @@ function onMasterLogEdit(e) {
     lead_uid: String(leadUid),
     notes: notes ? String(notes) : null,
   };
+  if (statusRaw) {
+    payload.status = String(statusRaw);
+  }
   if (followUpRaw instanceof Date) {
     payload.follow_up_date = followUpRaw.toISOString();
   }

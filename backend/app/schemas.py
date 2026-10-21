@@ -172,6 +172,11 @@ class MasterLogEditWebhook(BaseModel):
     # sheets_sync._parse_funded_date, same as a full-sheet pull, so a
     # month-only entry is never silently promoted to a fake exact date.
     funded_date: str | None = None
+    # Raw sheet text, validated against MasterLogStatus server-side (see
+    # dependencies.parse_optional_enum) rather than coerced here, so an
+    # invalid value 422s with a clear message instead of a generic
+    # Pydantic validation error.
+    status: str | None = None
 
 
 class SiloStatusEditWebhook(BaseModel):
