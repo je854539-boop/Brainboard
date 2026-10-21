@@ -22,7 +22,7 @@ from app.routers import river_surveillance as river_surveillance_router
 from app.services import brain as brain_service
 from app.services import enrichment_orchestrator
 from app.services import river_surveillance
-from app.services.google import calendar_sync
+from app.services.google import calendar_sync, sheets_sync
 
 
 @asynccontextmanager
@@ -37,11 +37,15 @@ async def lifespan(app: FastAPI):
     # Off unless CALENDAR_CONTINUOUS_PULL_ENABLED=true -- see
     # calendar_sync.start_background_pull's docstring.
     calendar_sync.start_background_pull()
+    # Off unless SHEET_CONTINUOUS_PULL_ENABLED=true -- see
+    # sheets_sync.start_background_pull's docstring.
+    sheets_sync.start_background_pull()
     yield
     river_surveillance.stop_background_polling()
     brain_service.stop_background_refresh()
     enrichment_orchestrator.stop_background_sweep()
     calendar_sync.stop_background_pull()
+    sheets_sync.stop_background_pull()
 
 
 app = FastAPI(title="Brainboard Command Deck", lifespan=lifespan)

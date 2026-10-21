@@ -154,6 +154,16 @@ class Settings(BaseSettings):
     calendar_pull_interval_seconds: int = 300  # 5 minutes
     calendar_pull_window_minutes: int = 20  # trailing window scanned each cycle -- wider than the interval so a missed cycle self-heals
 
+    # Sheet -> Postgres full pull (services/google/sheets_sync.py::
+    # pull_master_log), on a daily cadence by default -- "scan the sheet
+    # every day" so the queue is computed off current balance/payment/
+    # funded-amount/notes without anyone remembering to trigger
+    # /api/sync/sheet/pull by hand. Same off-by-default posture as the
+    # calendar pull above: a real external API call, opt in once Google
+    # credentials exist.
+    sheet_continuous_pull_enabled: bool = False
+    sheet_pull_interval_seconds: int = 86400  # 24 hours
+
 
 @lru_cache
 def get_settings() -> Settings:

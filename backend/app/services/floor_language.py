@@ -16,7 +16,7 @@ approach over a black-box model.
 import datetime as dt
 import re
 
-from app.models.enums import CoBroker
+from app.models.enums import CoBroker, MasterLogStatus
 
 # Nickname/shorthand variants actually observed in real notes this
 # session, mapped to the canonical CoBroker each one really refers to.
@@ -646,6 +646,21 @@ def additional_position_eligibility(
     }
 
 
+def _queue_row(lead, queue_type: str, reason_category: str, estimated_date: str, source: str, detail: str) -> dict:
+    return {
+        "lead_uid": str(lead.lead_uid),
+        "business_name": lead.business_name,
+        "phone": lead.phone,
+        "co_broker": lead.co_broker.value if lead.co_broker else None,
+        "lender": lead.lender,
+        "queue_type": queue_type,
+        "reason_category": reason_category,
+        "estimated_date": estimated_date,
+        "source": source,
+        "detail": detail,
+    }
+
+
 def renewal_queue(leads) -> list[dict]:
     """The living "who to call and when" queue -- every active lead's next
     funding opportunity, whichever comes first: renewal/refi on the
@@ -661,7 +676,19 @@ def renewal_queue(leads) -> list[dict]:
     surfaces the moment the math or the merchant's own words say it's
     ready. `leads` is any iterable of MasterLogEntry; a lead with no
     signal on either track is left out entirely -- there's nothing to
-    queue it by, not a 0 indicating it's ready now."""
+    queue it by, not a 0 indicating it's ready now.
+
+    Every row also carries `reason_category`, the three ways a lead can
+    land here, independent of queue_type/source:
+      - "merchant_requested" -- the merchant's own words (a stated dollar
+        ask, a vague "wants more", or a stated readiness timeline).
+      - "stacking_eligible" -- the math says a NEXT position is ready.
+      - "refi_eligible" -- the math says the EXISTING position is ready
+        to renew/refi.
+    This is what actually answers "3 ways: merchant request, mathematical
+    stacking eligibility, mathematical refi eligibility" -- queue_type/
+    source already carried this distinction, reason_category just names
+    it directly instead of making a caller infer it."""
     rows = []
     for lead in leads:
         calculated = project_payoff(
@@ -670,25 +697,17 @@ def renewal_queue(leads) -> list[dict]:
             lead.payment_freq,
         )
         if calculated["projected_payoff_date"] is not None:
-            rows.append({
-                "lead_uid": str(lead.lead_uid),
-                "business_name": lead.business_name,
-                "queue_type": "renewal_refi",
-                "estimated_date": calculated["projected_payoff_date"],
-                "source": "calculated",
-                "detail": f"{calculated['weeks_to_payoff']} weeks at current paydown rate",
-            })
+            rows.append(_queue_row(
+                lead, "renewal_refi", "refi_eligible", calculated["projected_payoff_date"], "calculated",
+                f"{calculated['weeks_to_payoff']} weeks at current paydown rate",
+            ))
         else:
             stated = extract_merchant_stated_readiness(lead.notes)
             if stated is not None:
-                rows.append({
-                    "lead_uid": str(lead.lead_uid),
-                    "business_name": lead.business_name,
-                    "queue_type": "renewal_refi",
-                    "estimated_date": stated["estimated_ready_date"],
-                    "source": "merchant_stated",
-                    "detail": f"merchant said this on {stated['stated_on']}: \"{stated['source_text']}\"",
-                })
+                rows.append(_queue_row(
+                    lead, "renewal_refi", "merchant_requested", stated["estimated_ready_date"], "merchant_stated",
+                    f"merchant said this on {stated['stated_on']}: \"{stated['source_text']}\"",
+                ))
 
         stacking = additional_position_eligibility(
             float(lead.current_balance) if lead.current_balance is not None else None,
@@ -714,14 +733,80 @@ def renewal_queue(leads) -> list[dict]:
                 # balance), not a parsing error. Flag it plainly instead
                 # of printing a nonsense negative percentage.
                 detail += " (balance/funded-amount mismatch in the data -- verify)"
-            rows.append({
-                "lead_uid": str(lead.lead_uid),
-                "business_name": lead.business_name,
-                "queue_type": "additional_position",
-                "estimated_date": stacking["estimated_date"],
-                "source": "merchant_stated" if stacking["basis"] in ("merchant_stated_interest", "capital_ask_stated") else "calculated",
-                "detail": detail,
-            })
+            is_merchant = stacking["basis"] in ("merchant_stated_interest", "capital_ask_stated")
+            rows.append(_queue_row(
+                lead, "additional_position", "merchant_requested" if is_merchant else "stacking_eligible",
+                stacking["estimated_date"], "merchant_stated" if is_merchant else "calculated", detail,
+            ))
 
     rows.sort(key=lambda r: r["estimated_date"])
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Revival queue -- a SEPARATE question from everything above: not "when is
+# an active deal next ready", but "this deal already went quiet (Deal
+# Stalled Proxy Pass / Ghosted) -- does it still look like a real,
+# qualified MCA opportunity worth calling again". Pulled from the two
+# "went cold" statuses specifically, not every terminal status: Lost To
+# Competitor/Sold Deal Killed/Dog Shit are deliberate, resolved outcomes,
+# not a merchant who just stopped answering.
+# ---------------------------------------------------------------------------
+
+STALLED_STATUSES = frozenset({MasterLogStatus.DEAL_STALLED_PROXY_PASS, MasterLogStatus.GHOSTED})
+
+# ASSUMPTION, documented like the paydown threshold above: a momentum
+# score this negative means the notes are dominated by dead-deal language
+# (banged it, ghosted, bust out, defaulted...) rather than a merchant who
+# just got busy -- a real default, not a guaranteed "never call again".
+_REVIVAL_MOMENTUM_FLOOR = -2
+
+_DISQUALIFYING_RE = re.compile(r"no\s+business|no\s+rev(?:enue)?\b|not\s+in\s+business|out\s+of\s+business", re.IGNORECASE)
+
+
+def revival_queue(leads, min_revenue: float | None = None) -> list[dict]:
+    """Stalled/ghosted leads that still look like a real, qualified MCA
+    opportunity based on their own data -- a separate queue from
+    renewal_queue's active-deal tracking, built to "catch deals that
+    went cold but shouldn't have been given up on". Excludes a lead
+    outright when its notes explicitly say there's no real business/
+    revenue behind it (a real example read off the calendar: "Dale Bragg
+    - No Business (No Rev)"), or when `min_revenue` is given and either
+    annual_revenue is missing or under it, or when the floor-language
+    momentum score is too deep in dead-deal territory (see
+    _REVIVAL_MOMENTUM_FLOOR). `leads` should already be filtered to
+    DEAL_STALLED_PROXY_PASS/GHOSTED by the caller (see
+    STALLED_STATUSES) -- this re-checks status defensively but the
+    revenue/momentum/disqualifying-language filtering is the real work
+    here, not the status filter."""
+    rows = []
+    for lead in leads:
+        if lead.status not in STALLED_STATUSES:
+            continue
+        if _DISQUALIFYING_RE.search(lead.notes or ""):
+            continue
+        if min_revenue is not None and (lead.annual_revenue is None or lead.annual_revenue < min_revenue):
+            continue
+
+        signals = extract_signals(lead.business_name, lead.notes)
+        if signals["momentum_score"] <= _REVIVAL_MOMENTUM_FLOOR:
+            continue
+
+        timeline = extract_timeline(lead.notes)
+        rows.append({
+            "lead_uid": str(lead.lead_uid),
+            "business_name": lead.business_name,
+            "phone": lead.phone,
+            "co_broker": lead.co_broker.value if lead.co_broker else None,
+            "lender": lead.lender,
+            "status": lead.status.value,
+            "annual_revenue": lead.annual_revenue,
+            "industry": signals["industry"],
+            "momentum_score": signals["momentum_score"],
+            "days_since_last_entry": timeline["days_since_last_entry"],
+            "detail": f"stalled, momentum {signals['momentum_score']:+d}, last touched "
+            + (f"{timeline['days_since_last_entry']}d ago" if timeline["days_since_last_entry"] is not None else "unknown"),
+        })
+
+    rows.sort(key=lambda r: r["days_since_last_entry"] if r["days_since_last_entry"] is not None else -1, reverse=True)
     return rows

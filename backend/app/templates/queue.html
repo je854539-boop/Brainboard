@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="stencil-header text-lg text-[var(--amber)]">Call Queue // Who To Call And Why</h1>
+  <button id="refresh-queue-btn" class="tactical-select hover:border-[var(--amber)] hover:text-[var(--amber)]">Refresh</button>
+</div>
+
+<p class="text-[10px] text-[var(--text-dim)] mb-4 max-w-3xl">
+  Every row is re-derived fresh off current notes/balance/payment/funded-amount on every load -- nothing here is
+  remembered or flagged by hand. <b class="text-[var(--text-primary)]">Refi/Stacking</b> covers three independent reasons a
+  lead lands here: the merchant's own words (a stated dollar ask or timeline), the math saying a NEXT position is
+  ready to stack, or the math saying the EXISTING position is ready to renew/refi. <b class="text-[var(--text-primary)]">Offers
+  Pending</b> is every lead sitting on an unclosed offer. <b class="text-[var(--text-primary)]">Revival</b> is stalled/ghosted
+  deals that still look like a real, qualified opportunity based on their own data. Click ☎ to call via the active
+  line picked in the header.
+</p>
+
+<div class="tactical-panel p-3 mb-4 flex flex-wrap gap-3 items-center">
+  <label class="text-[10px] text-[var(--text-dim)] uppercase tracking-widest">Reason</label>
+  <select id="reason-filter" class="tactical-select text-[10px] py-1">
+    <option value="">All</option>
+    <option value="merchant_requested">Merchant Requested</option>
+    <option value="stacking_eligible">Stacking Eligible (calculated)</option>
+    <option value="refi_eligible">Refi Eligible (calculated)</option>
+  </select>
+</div>
+
+<div class="tactical-panel scroll-panel mb-4">
+  <div class="stencil-header text-[var(--amber)] text-xs p-3 pb-0">Refi / Stacking Queue</div>
+  <table class="tactical-table">
+    <thead>
+      <tr><th></th><th>Business</th><th>Co-Broker</th><th>Lender</th><th>Reason</th><th>Est. Date</th><th>Detail</th></tr>
+    </thead>
+    <tbody id="refi-queue-body"><tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<div class="tactical-panel scroll-panel mb-4">
+  <div class="stencil-header text-[var(--amber)] text-xs p-3 pb-0">Offers Pending Funding</div>
+  <table class="tactical-table">
+    <thead>
+      <tr><th></th><th>Business</th><th>Co-Broker</th><th>Offer Since</th><th>Days Since Offer</th></tr>
+    </thead>
+    <tbody id="offers-body"><tr><td colspan="5" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<div class="tactical-panel scroll-panel">
+  <div class="stencil-header text-[var(--amber)] text-xs p-3 pb-0">Revival Queue // Stalled But Qualified</div>
+  <table class="tactical-table">
+    <thead>
+      <tr><th></th><th>Business</th><th>Co-Broker</th><th>Status</th><th>Revenue</th><th>Industry</th><th>Detail</th></tr>
+    </thead>
+    <tbody id="revival-body"><tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<script>
+const REASON_LABEL = {
+  merchant_requested: "Merchant Requested",
+  stacking_eligible: "Stacking Eligible",
+  refi_eligible: "Refi Eligible",
+};
+const REASON_COLOR = {
+  merchant_requested: "var(--amber)",
+  stacking_eligible: "var(--green)",
+  refi_eligible: "var(--crimson)",
+};
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return res.json();
+}
+
+function callBtn(leadUid) {
+  return `<button class="tactical-select text-[10px] py-0.5 px-1.5 border-[var(--amber)] text-[var(--amber)]" onclick="brainboardCallNow('lead','${leadUid}')" title="Call via active line">☎</button>`;
+}
+
+let refiQueueCache = [];
+
+function renderRefiQueue() {
+  const filter = document.getElementById("reason-filter").value;
+  const rows = filter ? refiQueueCache.filter(q => q.reason_category === filter) : refiQueueCache;
+  document.getElementById("refi-queue-body").innerHTML = rows.map(q => `
+    <tr>
+      <td>${callBtn(q.lead_uid)}</td>
+      <td class="font-medium">${q.business_name}<div class="text-[var(--text-dim)]">${q.phone || ''}</div></td>
+      <td>${q.co_broker || '—'}</td>
+      <td>${q.lender || '—'}</td>
+      <td><span style="color:${REASON_COLOR[q.reason_category] || 'var(--text-primary)'}">${REASON_LABEL[q.reason_category] || q.reason_category}</span></td>
+      <td class="hud-value">${q.estimated_date}</td>
+      <td class="text-[var(--text-dim)] max-w-[420px]">${(q.detail || '').replace(/\n/g, ' ').slice(0, 220)}</td>
+    </tr>`).join("") || `<tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">Nothing queued.</td></tr>`;
+}
+
+async function loadRefiQueue() {
+  refiQueueCache = await fetchJSON("/api/analytics/renewal-queue?limit=250");
+  renderRefiQueue();
+}
+
+async function loadOffers() {
+  const offers = await fetchJSON("/api/master-log/offers-pending-funding");
+  document.getElementById("offers-body").innerHTML = offers.map(o => `
+    <tr>
+      <td>${callBtn(o.lead_uid)}</td>
+      <td class="font-medium">${o.business_name}<div class="text-[var(--text-dim)]">${o.phone || ''}</div></td>
+      <td>${o.co_broker || '—'}</td>
+      <td class="text-[var(--text-dim)]">${o.offer_since ? o.offer_since.slice(0, 10) : '—'}</td>
+      <td class="hud-value">${o.days_since_offer ?? '—'}</td>
+    </tr>`).join("") || `<tr><td colspan="5" class="text-center text-[var(--text-dim)] py-6">No offers pending funding.</td></tr>`;
+}
+
+async function loadRevival() {
+  const revival = await fetchJSON("/api/analytics/revival-queue?limit=250");
+  document.getElementById("revival-body").innerHTML = revival.map(r => `
+    <tr>
+      <td>${callBtn(r.lead_uid)}</td>
+      <td class="font-medium">${r.business_name}<div class="text-[var(--text-dim)]">${r.phone || ''}</div></td>
+      <td>${r.co_broker || '—'}</td>
+      <td class="text-[var(--text-dim)]">${r.status}</td>
+      <td>${r.annual_revenue != null ? '$' + Number(r.annual_revenue).toLocaleString() : '—'}</td>
+      <td class="text-[var(--text-dim)]">${r.industry || '—'}</td>
+      <td class="text-[var(--text-dim)]">${r.detail}</td>
+    </tr>`).join("") || `<tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">No qualified stalled leads right now.</td></tr>`;
+}
+
+async function loadAll() {
+  await Promise.all([loadRefiQueue(), loadOffers(), loadRevival()]);
+}
+
+document.getElementById("reason-filter").addEventListener("change", renderRefiQueue);
+document.getElementById("refresh-queue-btn").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = "Refreshing...";
+  try { await loadAll(); } finally { e.target.disabled = false; e.target.textContent = "Refresh"; }
+});
+
+loadAll();
+</script>
+{% endblock %}

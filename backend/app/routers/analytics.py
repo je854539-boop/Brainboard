@@ -72,10 +72,26 @@ def renewal_queue(limit: int = 50, db: Session = Depends(get_db)):
     lead's next renewal/refi (on the position it already has) AND every
     active lead's next stacking eligibility (2nd/3rd/... position on top
     of what's open), tagged by `queue_type` so the two stay distinguishable
-    -- a deal can appear for both reasons at once. Re-derived fresh off
-    current notes/balance/payment on every call, so this is the mechanism
-    for catching a deal that's gone quiet but is actually ready, not
-    something that has to be remembered or flagged by hand. Only active
-    (non-terminal) leads -- a Funded or dead lead isn't a queue candidate."""
+    -- a deal can appear for both reasons at once. Every row also carries
+    `reason_category` -- "merchant_requested" / "stacking_eligible" /
+    "refi_eligible", the three ways a lead lands here. Re-derived fresh
+    off current notes/balance/payment on every call, so this is the
+    mechanism for catching a deal that's gone quiet but is actually
+    ready, not something that has to be remembered or flagged by hand.
+    Only active (non-terminal) leads -- a Funded or dead lead isn't a
+    queue candidate."""
     leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.not_in(TERMINAL_STATUSES))).scalars().all()
     return floor_language.renewal_queue(leads)[:limit]
+
+
+@router.get("/revival-queue")
+def revival_queue(min_revenue: float | None = None, limit: int = 50, db: Session = Depends(get_db)):
+    """Stalled/ghosted leads (Deal Stalled Proxy Pass / Ghosted) that
+    still look like a real, qualified MCA opportunity -- a separate
+    queue from renewal-queue, built to revive deals that went cold but
+    shouldn't have been given up on. See floor_language.revival_queue
+    for the disqualifying-language and momentum filtering. Pass
+    min_revenue to also require a minimum annual_revenue (e.g. the
+    floor's MCA target range) -- omit it to skip that filter entirely."""
+    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.in_(floor_language.STALLED_STATUSES))).scalars().all()
+    return floor_language.revival_queue(leads, min_revenue=min_revenue)[:limit]

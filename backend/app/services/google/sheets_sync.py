@@ -45,6 +45,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models.enums import ActivitySource, CoBroker, DatePrecision, MasterLogStatus, SiloCandidateStatus, SiloName
 from app.models.orm import MasterLogEntry, SiloCandidate
 from app.services import pipeline
@@ -416,3 +417,68 @@ def pull_silo(db: Session, service, sheet_id: str, silo: SiloName) -> dict:
 
 def sync_all_silos(db: Session, service, sheet_id: str) -> dict[str, dict]:
     return {silo.value: pull_silo(db, service, sheet_id, silo) for silo in SiloName}
+
+
+# ---------------------------------------------------------------------------
+# Background pull -- "scan the sheet every day", mirroring
+# calendar_sync.py's background pull loop exactly. A full pull_master_log
+# run (not a trailing-window one -- the Sheet has no updatedMin concept
+# the way Calendar does) keeps current_balance/payment_amt/payment_freq/
+# original_funded_amount/notes fresh in Postgres without anyone having to
+# remember to hit /api/sync/sheet/pull by hand, which is what the queue
+# endpoints (renewal-queue, revival-queue, offers-pending-funding) are
+# actually computed from.
+# ---------------------------------------------------------------------------
+
+_pull_task = None
+
+
+async def _pull_loop() -> None:
+    import asyncio
+
+    from app.database import SessionLocal
+
+    while True:
+        try:
+            settings = get_settings()
+            from app.services.google import auth as google_auth
+
+            if google_auth.is_configured() and settings.google_master_log_sheet_id:
+                db = SessionLocal()
+                try:
+                    summary = await asyncio.to_thread(
+                        pull_master_log, db, google_auth.sheets_service(), settings.google_master_log_sheet_id
+                    )
+                    logger.info("Sheet pull: synced=%d failed=%d", summary["synced"], len(summary["failed"]))
+                finally:
+                    db.close()
+            else:
+                logger.info("Sheet pull skipped this cycle -- Google credentials/sheet ID not configured")
+        except Exception:  # noqa: BLE001 -- one bad cycle must not kill the loop
+            logger.exception("Sheet pull failed -- will retry next cycle")
+        await asyncio.sleep(get_settings().sheet_pull_interval_seconds)
+
+
+def start_background_pull():
+    """Off by default (sheet_continuous_pull_enabled) -- same posture as
+    calendar_sync.start_background_pull: a real external API call, not
+    pure local computation, so it stays opt-in until Google credentials
+    are actually configured."""
+    import asyncio
+
+    global _pull_task
+    if not get_settings().sheet_continuous_pull_enabled:
+        logger.info("Sheet continuous pull disabled (set SHEET_CONTINUOUS_PULL_ENABLED=true to activate)")
+        return None
+    if _pull_task is None or _pull_task.done():
+        _pull_task = asyncio.create_task(_pull_loop())
+        logger.info("Sheet background pull started (interval=%ss)", get_settings().sheet_pull_interval_seconds)
+    return _pull_task
+
+
+def stop_background_pull() -> None:
+    global _pull_task
+    if _pull_task is not None:
+        _pull_task.cancel()
+        _pull_task = None
+        logger.info("Sheet background pull stopped")

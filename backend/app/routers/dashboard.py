@@ -79,6 +79,11 @@ def calls_page(request: Request):
     return templates.TemplateResponse(request, "calls.html", {"active_nav": "calls"})
 
 
+@router.get("/queue")
+def queue_page(request: Request):
+    return templates.TemplateResponse(request, "queue.html", {"active_nav": "queue"})
+
+
 @router.get("/dialer")
 def dialer_page(request: Request):
     return templates.TemplateResponse(
