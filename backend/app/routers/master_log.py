@@ -32,6 +32,15 @@ def list_master_log(
     return db.execute(query).scalars().all()
 
 
+@router.get("/duplicates")
+def get_duplicate_leads(db: Session = Depends(get_db)):
+    """Report-only (see pipeline.find_duplicate_leads's docstring for why
+    this never auto-merges): groups of leads that look like the same
+    merchant entered more than once, by phone (high confidence) and by
+    normalized business name (lower confidence, name-only)."""
+    return pipeline.find_duplicate_leads(db)
+
+
 @router.get("/{lead_uid}", response_model=MasterLogEntryOut)
 def get_master_log_entry(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
     entry = db.get(MasterLogEntry, lead_uid)

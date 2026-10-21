@@ -14,7 +14,9 @@ from a Sheet-edit webhook in the first place.
 """
 
 import logging
+import re
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.enums import ActivityEventType, ActivitySource, CoBroker, MasterLogStatus, SiloCandidateStatus
@@ -214,4 +216,74 @@ def convert_or_update_silo_candidate(
     candidate.status = new_status
     db.commit()
     db.refresh(candidate)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection -- real, confirmed problem: 20 phone numbers shared
+# across 42 distinct real rows when checked against the actual Master Log
+# V2 sheet (12% of all real rows), several split across two different
+# co-brokers on the same merchant (a headset pass that should have landed
+# on one shared row instead of creating a second one). Report-only, same
+# posture as calendar_sync.reconcile_all_events -- which row is the "real"
+# one, and whose co-broker commission that implies, is a business call a
+# human makes, never an automatic merge.
+# ---------------------------------------------------------------------------
+
+_BUSINESS_SUFFIX_RE = re.compile(r"\b(llc|inc|incorporated|corp|corporation|co|ltd)\.?\b", re.IGNORECASE)
+
+
+def _normalize_business_name(name: str | None) -> str:
+    name = _BUSINESS_SUFFIX_RE.sub("", name or "")
+    name = re.sub(r"[^a-z0-9 ]", "", name.lower())
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def _dup_summary(lead: MasterLogEntry) -> dict:
+    return {
+        "lead_uid": str(lead.lead_uid),
+        "business_name": lead.business_name,
+        "phone": lead.phone,
+        "co_broker": lead.co_broker.value if lead.co_broker else None,
+        "status": lead.status.value if lead.status else None,
+        "created_at": lead.created_at.isoformat() if lead.created_at else None,
+    }
+
+
+def find_duplicate_leads(db: Session) -> dict:
+    """Two independent signals, reported separately since they carry
+    different confidence: `phone_duplicates` (2+ leads sharing the exact
+    same digits-only phone number -- high confidence, a phone number
+    isn't shared by two different real businesses by coincidence nearly
+    as often as a name collides) and `business_name_duplicates` (2+ leads
+    whose business name normalizes to the same string -- case/punctuation/
+    LLC-suffix-insensitive, e.g. "BAss Unique Construction" and "Bass
+    Unique Construction" -- lower confidence than phone, since two
+    unrelated businesses can share a generic name). A name-duplicate group
+    already fully covered by a phone-duplicate group (same members) is
+    left out of business_name_duplicates so the same pair isn't reported
+    twice under both signals."""
+    leads = db.execute(select(MasterLogEntry)).scalars().all()
+
+    by_phone: dict[str, list[MasterLogEntry]] = {}
+    by_name: dict[str, list[MasterLogEntry]] = {}
+    for lead in leads:
+        digits = re.sub(r"\D", "", lead.phone or "")
+        if digits:
+            by_phone.setdefault(digits, []).append(lead)
+        normalized = _normalize_business_name(lead.business_name)
+        if normalized:
+            by_name.setdefault(normalized, []).append(lead)
+
+    phone_groups = [g for g in by_phone.values() if len(g) > 1]
+    phone_dup_uids = {lead.lead_uid for g in phone_groups for lead in g}
+
+    name_groups = [
+        g for g in by_name.values()
+        if len(g) > 1 and not all(lead.lead_uid in phone_dup_uids for lead in g)
+    ]
+
+    return {
+        "phone_duplicates": [[_dup_summary(lead) for lead in g] for g in phone_groups],
+        "business_name_duplicates": [[_dup_summary(lead) for lead in g] for g in name_groups],
+    }
     return candidate
