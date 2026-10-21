@@ -97,6 +97,18 @@ def _col_letter(index: int) -> str:
     return chr(ord("A") + index)
 
 
+# Historical values that still exist verbatim in the real, live sheet from
+# before this session's renames (confirmed by actually downloading and
+# parsing it, not assumed) -- 75 of 353 real rows still say "Docs Owed"
+# and 1 still says "Jorge". Aliased on read so pulling the real sheet
+# doesn't fail on >20% of real leads just because nobody has gone back
+# and manually fixed every historical cell. New rows get the canonical
+# value via the Sheet's dropdown validation; this is purely a read-side
+# compatibility shim for rows written before the rename.
+_STATUS_ALIASES = {"Docs Owed": MasterLogStatus.DOCS_OWED}
+_CO_BROKER_ALIASES = {"Jorge": CoBroker.BOULA}  # matches the Jorge->Boula remap already applied in Postgres
+
+
 def _parse_date(value: str) -> dt.datetime | None:
     if not value:
         return None
@@ -120,15 +132,28 @@ def row_to_master_log_fields(row: list[str]) -> dict:
         if field_name == "lead_uid":
             fields["lead_uid"] = uuid.UUID(value) if value else None
         elif field_name == "co_broker":
-            fields["co_broker"] = CoBroker(value) if value else None
+            fields["co_broker"] = (_CO_BROKER_ALIASES.get(value) or CoBroker(value)) if value else None
         elif field_name == "status":
-            fields["status"] = MasterLogStatus(value) if value else MasterLogStatus.NEW_LEAD
+            fields["status"] = (_STATUS_ALIASES.get(value) or MasterLogStatus(value)) if value else MasterLogStatus.NEW_LEAD
         elif field_name == "follow_up_date":
             fields["follow_up_date"] = _parse_date(value)
         elif field_name in _FLOAT_FIELDS:
-            fields[field_name] = float(value.replace(",", "").replace("$", "")) if value else None
+            # Field-level tolerance, not row-level: 353 rows of months of
+            # manual entry turned up real free-text garbage in numeric
+            # cells (e.g. "1 Payment", "CC%") -- one bad numeric cell
+            # should drop just that field, not the whole row's business
+            # name/phone/notes along with it.
+            try:
+                fields[field_name] = float(value.replace(",", "").replace("$", "")) if value else None
+            except ValueError:
+                logger.warning("Unparseable %s value %r -- stored as null", field_name, value)
+                fields[field_name] = None
         elif field_name in _INT_FIELDS:
-            fields[field_name] = int(float(value)) if value else None
+            try:
+                fields[field_name] = int(float(value)) if value else None
+            except ValueError:
+                logger.warning("Unparseable %s value %r -- stored as null", field_name, value)
+                fields[field_name] = None
         else:
             fields[field_name] = value or None
     return fields
