@@ -12,7 +12,7 @@ below for what's built vs. explicitly deferred to a follow-up phase.
 ```
 backend/
   app/
-    models/           SQLAlchemy models + hardcoded enums (19 co-brokers,
+    models/           SQLAlchemy models + hardcoded enums (20 co-brokers,
                        13 pipeline statuses, 9 macro silos, 18 data-provider sources)
     services/
       hazard_engine.py     Kaplan-Meier survival curves + Markov transition matrix +

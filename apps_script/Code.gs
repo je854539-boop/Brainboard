@@ -36,7 +36,7 @@ const SILO_TAB_NAMES = [
 
 const CO_BROKERS = [
   "Nick F", "Mike F", "Vinny", "Victor", "Gallo", "Shaun", "Kris", "DanStol",
-  "Roman", "James", "Alfred", "Marcus", "Ricky", "Zack", "Emilio", "Boula", "Ariel", "Tony", "Seb",
+  "Roman", "James", "Alfred", "Marcus", "Ricky", "Zack", "Emilio", "Boula", "Ariel", "Tony", "Max", "Sebastian",
 ];
 
 const MASTER_LOG_STATUSES = [

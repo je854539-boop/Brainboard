@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class CoBroker(str, Enum):
-    """The 19 validated co-brokers. Values are canonical and must match
+    """The 20 validated co-brokers. Values are canonical and must match
     Master Log V2 column values string-for-string."""
 
     NICK_F = "Nick F"
@@ -23,7 +23,8 @@ class CoBroker(str, Enum):
     BOULA = "Boula"
     ARIEL = "Ariel"
     TONY = "Tony"
-    SEB = "Seb"
+    MAX = "Max"
+    SEBASTIAN = "Sebastian"
 
 
 class MasterLogStatus(str, Enum):
