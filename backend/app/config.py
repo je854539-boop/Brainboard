@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # org-search telemetry carries a revenue figure for them. Tunable
     # policy, not a code constant, since this is a business decision
     # (which deal sizes you actually want), not an engineering one.
-    mca_target_revenue_min_usd: float = 5_000_000.0
+    mca_target_revenue_min_usd: float = 1_000_000.0
     mca_target_revenue_max_usd: float = 49_000_000.0
 
     brain_shadow_mode_lead_threshold: int = 1000
