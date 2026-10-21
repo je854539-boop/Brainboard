@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.enums import MasterLogStatus, TERMINAL_STATUSES
+from app.models.enums import MasterLogStatus, TERMINAL_ATTRITION_STATUSES
 from app.models.orm import MasterLogEntry
 from app.services import floor_language, hazard_engine
 
@@ -69,18 +69,24 @@ def outcome_rates(group_by: Literal["co_broker", "state"] | None = None, db: Ses
 @router.get("/renewal-queue")
 def renewal_queue(limit: int = 50, db: Session = Depends(get_db)):
     """The living funding-opportunity queue, soonest first: every active
-    lead's next renewal/refi (on the position it already has) AND every
-    active lead's next stacking eligibility (2nd/3rd/... position on top
-    of what's open), tagged by `queue_type` so the two stay distinguishable
-    -- a deal can appear for both reasons at once. Every row also carries
+    OR FUNDED lead's next renewal/refi (on the position it already has)
+    AND next stacking eligibility (2nd/3rd/... position on top of what's
+    open), tagged by `queue_type` so the two stay distinguishable -- a
+    deal can appear for both reasons at once. Every row also carries
     `reason_category` -- "merchant_requested" / "stacking_eligible" /
     "refi_eligible", the three ways a lead lands here. Re-derived fresh
     off current notes/balance/payment on every call, so this is the
     mechanism for catching a deal that's gone quiet but is actually
     ready, not something that has to be remembered or flagged by hand.
-    Only active (non-terminal) leads -- a Funded or dead lead isn't a
-    queue candidate."""
-    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.not_in(TERMINAL_STATUSES))).scalars().all()
+
+    Deliberately excludes TERMINAL_ATTRITION_STATUSES (Ghosted/Stalled/
+    Lost To Competitor/Sold Deal Killed/Dog Shit), NOT every terminal
+    status -- Funded is terminal for Kaplan-Meier purposes but is
+    exactly the population this queue needs to see: refi/stacking
+    opportunity is a POST-funding question. Excluding Funded here (the
+    original bug) meant this queue could never see a single already-
+    funded lead, which defeats its own purpose."""
+    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.not_in(TERMINAL_ATTRITION_STATUSES))).scalars().all()
     return floor_language.renewal_queue(leads)[:limit]
 
 

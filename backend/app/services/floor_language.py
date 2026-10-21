@@ -466,18 +466,56 @@ def extract_merchant_stated_readiness(notes: str | None) -> dict | None:
 # ---------------------------------------------------------------------------
 # Additional-position (stacking) eligibility -- a SEPARATE question from
 # renewal/refi above: renewal asks "when does the position they already
-# have clear", stacking asks "when can they take on a NEXT position on top
-# of what's still open". Same two-track pattern: a calculated projection
-# off the paydown trend, and a merchant-stated ask for more capital read
-# straight out of the notes, never blended into one number.
+# have clear" (genuinely paydown-gated, see project_payoff) -- stacking
+# asks "can they take on a NEXT position on top of what's still open".
+# Per the floor's own stated rule, stacking is NOT paydown-gated at all:
+# a merchant with an existing position can be approached about another
+# one immediately ("the next day"). What's actually uncertain isn't
+# timing, it's the realistic AMOUNT -- each additional position funds
+# for less than the last one (debt-service capacity shrinks) at a
+# higher factor rate (more risk to the lender). See
+# estimate_next_position_terms for the real ratios behind that.
 # ---------------------------------------------------------------------------
 
-# ASSUMPTION, documented like _PAYMENTS_PER_WEEK above: the floor's
-# working rule of thumb is that a merchant becomes stackable once roughly
-# half the current position is paid down. Real underwriting thresholds
-# vary by lender and deal -- this is a default to drive the queue, not a
-# guaranteed approval rule.
-_POSITION_PAYDOWN_THRESHOLD = 0.5
+# ASSUMPTIONS from the floor's own stated examples -- real, but thin
+# (two data points: 1st->2nd ~80% of the last funded amount, 2nd->3rd
+# ~70%), meant to be corrected as more examples come in. "2 points" =
+# +0.02 on the factor rate, per the floor's own convention (a "40 rate"
+# means 1.40). No ratio is assumed past the 3rd position -- that's past
+# what's been observed, an honest "don't know" rather than extrapolating.
+_NEXT_POSITION_AMOUNT_RATIO = {1: 0.80, 2: 0.70}
+_NEXT_POSITION_RATE_BUMP = 0.02
+
+
+def estimate_next_position_terms(
+    last_funded_amount: float | None, last_payment_amt: float | None, open_positions: int | None, last_factor_rate: float | None = None
+) -> dict | None:
+    """What a merchant with `open_positions` existing position(s) could
+    realistically be offered next -- a realistic-AMOUNT question, not a
+    timing one (see the module comment above: stacking is immediate).
+    Term is derived by holding the merchant's current payment roughly
+    constant (their real constraint is debt-service capacity, not an
+    arbitrary new schedule) and solving via reverse_engineer_deal_terms.
+    Returns None when open_positions is 0/None (nothing to stack on top
+    of yet) or 3+ (no real data behind a ratio that far -- see
+    _NEXT_POSITION_AMOUNT_RATIO)."""
+    ratio = _NEXT_POSITION_AMOUNT_RATIO.get(open_positions) if open_positions else None
+    if not last_funded_amount or ratio is None:
+        return None
+
+    next_amount = round(last_funded_amount * ratio, 2)
+    next_rate = round((last_factor_rate or _DEFAULT_FACTOR_RATE) + _NEXT_POSITION_RATE_BUMP, 2)
+    next_term_weeks = None
+    if last_payment_amt:
+        next_term_weeks = reverse_engineer_deal_terms(next_amount, last_payment_amt, None, factor_rate=next_rate)["term_weeks"]
+
+    return {
+        "next_position_label": _position_label(open_positions),
+        "estimated_amount": next_amount,
+        "estimated_factor_rate": next_rate,
+        "estimated_term_weeks": next_term_weeks,
+        "basis": f"~{int(ratio * 100)}% of last funded amount, rate +2pts, term held to current payment",
+    }
 
 _ORDINAL_SUFFIXES = {1: "1st", 2: "2nd", 3: "3rd"}
 
@@ -617,29 +655,32 @@ def additional_position_eligibility(
     original_funded_amount: float | None = None,
 ) -> dict:
     """Eligibility for the NEXT stacked position (2nd, 3rd, ...), distinct
-    from renewal/refi on the position already open. `basis` explains which
-    signal fired, in priority order: "paydown_threshold_met" (percent
-    paid down already crosses _POSITION_PAYDOWN_THRESHOLD -- the math
-    already says yes, nothing beats that), "capital_ask_stated" (the
-    merchant named a specific dollar figure they need -- a live, stated
-    need right now outranks a projection that hasn't happened yet even
-    though it's less certain than the math), "paydown_projection" (hasn't
-    crossed the threshold yet but the current paydown rate projects a
-    date it will), or "merchant_stated_interest" (a vague "wants more"
-    with no number attached -- the weakest of the four). eligible=False/
-    basis=None with no date is an honest "not yet", not a 0.
+    from renewal/refi on the position already open. `basis` explains
+    which signal fired: "stackable_next_day" (the merchant already has
+    an existing position on file -- evidenced by a current balance, a
+    known funded amount, or a tracked open_positions count -- so per the
+    floor's own rule they can be approached immediately, not gated by
+    paydown progress the way refi is), "capital_ask_stated" (no existing-
+    position evidence, but the merchant named a specific dollar figure),
+    or "merchant_stated_interest" (a vague "wants more" with no number --
+    the weakest signal). eligible=False/basis=None with no date is an
+    honest "not yet", not a 0.
 
     `original_funded_amount` (the real tracked value, see
-    MasterLogEntry.original_funded_amount) is the correct denominator for
-    percent-paid-down and is used whenever it's present (`paydown_source`
-    = "structured_funded_amount"). When it isn't -- most existing leads
-    predate that column -- this tries extract_funded_amount_from_notes
-    (a real origination-amount mention in free text, e.g. "130K funded
-    12 months ago" -- `paydown_source` = "notes_stated_funded_amount"),
-    and only then falls back to treating the FIRST balance a dated note
-    entry happens to mention as a proxy original (`paydown_source` =
-    "notes_balance_trend"), the weakest of the three since that first
-    note is often written well after funding, mid-paydown."""
+    MasterLogEntry.original_funded_amount) is preferred whenever present
+    (`paydown_source` = "structured_funded_amount"). When it isn't --
+    most existing leads predate that column -- this tries
+    extract_funded_amount_from_notes (a real origination-amount mention
+    in free text, e.g. "130K funded 12 months ago" -- `paydown_source` =
+    "notes_stated_funded_amount"), and only then falls back to treating
+    the FIRST balance a dated note entry happens to mention as a proxy
+    original (`paydown_source` = "notes_balance_trend"), the weakest of
+    the three since that first note is often written well after
+    funding, mid-paydown. All three tiers feed percent_paid_down
+    (informational context), but only the top two feed estimate_next_
+    position_terms's "last funded amount" -- a mid-paydown balance is
+    not the original funded figure, and guessing it would understate
+    what they're really good for next."""
     notes = notes or ""
     label = _position_label(open_positions)
     balance_sequence = extract_timeline(notes)["balance_sequence"]
@@ -661,21 +702,18 @@ def additional_position_eligibility(
     elif origin is not None and len(balance_sequence) >= 2:
         percent_paid_down = round((balance_sequence[0] - balance_sequence[-1]) / balance_sequence[0], 3)
 
-    payoff = project_payoff(current_balance, payment_amt, payment_freq)
-    estimated_date, basis = None, None
+    has_existing_position = bool(current_balance) or bool(origin) or bool(open_positions)
+    estimated_terms, estimated_date, basis = None, None, None
 
-    if percent_paid_down is not None and percent_paid_down >= _POSITION_PAYDOWN_THRESHOLD:
-        estimated_date, basis = dt.date.today().isoformat(), "paydown_threshold_met"
+    if has_existing_position:
+        estimated_date, basis = dt.date.today().isoformat(), "stackable_next_day"
+        if origin is not None and paydown_source != "notes_balance_trend":
+            stated_rates = [float(r) for r in _FACTOR_RATE_RE.findall(notes)]
+            last_factor_rate = stated_rates[-1] if stated_rates else None
+            estimated_terms = estimate_next_position_terms(origin, payment_amt, open_positions, last_factor_rate)
     elif capital_ask is not None:
         estimated_date, basis = dt.date.today().isoformat(), "capital_ask_stated"
-    elif origin and payoff["weekly_paydown_rate"] and current_balance is not None:
-        target_balance = origin * (1 - _POSITION_PAYDOWN_THRESHOLD)
-        if current_balance > target_balance:
-            weeks = (current_balance - target_balance) / payoff["weekly_paydown_rate"]
-            estimated_date = (dt.date.today() + dt.timedelta(weeks=weeks)).isoformat()
-            basis = "paydown_projection"
-
-    if basis is None and wants_more:
+    elif wants_more:
         estimated_date, basis = dt.date.today().isoformat(), "merchant_stated_interest"
         paydown_source = None
 
@@ -687,6 +725,7 @@ def additional_position_eligibility(
         "percent_paid_down": percent_paid_down,
         "merchant_requested_more": wants_more,
         "capital_ask_amount": capital_ask["amount"] if capital_ask else None,
+        "estimated_terms": estimated_terms,
         "estimated_date": estimated_date,
     }
 
@@ -764,6 +803,10 @@ def renewal_queue(leads) -> list[dict]:
         )
         if stacking["eligible"]:
             detail = f"{stacking['next_position_label']} -- {stacking['basis']}"
+            terms = stacking["estimated_terms"]
+            if terms is not None:
+                term_part = f", ~{terms['estimated_term_weeks']}wk" if terms["estimated_term_weeks"] is not None else ""
+                detail += f" (est. ~${terms['estimated_amount']:,.0f} @ {terms['estimated_factor_rate']}{term_part})"
             if stacking["capital_ask_amount"] is not None:
                 detail += f" (stated need: ~${stacking['capital_ask_amount']:,.0f})"
             if stacking["percent_paid_down"] is not None and 0 <= stacking["percent_paid_down"] <= 1:
