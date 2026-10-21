@@ -20,8 +20,15 @@ price move alone isn't a lead:
                    data, address-matched -- see _identify_via_regrid),
                    corroborated by SeaVantage/Datalastic/VesselFinder/
                    USACE vessel & barge activity in the same window.
-    3. FILTER   -- Cobalt Intelligence SOS standing dismisses companies
-                   that aren't fundable regardless of signal strength.
+    3. FILTER   -- two independent dismiss checks, either one kills the
+                   candidate: (a) Cobalt Intelligence SOS standing --
+                   not fundable regardless of signal strength; (b)
+                   revenue range (_stage3b_revenue_range_filter) --
+                   Apollo.io org-search revenue outside
+                   settings.mca_target_revenue_min_usd/max_usd (default
+                   $5M-$49M, the deal sizes actually worth pursuing).
+                   Neither check dismisses for lack of data -- only a
+                   confirmed disqualifying figure does.
     4. CONTACT  -- Apollo.io org search (primary) + Cobalt Intelligence
                    SOS records (checked defensively -- it's a standing
                    check, not fundamentally a contact database, but used
@@ -435,6 +442,62 @@ def _stage3_lending_appetite(db: Session, company_name: str) -> tuple[float, boo
     )
 
 
+_REVENUE_KEYS = ("annual_revenue", "organization_revenue", "estimated_annual_revenue", "revenue")
+
+
+def _extract_revenue(payload: dict) -> float | None:
+    """Defensive multi-key extraction, same posture as
+    _extract_contact_fields below -- checks several plausible Apollo.io
+    organization-search field names rather than assuming one. HONESTY
+    NOTE: Apollo's org-search schema (like its exact endpoint, see
+    telemetry/apollo.py) isn't verifiable live from this sandbox; these
+    are the field names documented across Apollo's API versions, not a
+    live-confirmed single source of truth. A nested {"organization": {...}}
+    wrapper is also checked in case the sweep's payload carries the
+    revenue one level down rather than at the top."""
+    candidates = [payload] + ([payload["organization"]] if isinstance(payload.get("organization"), dict) else [])
+    for source in candidates:
+        for key in _REVENUE_KEYS:
+            value = source.get(key)
+            if isinstance(value, (int, float)) and value > 0:
+                return float(value)
+    return None
+
+
+def _stage3b_revenue_range_filter(db: Session, company_name: str) -> tuple[float, bool, str]:
+    """MCA-fit deal-size filter -- settings.mca_target_revenue_min_usd/
+    mca_target_revenue_max_usd (default $5M-$49M). Reuses the same fresh
+    Apollo.io org-search telemetry stage 4 already pulls for contact
+    data (no separate API call), name-matched the same way stage 3/4
+    are. Never dismisses for lack of data -- only a CONFIRMED revenue
+    figure outside the target band disqualifies a candidate; no match
+    yet just means the band is unconfirmed, same honesty posture as
+    stage 3's "pending" branch. Returns (score_delta, dismiss, note)."""
+    if not company_name.strip():
+        return 0.0, False, "revenue-range check skipped -- no company name to match"
+
+    settings = get_settings()
+    interzoid_key = settings.interzoid_api_key
+    for event in _fresh_events(db, TelemetrySource.APOLLO, limit=100):
+        matched_name = event.payload.get("name")
+        if not entity_matching.names_match(interzoid_key, company_name, matched_name):
+            continue
+
+        revenue = _extract_revenue(event.payload)
+        if revenue is None:
+            return 0.0, False, f"Apollo.io matched '{matched_name}' but no revenue figure in payload -- band unconfirmed"
+
+        if settings.mca_target_revenue_min_usd <= revenue <= settings.mca_target_revenue_max_usd:
+            return 20.0, False, f"Apollo.io revenue ${revenue:,.0f} -- within target ${settings.mca_target_revenue_min_usd:,.0f}-${settings.mca_target_revenue_max_usd:,.0f} band"
+
+        return -30.0, True, (
+            f"Apollo.io revenue ${revenue:,.0f} -- outside target "
+            f"${settings.mca_target_revenue_min_usd:,.0f}-${settings.mca_target_revenue_max_usd:,.0f} band, dismissed"
+        )
+
+    return 0.0, False, "revenue-range check pending -- no Apollo.io match yet"
+
+
 _PHONE_KEYS = ("phone", "phone_number", "primary_phone", "company_phone", "registered_agent_phone")
 _EMAIL_KEYS = ("email", "email_address", "company_email", "contact_email", "registered_agent_email")
 
@@ -537,10 +600,13 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
         if already:
             continue
 
-        score_delta, dismiss, lending_note = _stage3_lending_appetite(db, company_name)
+        standing_delta, standing_dismiss, lending_note = _stage3_lending_appetite(db, company_name)
+        revenue_delta, revenue_dismiss, revenue_note = _stage3b_revenue_range_filter(db, company_name)
+        score_delta = standing_delta + revenue_delta
+        dismiss = standing_dismiss or revenue_dismiss
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
 
-        phone, email, contact_note = (None, None, "contact enrichment skipped -- lending-appetite filter dismissed this candidate")
+        phone, email, contact_note = (None, None, "contact enrichment skipped -- dismissed on standing or revenue-range filter")
         if not dismiss:
             phone, email, contact_note = _stage4_contact_enrichment(db, company_name)
 
@@ -551,6 +617,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
                     f"Gated by: {signal_summary}",
                     corroboration_note,
                     lending_note,
+                    revenue_note,
                     contact_note,
                 ],
             )
