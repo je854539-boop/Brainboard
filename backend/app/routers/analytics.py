@@ -68,10 +68,14 @@ def outcome_rates(group_by: Literal["co_broker", "state"] | None = None, db: Ses
 
 @router.get("/renewal-queue")
 def renewal_queue(limit: int = 50, db: Session = Depends(get_db)):
-    """Who to call and when for a renewal/second-position/refi, soonest
-    first. Prefers the calculated balance/payment payoff projection;
-    falls back to the merchant's own stated timeline from notes when the
-    calculated inputs aren't there. Only active (non-terminal) leads --
-    a Funded or dead lead isn't a renewal candidate from this queue."""
+    """The living funding-opportunity queue, soonest first: every active
+    lead's next renewal/refi (on the position it already has) AND every
+    active lead's next stacking eligibility (2nd/3rd/... position on top
+    of what's open), tagged by `queue_type` so the two stay distinguishable
+    -- a deal can appear for both reasons at once. Re-derived fresh off
+    current notes/balance/payment on every call, so this is the mechanism
+    for catching a deal that's gone quiet but is actually ready, not
+    something that has to be remembered or flagged by hand. Only active
+    (non-terminal) leads -- a Funded or dead lead isn't a queue candidate."""
     leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.not_in(TERMINAL_STATUSES))).scalars().all()
     return floor_language.renewal_queue(leads)[:limit]

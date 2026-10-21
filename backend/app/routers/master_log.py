@@ -58,6 +58,13 @@ def get_floor_signals(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
             entry.payment_freq,
         ),
         "merchant_stated_readiness": floor_language.extract_merchant_stated_readiness(entry.notes),
+        "additional_position_eligibility": floor_language.additional_position_eligibility(
+            float(entry.current_balance) if entry.current_balance is not None else None,
+            float(entry.payment_amt) if entry.payment_amt is not None else None,
+            entry.payment_freq,
+            entry.open_positions,
+            entry.notes,
+        ),
     }
 
 

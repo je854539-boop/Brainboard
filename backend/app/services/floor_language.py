@@ -418,14 +418,104 @@ def extract_merchant_stated_readiness(notes: str | None) -> dict | None:
     return best
 
 
+# ---------------------------------------------------------------------------
+# Additional-position (stacking) eligibility -- a SEPARATE question from
+# renewal/refi above: renewal asks "when does the position they already
+# have clear", stacking asks "when can they take on a NEXT position on top
+# of what's still open". Same two-track pattern: a calculated projection
+# off the paydown trend, and a merchant-stated ask for more capital read
+# straight out of the notes, never blended into one number.
+# ---------------------------------------------------------------------------
+
+# ASSUMPTION, documented like _PAYMENTS_PER_WEEK above: the floor's
+# working rule of thumb is that a merchant becomes stackable once roughly
+# half the current position is paid down. Real underwriting thresholds
+# vary by lender and deal -- this is a default to drive the queue, not a
+# guaranteed approval rule.
+_POSITION_PAYDOWN_THRESHOLD = 0.5
+
+_ORDINAL_SUFFIXES = {1: "1st", 2: "2nd", 3: "3rd"}
+
+_WANTS_MORE_RE = re.compile(
+    r"wants?\s+(?:more|additional)|needs?\s+(?:more|additional)\s+(?:capital|money|funds?)|"
+    r"asked\s+(?:about|for)\s+(?:a\s+)?(?:second|2nd|third|3rd|more)|"
+    r"interested\s+in\s+(?:more|additional|stacking)|wants?\s+to\s+stack",
+    re.IGNORECASE,
+)
+
+
+def _position_label(open_positions: int | None) -> str:
+    n = (open_positions or 0) + 1
+    return f"{_ORDINAL_SUFFIXES.get(n, f'{n}th')} position"
+
+
+def additional_position_eligibility(
+    current_balance: float | None,
+    payment_amt: float | None,
+    payment_freq: str | None,
+    open_positions: int | None,
+    notes: str | None,
+) -> dict:
+    """Eligibility for the NEXT stacked position (2nd, 3rd, ...), distinct
+    from renewal/refi on the position already open. `basis` explains which
+    signal fired: "paydown_threshold_met" (the balance-sequence trend read
+    from notes already crosses _POSITION_PAYDOWN_THRESHOLD), "paydown_projection"
+    (hasn't crossed yet but the current paydown rate projects a date it
+    will), or "merchant_stated_interest" (an explicit ask for more capital
+    in the notes, independent of the math). eligible=False/basis=None with
+    no date is an honest "not yet", not a 0 -- notably when notes carry no
+    dated balance mentions at all, there's nothing to project from, so
+    only the merchant-stated signal can fire."""
+    notes = notes or ""
+    label = _position_label(open_positions)
+    balance_sequence = extract_timeline(notes)["balance_sequence"]
+    wants_more = bool(_WANTS_MORE_RE.search(notes))
+
+    percent_paid_down = None
+    if len(balance_sequence) >= 2 and balance_sequence[0] > 0:
+        percent_paid_down = round((balance_sequence[0] - balance_sequence[-1]) / balance_sequence[0], 3)
+
+    payoff = project_payoff(current_balance, payment_amt, payment_freq)
+    estimated_date, basis = None, None
+
+    if percent_paid_down is not None and percent_paid_down >= _POSITION_PAYDOWN_THRESHOLD:
+        estimated_date, basis = dt.date.today().isoformat(), "paydown_threshold_met"
+    elif balance_sequence and balance_sequence[0] > 0 and payoff["weekly_paydown_rate"] and current_balance is not None:
+        target_balance = balance_sequence[0] * (1 - _POSITION_PAYDOWN_THRESHOLD)
+        if current_balance > target_balance:
+            weeks = (current_balance - target_balance) / payoff["weekly_paydown_rate"]
+            estimated_date = (dt.date.today() + dt.timedelta(weeks=weeks)).isoformat()
+            basis = "paydown_projection"
+
+    if basis is None and wants_more:
+        estimated_date, basis = dt.date.today().isoformat(), "merchant_stated_interest"
+
+    return {
+        "eligible": basis is not None,
+        "next_position_label": label,
+        "basis": basis,
+        "percent_paid_down": percent_paid_down,
+        "merchant_requested_more": wants_more,
+        "estimated_date": estimated_date,
+    }
+
+
 def renewal_queue(leads) -> list[dict]:
-    """The actual "who to call and when" queue: for every active lead,
-    prefers the calculated payoff projection (current_balance/payment_amt/
-    payment_freq -- deterministic) and falls back to the merchant's own
-    stated estimate only when the calculated one isn't available. Sorted
-    soonest-first. `leads` is any iterable of MasterLogEntry; leads with
-    neither signal are left out entirely -- there's nothing to queue them
-    by, not a 0 indicating they're ready now."""
+    """The living "who to call and when" queue -- every active lead's next
+    funding opportunity, whichever comes first: renewal/refi on the
+    position they already have, OR stacking eligibility for a NEXT
+    position on top of it. Both are scanned for every lead (a deal can
+    legitimately queue for both at once, e.g. close to clearing position
+    1 while also already asking about a 2nd), tagged by `queue_type`
+    ("renewal_refi" vs "additional_position") so the two reasons stay
+    distinguishable, then merged into one soonest-first list. This is the
+    mechanism for "catch deals that would fall through the cracks": it
+    re-derives fresh off the sheet/calendar-sourced notes and balance
+    fields on every call, so a lead nobody's actively watching still
+    surfaces the moment the math or the merchant's own words say it's
+    ready. `leads` is any iterable of MasterLogEntry; a lead with no
+    signal on either track is left out entirely -- there's nothing to
+    queue it by, not a 0 indicating it's ready now."""
     rows = []
     for lead in leads:
         calculated = project_payoff(
@@ -437,20 +527,39 @@ def renewal_queue(leads) -> list[dict]:
             rows.append({
                 "lead_uid": str(lead.lead_uid),
                 "business_name": lead.business_name,
+                "queue_type": "renewal_refi",
                 "estimated_date": calculated["projected_payoff_date"],
                 "source": "calculated",
                 "detail": f"{calculated['weeks_to_payoff']} weeks at current paydown rate",
             })
-            continue
+        else:
+            stated = extract_merchant_stated_readiness(lead.notes)
+            if stated is not None:
+                rows.append({
+                    "lead_uid": str(lead.lead_uid),
+                    "business_name": lead.business_name,
+                    "queue_type": "renewal_refi",
+                    "estimated_date": stated["estimated_ready_date"],
+                    "source": "merchant_stated",
+                    "detail": f"merchant said this on {stated['stated_on']}: \"{stated['source_text']}\"",
+                })
 
-        stated = extract_merchant_stated_readiness(lead.notes)
-        if stated is not None:
+        stacking = additional_position_eligibility(
+            float(lead.current_balance) if lead.current_balance is not None else None,
+            float(lead.payment_amt) if lead.payment_amt is not None else None,
+            lead.payment_freq,
+            lead.open_positions,
+            lead.notes,
+        )
+        if stacking["eligible"]:
             rows.append({
                 "lead_uid": str(lead.lead_uid),
                 "business_name": lead.business_name,
-                "estimated_date": stated["estimated_ready_date"],
-                "source": "merchant_stated",
-                "detail": f"merchant said this on {stated['stated_on']}: \"{stated['source_text']}\"",
+                "queue_type": "additional_position",
+                "estimated_date": stacking["estimated_date"],
+                "source": "calculated" if stacking["basis"] != "merchant_stated_interest" else "merchant_stated",
+                "detail": f"{stacking['next_position_label']} -- {stacking['basis']}"
+                + (f" ({stacking['percent_paid_down'] * 100:.0f}% paid down)" if stacking["percent_paid_down"] is not None else ""),
             })
 
     rows.sort(key=lambda r: r["estimated_date"])
