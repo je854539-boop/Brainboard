@@ -15,6 +15,7 @@ from a Sheet-edit webhook in the first place.
 
 import logging
 import re
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -286,4 +287,40 @@ def find_duplicate_leads(db: Session) -> dict:
         "phone_duplicates": [[_dup_summary(lead) for lead in g] for g in phone_groups],
         "business_name_duplicates": [[_dup_summary(lead) for lead in g] for g in name_groups],
     }
+
+
+def offers_pending_funding(db: Session) -> list[dict]:
+    """The "we already made them an offer, they haven't funded" list --
+    status == OFFER_MADE_NOT_SOLD (not a terminal status: the offer is
+    out, the deal is still alive, it just hasn't closed yet, distinct
+    from the renewal/stacking queue which is about deals already past
+    funding). Sorted most-stale-first (longest since the offer was made)
+    since that's the one most likely to need a nudge. Prefers the real
+    StatusHistory transition timestamp for "since when"; falls back to
+    updated_at for a lead with no logged transition (e.g. bulk-loaded
+    straight from a sheet pull rather than through this module's own
+    mutation functions) -- an honest best-available answer, not a gap."""
+    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status == MasterLogStatus.OFFER_MADE_NOT_SOLD)).scalars().all()
+
+    rows = []
+    for lead in leads:
+        transitioned_at = db.execute(
+            select(StatusHistory.changed_at)
+            .where(StatusHistory.lead_uid == lead.lead_uid, StatusHistory.to_status == MasterLogStatus.OFFER_MADE_NOT_SOLD)
+            .order_by(StatusHistory.changed_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        since = transitioned_at or lead.updated_at
+        days_since_offer = (datetime.now(timezone.utc) - since).days if since else None
+        rows.append({
+            "lead_uid": str(lead.lead_uid),
+            "business_name": lead.business_name,
+            "phone": lead.phone,
+            "co_broker": lead.co_broker.value if lead.co_broker else None,
+            "offer_since": since.isoformat() if since else None,
+            "days_since_offer": days_since_offer,
+        })
+
+    rows.sort(key=lambda r: r["days_since_offer"] if r["days_since_offer"] is not None else -1, reverse=True)
+    return rows
     return candidate

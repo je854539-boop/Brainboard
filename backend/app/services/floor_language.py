@@ -444,6 +444,119 @@ _WANTS_MORE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Caught against a real deal (Rager Construction LLC, see git history):
+# "Needs 100K for project he is working on because bank draws aren't
+# enough" never matched _WANTS_MORE_RE at all -- that regex only covers
+# the vague "wants more/additional capital" phrasing, never a specific
+# dollar figure attached to "needs"/"wants". A stated amount is a
+# stronger signal than the vague phrasing (the merchant isn't just open
+# to more, they named a number), so it gets its own regex, its own
+# amount parser, and -- see additional_position_eligibility below --
+# priority ahead of a calculated projection that hasn't happened yet.
+# The negative lookahead excludes a number that's actually a duration
+# ("needs 2 weeks") or a position count ("needs 2 positions"), not money.
+_MONEY_RE = re.compile(r"\$?\s*([\d,]+(?:\.\d+)?)\s*(?:(?:to|-)\s*\$?\s*([\d,]+(?:\.\d+)?))?\s*(k|K)?\b")
+_CAPITAL_ASK_RE = re.compile(
+    r"\b(?:needs?|wants?|looking\s+for|asking\s+for|requesting)\s+(?:an?\s+|another\s+|additional\s+)?"
+    r"\$?\s*[\d,]+(?:\.\d+)?\s*k?\b"
+    r"(?!\s*(?:weeks?|months?|days?|years?|positions?|payments?|%))",
+    re.IGNORECASE,
+)
+# Same shape, opposite direction: "130K funded"/"$130,000 advance" vs
+# "funded him 130K" -- real notes use both orders (see Rager's "Paypal
+# 130K funded 12 months ago"). This recovers original_funded_amount
+# straight from free text for the hundreds of existing leads that predate
+# the tracked column, instead of leaving them with nothing to anchor
+# percent-paid-down to.
+_FUNDED_AMOUNT_RE = re.compile(
+    r"\$?\s*([\d,]+(?:\.\d+)?)\s*(k|K)?\s*(?:funded|advance[d]?)\b"
+    r"|(?:funded|advanced)\s+(?:him|her|them)?\s*\$?\s*([\d,]+(?:\.\d+)?)\s*(k|K)?",
+    re.IGNORECASE,
+)
+
+
+def _parse_money(text: str) -> float | None:
+    """Range-aware ("$250-300K" -> midpoint 275000) and filtered against
+    the real false positives a bare small number produces -- a term
+    length ("13-14 Month deal") or a position count has no $, no comma,
+    no K suffix, and is under 1000, which no real floor dollar figure
+    ever is (always written with a K, a comma, or a $). Returns None
+    rather than guessing when the number doesn't look like money, caught
+    against real notes where a bare small number was being mistaken for
+    one (e.g. "wants 13-14 Month deal 100K" -> the 13-14 is a contract
+    term, not money, and 100K is too far away in the text to safely
+    assume it's the same figure being asked about)."""
+    match = _MONEY_RE.search(text)
+    if not match:
+        return None
+    low_str, high_str, k = match.groups()
+    try:
+        low = float(low_str.replace(",", ""))
+        high = float(high_str.replace(",", "")) if high_str else low
+    except ValueError:
+        return None
+    value = (low + high) / 2
+    if k:
+        value *= 1000
+    plausible = bool(k) or "$" in match.group(0) or "," in low_str or value >= 1000
+    return value if plausible else None
+
+
+def _capital_ask_in(text: str) -> float | None:
+    match = _CAPITAL_ASK_RE.search(text)
+    return _parse_money(text[match.start():match.end() + 20]) if match else None
+
+
+def extract_capital_ask(notes: str | None) -> dict | None:
+    """The most recent mention of a specific dollar amount the merchant
+    needs/wants -- "Needs 100K for project...", "asking for $50,000".
+    Checks the UNDATED preamble (the original note, before any dated
+    follow-up) as well as every dated entry -- caught against a real
+    deal where _parse_dated_entries' documented behavior (text before
+    the first dated entry is dropped, since there's no date to anchor it
+    to) would otherwise have silently discarded the one sentence that
+    actually stated the ask, just because a later, unrelated dated
+    follow-up existed anywhere else in the same notes. A dated entry
+    still supersedes the undated preamble when both mention a figure
+    (stated_on is then that entry's date; None means it only appeared in
+    the undated preamble). Returns None, not a guess, when nothing states
+    an actual figure (a bare "wants more" belongs to _WANTS_MORE_RE)."""
+    notes = notes or ""
+    entries = _parse_dated_entries(notes)
+    first_dated = _DATE_ENTRY_RE.search(notes)
+    preamble = notes[: first_dated.start()] if first_dated else notes
+
+    candidates: list[dict] = []
+    preamble_amount = _capital_ask_in(preamble)
+    if preamble_amount is not None:
+        candidates.append({"amount": preamble_amount, "stated_on": None, "source_text": preamble.strip()[:200], "_date": dt.date.min})
+    for entry_date, text in entries:
+        amount = _capital_ask_in(text)
+        if amount is not None:
+            candidates.append({"amount": amount, "stated_on": entry_date.isoformat(), "source_text": text.strip()[:200], "_date": entry_date})
+
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda c: c["_date"])
+    del best["_date"]
+    return best
+
+
+def extract_funded_amount_from_notes(notes: str | None) -> float | None:
+    """Fallback for the hundreds of leads that predate
+    MasterLogEntry.original_funded_amount -- a real original-amount
+    mention read straight out of free text ("Paypal 130K funded 12
+    months ago"), tried only when the tracked column is empty. Routes
+    the matched span back through _parse_money for the same range/
+    plausibility handling as extract_capital_ask -- caught against a
+    real false positive: "Originally funded 12-20-25 ofr 25k@1.37" has a
+    DATE right after "funded", and without this filter "12" (from
+    "12-20-25") got taken as a $12 origination amount, producing a
+    nonsense negative percent-paid-down once compared to a real balance.
+    Returns None, not a guess, when no plausible mention exists."""
+    match = _FUNDED_AMOUNT_RE.search(notes or "")
+    return _parse_money(match.group(0)) if match else None
+
 
 def _position_label(open_positions: int | None) -> str:
     n = (open_positions or 0) + 1
@@ -460,30 +573,40 @@ def additional_position_eligibility(
 ) -> dict:
     """Eligibility for the NEXT stacked position (2nd, 3rd, ...), distinct
     from renewal/refi on the position already open. `basis` explains which
-    signal fired: "paydown_threshold_met" (percent paid down already
-    crosses _POSITION_PAYDOWN_THRESHOLD), "paydown_projection" (hasn't
-    crossed yet but the current paydown rate projects a date it will), or
-    "merchant_stated_interest" (an explicit ask for more capital in the
-    notes, independent of the math). eligible=False/basis=None with no
-    date is an honest "not yet", not a 0.
+    signal fired, in priority order: "paydown_threshold_met" (percent
+    paid down already crosses _POSITION_PAYDOWN_THRESHOLD -- the math
+    already says yes, nothing beats that), "capital_ask_stated" (the
+    merchant named a specific dollar figure they need -- a live, stated
+    need right now outranks a projection that hasn't happened yet even
+    though it's less certain than the math), "paydown_projection" (hasn't
+    crossed the threshold yet but the current paydown rate projects a
+    date it will), or "merchant_stated_interest" (a vague "wants more"
+    with no number attached -- the weakest of the four). eligible=False/
+    basis=None with no date is an honest "not yet", not a 0.
 
     `original_funded_amount` (the real tracked value, see
     MasterLogEntry.original_funded_amount) is the correct denominator for
     percent-paid-down and is used whenever it's present (`paydown_source`
-    = "structured_funded_amount"). When it isn't -- a real gap: most
-    existing leads predate that column -- this falls back to treating the
-    FIRST balance a dated note entry happens to mention as a proxy
-    original (`paydown_source` = "notes_balance_trend"), which is weaker:
-    the first note is often written well after funding, mid-paydown, so
-    the resulting percentage is an understatement, not a false alarm."""
+    = "structured_funded_amount"). When it isn't -- most existing leads
+    predate that column -- this tries extract_funded_amount_from_notes
+    (a real origination-amount mention in free text, e.g. "130K funded
+    12 months ago" -- `paydown_source` = "notes_stated_funded_amount"),
+    and only then falls back to treating the FIRST balance a dated note
+    entry happens to mention as a proxy original (`paydown_source` =
+    "notes_balance_trend"), the weakest of the three since that first
+    note is often written well after funding, mid-paydown."""
     notes = notes or ""
     label = _position_label(open_positions)
     balance_sequence = extract_timeline(notes)["balance_sequence"]
     wants_more = bool(_WANTS_MORE_RE.search(notes))
+    capital_ask = extract_capital_ask(notes)
 
     origin, paydown_source = None, None
+    notes_funded_amount = extract_funded_amount_from_notes(notes)
     if original_funded_amount and original_funded_amount > 0:
         origin, paydown_source = original_funded_amount, "structured_funded_amount"
+    elif notes_funded_amount and notes_funded_amount > 0:
+        origin, paydown_source = notes_funded_amount, "notes_stated_funded_amount"
     elif len(balance_sequence) >= 2 and balance_sequence[0] > 0:
         origin, paydown_source = balance_sequence[0], "notes_balance_trend"
 
@@ -498,6 +621,8 @@ def additional_position_eligibility(
 
     if percent_paid_down is not None and percent_paid_down >= _POSITION_PAYDOWN_THRESHOLD:
         estimated_date, basis = dt.date.today().isoformat(), "paydown_threshold_met"
+    elif capital_ask is not None:
+        estimated_date, basis = dt.date.today().isoformat(), "capital_ask_stated"
     elif origin and payoff["weekly_paydown_rate"] and current_balance is not None:
         target_balance = origin * (1 - _POSITION_PAYDOWN_THRESHOLD)
         if current_balance > target_balance:
@@ -516,6 +641,7 @@ def additional_position_eligibility(
         "paydown_source": paydown_source,
         "percent_paid_down": percent_paid_down,
         "merchant_requested_more": wants_more,
+        "capital_ask_amount": capital_ask["amount"] if capital_ask else None,
         "estimated_date": estimated_date,
     }
 
@@ -573,14 +699,28 @@ def renewal_queue(leads) -> list[dict]:
             float(lead.original_funded_amount) if lead.original_funded_amount is not None else None,
         )
         if stacking["eligible"]:
+            detail = f"{stacking['next_position_label']} -- {stacking['basis']}"
+            if stacking["capital_ask_amount"] is not None:
+                detail += f" (stated need: ~${stacking['capital_ask_amount']:,.0f})"
+            if stacking["percent_paid_down"] is not None and 0 <= stacking["percent_paid_down"] <= 1:
+                detail += f" ({stacking['percent_paid_down'] * 100:.0f}% paid down"
+                detail += f", via {stacking['paydown_source']})" if stacking["paydown_source"] else ")"
+            elif stacking["percent_paid_down"] is not None:
+                # Outside [0, 1] means the balance and the origin amount
+                # disagree about which is bigger -- e.g. USA Air
+                # Conditioning's real sheet shows a $480K balance against
+                # a $400K stated funded amount, a genuine data
+                # inconsistency (additional stacking since, or a stale
+                # balance), not a parsing error. Flag it plainly instead
+                # of printing a nonsense negative percentage.
+                detail += " (balance/funded-amount mismatch in the data -- verify)"
             rows.append({
                 "lead_uid": str(lead.lead_uid),
                 "business_name": lead.business_name,
                 "queue_type": "additional_position",
                 "estimated_date": stacking["estimated_date"],
-                "source": "calculated" if stacking["basis"] != "merchant_stated_interest" else "merchant_stated",
-                "detail": f"{stacking['next_position_label']} -- {stacking['basis']}"
-                + (f" ({stacking['percent_paid_down'] * 100:.0f}% paid down)" if stacking["percent_paid_down"] is not None else ""),
+                "source": "merchant_stated" if stacking["basis"] in ("merchant_stated_interest", "capital_ask_stated") else "calculated",
+                "detail": detail,
             })
 
     rows.sort(key=lambda r: r["estimated_date"])

@@ -41,6 +41,14 @@ def get_duplicate_leads(db: Session = Depends(get_db)):
     return pipeline.find_duplicate_leads(db)
 
 
+@router.get("/offers-pending-funding")
+def get_offers_pending_funding(db: Session = Depends(get_db)):
+    """Leads sitting in Offer Made Not Sold -- an offer is out, the deal
+    hasn't closed, oldest-standing offer first. See
+    pipeline.offers_pending_funding."""
+    return pipeline.offers_pending_funding(db)
+
+
 @router.get("/{lead_uid}", response_model=MasterLogEntryOut)
 def get_master_log_entry(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
     entry = db.get(MasterLogEntry, lead_uid)
