@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     # human decides what to do about it, nothing is enforced silently.
     dialer_daily_capacity: int = 50
 
+    # Brain shadow-mode scoring (services/brain.py) refreshes continuously
+    # in the background instead of only on a manual "Recompute Scores"
+    # click -- pure local computation (no external API/network call), so
+    # unlike river surveillance this defaults to on.
+    brain_continuous_refresh_enabled: bool = True
+    brain_shadow_refresh_interval_seconds: int = 900  # 15 minutes
+
 
 @lru_cache
 def get_settings() -> Settings:

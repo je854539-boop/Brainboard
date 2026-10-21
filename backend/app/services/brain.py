@@ -16,6 +16,7 @@ attrited) leads exist so far. With few labeled examples the fit will be
 weak -- that's reported honestly via `training_set_size`, not hidden.
 """
 
+import asyncio
 import logging
 
 import numpy as np
@@ -26,8 +27,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models.enums import BrainMode, CoBroker, MasterLogStatus, SiloName, TERMINAL_ATTRITION_STATUSES, TERMINAL_STATUSES
-from app.models.orm import LeadActivityEvent, MasterLogEntry, ShadowScore
+from app.models.enums import BrainMode, CallAnalysisStatus, CoBroker, MasterLogStatus, SiloName, TERMINAL_ATTRITION_STATUSES, TERMINAL_STATUSES
+from app.models.orm import CallRecording, LeadActivityEvent, MasterLogEntry, ShadowScore
 
 logger = logging.getLogger("brainboard.brain")
 
@@ -36,6 +37,17 @@ BASELINE_VERSION = "baseline-insufficient-data"
 MIN_TRAINING_EXAMPLES = 10  # need both classes represented and a minimum sample before trusting a real fit
 
 NUMERIC_FEATURES = ["annual_revenue", "credit_score", "open_positions", "current_balance", "payment_amt"]
+
+
+def _call_signal(payload: dict) -> float:
+    """Deepgram's sentiment block carries an {"average": {"sentiment_score": ...}}
+    summary alongside per-segment detail -- this pulls just that single
+    number (-1..1, negative to positive) per call, defaulting to neutral
+    (0.0) if a recording has no sentiment yet (e.g. still PENDING/FAILED)."""
+    sentiment = payload or {}
+    average = sentiment.get("average") if isinstance(sentiment, dict) else None
+    score = average.get("sentiment_score") if isinstance(average, dict) else None
+    return float(score) if isinstance(score, (int, float)) else 0.0
 
 
 def current_mode(db: Session) -> tuple[BrainMode, int, int]:
@@ -53,10 +65,31 @@ def _lead_features(db: Session, leads: list[MasterLogEntry]) -> pd.DataFrame:
         ).all()
     )
 
+    # Every call the dialer auto-analyzes (see services/dialer.py::
+    # auto_analyze_recording) lands here -- this is the actual mechanism
+    # behind "the Brain observes calls": call volume and tone become
+    # real, learned features, not just metadata logged somewhere nobody
+    # looks at. Leads with no analyzed call yet get 0.0 on both --
+    # correct for "hasn't been called/no signal yet", not a data gap.
+    call_rows = db.execute(
+        select(CallRecording.lead_uid, CallRecording.sentiment)
+        .where(CallRecording.lead_uid.is_not(None), CallRecording.status == CallAnalysisStatus.COMPLETED)
+    ).all()
+    call_counts: dict = {}
+    call_sentiment_sums: dict = {}
+    for lead_uid, sentiment in call_rows:
+        call_counts[lead_uid] = call_counts.get(lead_uid, 0) + 1
+        call_sentiment_sums[lead_uid] = call_sentiment_sums.get(lead_uid, 0.0) + _call_signal(sentiment)
+
     rows = []
     for lead in leads:
         row = {f: (float(getattr(lead, f)) if getattr(lead, f) is not None else 0.0) for f in NUMERIC_FEATURES}
         row["activity_count"] = float(activity_counts.get(lead.lead_uid, 0))
+        analyzed_calls = call_counts.get(lead.lead_uid, 0)
+        row["analyzed_call_count"] = float(analyzed_calls)
+        row["avg_call_sentiment"] = (
+            call_sentiment_sums.get(lead.lead_uid, 0.0) / analyzed_calls if analyzed_calls else 0.0
+        )
         for cb in CoBroker:
             row[f"co_broker__{cb.value}"] = 1.0 if lead.co_broker == cb else 0.0
         # source_silo is NULL for a lead entered directly (intake form,
@@ -129,3 +162,50 @@ def refresh_shadow_scores(db: Session) -> int:
         )
     db.commit()
     return len(all_leads)
+
+
+# ---------------------------------------------------------------------------
+# Background refresh -- must not block the FastAPI event loop
+# ---------------------------------------------------------------------------
+
+_refresh_task: asyncio.Task | None = None
+
+
+async def _refresh_loop() -> None:
+    from app.database import SessionLocal
+
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                scored = await asyncio.to_thread(refresh_shadow_scores, db)
+                logger.info("Brain shadow-score refresh complete: %d leads scored", scored)
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001 -- one bad cycle must not kill the loop
+            logger.exception("Brain shadow-score refresh failed -- will retry next cycle")
+        await asyncio.sleep(get_settings().brain_shadow_refresh_interval_seconds)
+
+
+def start_background_refresh() -> asyncio.Task | None:
+    """Keeps ShadowScore current automatically instead of relying on
+    someone remembering to click "Recompute Scores" on /brain -- on by
+    default (brain_continuous_refresh_enabled) since this is pure local
+    DB computation, not an external API integration that needs an
+    explicit opt-in the way river surveillance does."""
+    global _refresh_task
+    if not get_settings().brain_continuous_refresh_enabled:
+        logger.info("Brain continuous refresh disabled (set BRAIN_CONTINUOUS_REFRESH_ENABLED=false to restore manual-only)")
+        return None
+    if _refresh_task is None or _refresh_task.done():
+        _refresh_task = asyncio.create_task(_refresh_loop())
+        logger.info("Brain background refresh started (interval=%ss)", get_settings().brain_shadow_refresh_interval_seconds)
+    return _refresh_task
+
+
+def stop_background_refresh() -> None:
+    global _refresh_task
+    if _refresh_task is not None:
+        _refresh_task.cancel()
+        _refresh_task = None
+        logger.info("Brain background refresh stopped")

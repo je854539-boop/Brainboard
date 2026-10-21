@@ -55,6 +55,8 @@
       <input name="caller_connect_number" placeholder="Bridge answered calls to (+1...)" class="tactical-select w-full" />
       <input name="pitch_recording_url" placeholder="Pitch recording URL (optional -- real voice, not AI)" class="tactical-select w-full" />
       <input name="max_attempts_per_lead" type="number" min="1" value="3" class="tactical-select w-full" />
+      <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)]">List size cap (hard ceiling, never above 1000)</label>
+      <input name="max_list_size" type="number" min="1" max="1000" value="1000" class="tactical-select w-full" />
       <label class="text-[10px] uppercase tracking-widest text-[var(--text-dim)] flex items-center gap-2 mt-1">
         <input type="checkbox" name="calendar" /> Include calendar-due leads
       </label>
@@ -107,8 +109,8 @@
 <div class="tactical-panel p-4 mb-4">
   <div class="stencil-header text-[var(--amber)] text-xs mb-3">Campaigns</div>
   <table class="tactical-table">
-    <thead><tr><th>Name</th><th>Pool</th><th>Queue</th><th>Max Attempts</th><th>Active</th><th>Action</th></tr></thead>
-    <tbody id="campaigns-body"><tr><td colspan="6" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+    <thead><tr><th>Name</th><th>Pool</th><th>Queue</th><th>Max Attempts</th><th>List Cap</th><th>Active</th><th>Action</th></tr></thead>
+    <tbody id="campaigns-body"><tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
   </table>
 </div>
 
@@ -189,6 +191,7 @@ async function renderCampaigns() {
         <td>${pool ? pool.name : '—'}</td>
         <td>${queueSize}</td>
         <td class="hud-value">${c.max_attempts_per_lead}</td>
+        <td class="hud-value" title="Hard ceiling -- never exceeds 1000, see DialerCampaign.max_list_size">${c.max_list_size}</td>
         <td><span class="status-badge ${c.is_active ? 'status-badge--funded' : 'status-badge--attrition'}">${c.is_active ? 'active' : 'paused'}</span></td>
         <td class="flex items-center gap-1" onclick="event.stopPropagation()">
           <input type="number" min="1" value="10" class="tactical-select text-[10px] py-1 w-16" id="max-calls-${c.id}" />
@@ -196,7 +199,7 @@ async function renderCampaigns() {
         </td>
       </tr>`;
   }));
-  document.getElementById("campaigns-body").innerHTML = rows.join("") || `<tr><td colspan="6" class="text-center text-[var(--text-dim)] py-6">No campaigns yet.</td></tr>`;
+  document.getElementById("campaigns-body").innerHTML = rows.join("") || `<tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">No campaigns yet.</td></tr>`;
 }
 
 function dispositionButtons(attempt) {
@@ -320,6 +323,7 @@ document.getElementById("campaign-form").addEventListener("submit", async (e) =>
       caller_connect_number: form.get("caller_connect_number") || null,
       pitch_recording_url: form.get("pitch_recording_url") || null,
       max_attempts_per_lead: parseInt(form.get("max_attempts_per_lead"), 10) || 3,
+      max_list_size: parseInt(form.get("max_list_size"), 10) || 1000,
       lead_filter: leadFilter,
     }),
   });

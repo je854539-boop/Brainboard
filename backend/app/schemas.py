@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.models.enums import (
     CallAnalysisStatus,
@@ -243,6 +243,7 @@ class DialerCampaignOut(BaseModel):
     caller_connect_number: str | None
     pitch_recording_url: str | None
     max_attempts_per_lead: int
+    max_list_size: int
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -256,6 +257,14 @@ class DialerCampaignCreate(BaseModel):
     caller_connect_number: str | None = None
     pitch_recording_url: str | None = None
     max_attempts_per_lead: int = 3
+    max_list_size: int = 1000
+
+    @field_validator("max_list_size")
+    @classmethod
+    def _clamp_max_list_size(cls, v: int) -> int:
+        # Hard compliance ceiling -- see services/dialer.py::HARD_MAX_LIST_SIZE.
+        # A request can only ever tighten this, never raise it past 1000.
+        return max(1, min(v, 1000))
 
 
 class DialerCampaignUpdate(BaseModel):
@@ -265,7 +274,13 @@ class DialerCampaignUpdate(BaseModel):
     caller_connect_number: str | None = None
     pitch_recording_url: str | None = None
     max_attempts_per_lead: int | None = None
+    max_list_size: int | None = None
     is_active: bool | None = None
+
+    @field_validator("max_list_size")
+    @classmethod
+    def _clamp_max_list_size(cls, v: int | None) -> int | None:
+        return v if v is None else max(1, min(v, 1000))
 
 
 class DialerCallAttemptOut(BaseModel):

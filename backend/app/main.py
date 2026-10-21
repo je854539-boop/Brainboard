@@ -18,6 +18,7 @@ from app.routers import (
     webhooks,
 )
 from app.routers import river_surveillance as river_surveillance_router
+from app.services import brain as brain_service
 from app.services import river_surveillance
 
 
@@ -26,8 +27,11 @@ async def lifespan(app: FastAPI):
     # No-ops unless RIVER_SURVEILLANCE_ENABLED=true -- see
     # river_surveillance.start_background_polling's docstring.
     river_surveillance.start_background_polling()
+    # On by default -- see brain.start_background_refresh's docstring.
+    brain_service.start_background_refresh()
     yield
     river_surveillance.stop_background_polling()
+    brain_service.stop_background_refresh()
 
 
 app = FastAPI(title="Brainboard Command Deck", lifespan=lifespan)

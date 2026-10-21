@@ -60,10 +60,15 @@ from app.models.orm import (
     MasterLogEntry,
     SiloCandidate,
 )
-from app.services import pipeline
+from app.services import call_analysis, pipeline
 from app.services.signalwire_adapter import SignalWireAdapter, get_signalwire_adapter
 
 logger = logging.getLogger("brainboard.dialer")
+
+# Hard ceiling on any one campaign's dial queue -- see DialerCampaign.max_list_size.
+# Never relaxable above this from a request payload; keeps any single list
+# campaign well under the scale that invites TCPA/mass-calling exposure.
+HARD_MAX_LIST_SIZE = 1000
 
 
 @dataclass
@@ -244,7 +249,8 @@ def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEnt
                 DialQueueEntry("silo_candidate", candidate.candidate_uid, candidate.company_name, candidate.phone, count)
             )
 
-    return entries
+    cap = min(campaign.max_list_size or HARD_MAX_LIST_SIZE, HARD_MAX_LIST_SIZE)
+    return entries[:cap]
 
 
 def _select_local_number(db: Session, campaign: DialerCampaign, to_number: str) -> DialerNumber | None:
@@ -379,11 +385,38 @@ def process_call_status(
         logger.warning("Unrecognized SignalWire call status %r for attempt %s", call_status, attempt.id)
     if duration_seconds is not None:
         attempt.duration_seconds = duration_seconds
+    is_new_recording = bool(recording_url) and recording_url != attempt.recording_url
     if recording_url:
         attempt.recording_url = recording_url
     db.commit()
     db.refresh(attempt)
+
+    if is_new_recording:
+        auto_analyze_recording(db, attempt)
     return attempt
+
+
+def auto_analyze_recording(db: Session, attempt: DialerCallAttempt) -> None:
+    """Every recorded call -- outbound campaign, inbound, or voicemail
+    fallback -- gets transcribed/diarized/sentiment-scored automatically
+    the moment its recording lands, instead of waiting for someone to
+    paste the URL into the Intelligence page by hand. This is the actual
+    mechanism behind "the Brain observes every call": the resulting
+    CallRecording feeds back into services/brain.py's feature set (see
+    _lead_features there), so call behavior -- not just deal metadata --
+    shapes the funded-probability score. No-ops quietly if Deepgram isn't
+    configured (call_analysis.analyze_call's existing no-key-no-op
+    pattern), so a call still gets logged even where transcription can't
+    run."""
+    try:
+        call_analysis.analyze_call(
+            db,
+            source_label=f"dialer_attempt:{attempt.id}",
+            lead_uid=attempt.lead_uid,
+            audio_url=attempt.recording_url,
+        )
+    except Exception:  # noqa: BLE001 -- a failed auto-analysis must not break call-status processing
+        logger.exception("Auto call-analysis failed for attempt %s", attempt.id)
 
 
 def apply_disposition(

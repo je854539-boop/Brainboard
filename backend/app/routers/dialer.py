@@ -574,4 +574,8 @@ async def inbound_voicemail(attempt_id: uuid.UUID, request: Request, db: Session
     duration_raw = form.get("RecordingDuration")
     attempt.duration_seconds = float(duration_raw) if duration_raw and duration_raw.isdigit() else None
     db.commit()
+    db.refresh(attempt)
+
+    if attempt.recording_url:
+        dialer.auto_analyze_recording(db, attempt)
     return {"ok": True}

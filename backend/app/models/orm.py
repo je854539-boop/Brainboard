@@ -492,6 +492,14 @@ class DialerCampaign(Base):
     # upload" pattern as CallFromUrlRequest.
     pitch_recording_url: Mapped[str | None] = mapped_column(String(1024))
     max_attempts_per_lead: Mapped[int] = mapped_column(nullable=False, default=3)
+    # Hard ceiling on how many unique leads/candidates this campaign will
+    # ever pull into one dial queue (services/dialer.py::build_dial_queue
+    # truncates to this, keeping highest-priority entries). Compliance
+    # guardrail, not a visibility nicety like dialer_daily_capacity --
+    # deliberately clamped to never exceed 1000 regardless of what's
+    # passed in, so one campaign can never quietly grow into
+    # mass-unsolicited-calling territory.
+    max_list_size: Mapped[int] = mapped_column(nullable=False, default=1000)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
