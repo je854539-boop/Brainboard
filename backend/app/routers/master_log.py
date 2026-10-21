@@ -64,6 +64,7 @@ def get_floor_signals(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
             entry.payment_freq,
             entry.open_positions,
             entry.notes,
+            float(entry.original_funded_amount) if entry.original_funded_amount is not None else None,
         ),
     }
 

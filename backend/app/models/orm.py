@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, DateTime, Enum as SAEnum, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -14,6 +14,7 @@ from app.models.enums import (
     BrainMode,
     CallAnalysisStatus,
     CoBroker,
+    DatePrecision,
     DialerCallDirection,
     DialerCallStatus,
     DialerCampaignType,
@@ -74,6 +75,16 @@ class MasterLogEntry(Base):
     current_balance: Mapped[float | None] = mapped_column(Numeric(14, 2))
     open_positions: Mapped[int | None] = mapped_column()
     credit_score: Mapped[int | None] = mapped_column()
+
+    # What this position actually started at and when it funded -- the
+    # real "original balance" reference that additional_position_eligibility
+    # previously had to guess at from whatever balance a note happened to
+    # mention first (see services/floor_language.py). funded_date_precision
+    # tells every consumer whether funded_date's day-of-month is real or a
+    # MONTH-only placeholder (see DatePrecision's docstring).
+    original_funded_amount: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    funded_date: Mapped[date | None] = mapped_column(Date)
+    funded_date_precision: Mapped[DatePrecision | None] = mapped_column(_pg_enum(DatePrecision, "date_precision"))
 
     follow_up_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     notes: Mapped[str | None] = mapped_column(Text)

@@ -199,6 +199,18 @@ class BrainMode(str, Enum):
     LIVE = "live"
 
 
+class DatePrecision(str, Enum):
+    """How precisely a date field is actually known. funded_date in
+    particular is routinely backfilled from memory for deals that funded
+    before this was tracked -- MONTH means the day was unknown and the
+    stored date is the 1st of that month as a placeholder, not a real
+    funding day. Every consumer of funded_date must branch on this before
+    treating the day-of-month as meaningful."""
+
+    EXACT = "exact"
+    MONTH = "month"
+
+
 class GeofenceEventType(str, Enum):
     """A single vessel observation classified against a monitored waterway
     zone -- see services/river_surveillance.py::WATERWAY_ZONES."""

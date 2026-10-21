@@ -456,24 +456,41 @@ def additional_position_eligibility(
     payment_freq: str | None,
     open_positions: int | None,
     notes: str | None,
+    original_funded_amount: float | None = None,
 ) -> dict:
     """Eligibility for the NEXT stacked position (2nd, 3rd, ...), distinct
     from renewal/refi on the position already open. `basis` explains which
-    signal fired: "paydown_threshold_met" (the balance-sequence trend read
-    from notes already crosses _POSITION_PAYDOWN_THRESHOLD), "paydown_projection"
-    (hasn't crossed yet but the current paydown rate projects a date it
-    will), or "merchant_stated_interest" (an explicit ask for more capital
-    in the notes, independent of the math). eligible=False/basis=None with
-    no date is an honest "not yet", not a 0 -- notably when notes carry no
-    dated balance mentions at all, there's nothing to project from, so
-    only the merchant-stated signal can fire."""
+    signal fired: "paydown_threshold_met" (percent paid down already
+    crosses _POSITION_PAYDOWN_THRESHOLD), "paydown_projection" (hasn't
+    crossed yet but the current paydown rate projects a date it will), or
+    "merchant_stated_interest" (an explicit ask for more capital in the
+    notes, independent of the math). eligible=False/basis=None with no
+    date is an honest "not yet", not a 0.
+
+    `original_funded_amount` (the real tracked value, see
+    MasterLogEntry.original_funded_amount) is the correct denominator for
+    percent-paid-down and is used whenever it's present (`paydown_source`
+    = "structured_funded_amount"). When it isn't -- a real gap: most
+    existing leads predate that column -- this falls back to treating the
+    FIRST balance a dated note entry happens to mention as a proxy
+    original (`paydown_source` = "notes_balance_trend"), which is weaker:
+    the first note is often written well after funding, mid-paydown, so
+    the resulting percentage is an understatement, not a false alarm."""
     notes = notes or ""
     label = _position_label(open_positions)
     balance_sequence = extract_timeline(notes)["balance_sequence"]
     wants_more = bool(_WANTS_MORE_RE.search(notes))
 
+    origin, paydown_source = None, None
+    if original_funded_amount and original_funded_amount > 0:
+        origin, paydown_source = original_funded_amount, "structured_funded_amount"
+    elif len(balance_sequence) >= 2 and balance_sequence[0] > 0:
+        origin, paydown_source = balance_sequence[0], "notes_balance_trend"
+
     percent_paid_down = None
-    if len(balance_sequence) >= 2 and balance_sequence[0] > 0:
+    if origin is not None and current_balance is not None:
+        percent_paid_down = round((origin - current_balance) / origin, 3)
+    elif origin is not None and len(balance_sequence) >= 2:
         percent_paid_down = round((balance_sequence[0] - balance_sequence[-1]) / balance_sequence[0], 3)
 
     payoff = project_payoff(current_balance, payment_amt, payment_freq)
@@ -481,8 +498,8 @@ def additional_position_eligibility(
 
     if percent_paid_down is not None and percent_paid_down >= _POSITION_PAYDOWN_THRESHOLD:
         estimated_date, basis = dt.date.today().isoformat(), "paydown_threshold_met"
-    elif balance_sequence and balance_sequence[0] > 0 and payoff["weekly_paydown_rate"] and current_balance is not None:
-        target_balance = balance_sequence[0] * (1 - _POSITION_PAYDOWN_THRESHOLD)
+    elif origin and payoff["weekly_paydown_rate"] and current_balance is not None:
+        target_balance = origin * (1 - _POSITION_PAYDOWN_THRESHOLD)
         if current_balance > target_balance:
             weeks = (current_balance - target_balance) / payoff["weekly_paydown_rate"]
             estimated_date = (dt.date.today() + dt.timedelta(weeks=weeks)).isoformat()
@@ -490,11 +507,13 @@ def additional_position_eligibility(
 
     if basis is None and wants_more:
         estimated_date, basis = dt.date.today().isoformat(), "merchant_stated_interest"
+        paydown_source = None
 
     return {
         "eligible": basis is not None,
         "next_position_label": label,
         "basis": basis,
+        "paydown_source": paydown_source,
         "percent_paid_down": percent_paid_down,
         "merchant_requested_more": wants_more,
         "estimated_date": estimated_date,
@@ -551,6 +570,7 @@ def renewal_queue(leads) -> list[dict]:
             lead.payment_freq,
             lead.open_positions,
             lead.notes,
+            float(lead.original_funded_amount) if lead.original_funded_amount is not None else None,
         )
         if stacking["eligible"]:
             rows.append({

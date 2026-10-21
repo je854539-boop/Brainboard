@@ -19,6 +19,7 @@ from app.models.enums import ActivitySource
 from app.models.orm import MasterLogEntry, SiloCandidate
 from app.schemas import MasterLogEditWebhook, MasterLogEntryOut, MasterLogEntryUpdate, SiloCandidateOut, SiloStatusEditWebhook
 from app.services import pipeline
+from app.services.google.sheets_sync import _parse_funded_date
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"], dependencies=[Depends(verify_webhook_secret)])
 
@@ -41,9 +42,10 @@ def lead_intake(payload: MasterLogEntryUpdate, db: Session = Depends(get_db)):
 
 @router.post("/master-log-edit", response_model=MasterLogEntryOut)
 def master_log_edit(payload: MasterLogEditWebhook, db: Session = Depends(get_db)):
-    """onMasterLogEdit: Column K (follow-up date) or Column L (notes)
-    changed on the sheet -- push the update into Postgres and reflect it
-    onto the linked Calendar event via lead_uid."""
+    """onMasterLogEdit: Column K (follow-up date), L (notes), W (original
+    funded amount), or X (funded date) changed on the sheet -- push the
+    update into Postgres and reflect follow-up/notes onto the linked
+    Calendar event via lead_uid."""
     entry = db.get(MasterLogEntry, payload.lead_uid)
     if entry is None:
         raise HTTPException(status_code=404, detail="lead not found")
@@ -53,6 +55,12 @@ def master_log_edit(payload: MasterLogEditWebhook, db: Session = Depends(get_db)
         updates["follow_up_date"] = payload.follow_up_date
     if payload.notes is not None:
         updates["notes"] = payload.notes
+    if payload.original_funded_amount is not None:
+        updates["original_funded_amount"] = payload.original_funded_amount
+    if payload.funded_date is not None:
+        funded_date, precision = _parse_funded_date(payload.funded_date)
+        updates["funded_date"] = funded_date
+        updates["funded_date_precision"] = precision
 
     return pipeline.update_lead_fields(db, entry, updates, source=ActivitySource.WEBHOOK_SHEET)
 

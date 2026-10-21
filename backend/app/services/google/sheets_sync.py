@@ -5,9 +5,15 @@ Column layout below is confirmed against the REAL, live spreadsheet
 (downloaded and parsed directly, not inferred -- a prior version of this
 module and of apps_script/Code.gs's ML_COL_* constants had drifted from
 the actual sheet entirely; that mismatch was caught before either one was
-ever run against real data, see git history). It is a 22-column layout,
-not 20, and three columns are deliberately left unmapped rather than
-guessed at:
+ever run against real data, see git history). The original 22 confirmed
+columns run A..V; columns W (Original Funded Amount) and X (Funded Date)
+are new, appended at the end rather than inserted, so none of the
+confirmed A..V indices had to shift. Funded Date accepts either an exact
+"M/D/YYYY" (most deals) or a bare "M/YYYY" when the exact day was never
+recorded (plenty of real deals funded before this was tracked) -- see
+_parse_funded_date and DatePrecision's docstring for how that's told
+apart downstream. Three of the original columns are deliberately left
+unmapped rather than guessed at:
   - Column B "Date Added" -- not modeled on MasterLogEntry at all.
   - Column S "Event ID" -- holds a human-readable flag (observed value:
     "Synced"), NOT a literal Google Calendar event ID the way
@@ -39,14 +45,14 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from app.models.enums import ActivitySource, CoBroker, MasterLogStatus, SiloCandidateStatus, SiloName
+from app.models.enums import ActivitySource, CoBroker, DatePrecision, MasterLogStatus, SiloCandidateStatus, SiloName
 from app.models.orm import MasterLogEntry, SiloCandidate
 from app.services import pipeline
 
 logger = logging.getLogger("brainboard.sheets_sync")
 
 MASTER_LOG_SHEET_NAME = "Master Log V2"
-MASTER_LOG_RANGE = f"{MASTER_LOG_SHEET_NAME}!A2:V"
+MASTER_LOG_RANGE = f"{MASTER_LOG_SHEET_NAME}!A2:X"
 
 # column index (0-based, A=0) -> MasterLogEntry field name. Indices not
 # listed here fall into extra_columns, keyed by their sheet column letter
@@ -74,9 +80,11 @@ MASTER_LOG_COLUMN_FIELDS: dict[int, str] = {
     # 19: unlabeled (T) -- unknown purpose, preserved via extra_columns
     20: "financials_link",  # U
     21: "transcripts_link",  # V
+    22: "original_funded_amount",  # W -- new, appended (see module docstring)
+    23: "funded_date",  # X -- new, appended; "M/D/YYYY" or "M/YYYY" (see _parse_funded_date)
 }
-MASTER_LOG_COLUMN_COUNT = 22  # A..V
-_FLOAT_FIELDS = {"annual_revenue", "payment_amt", "current_balance"}
+MASTER_LOG_COLUMN_COUNT = 24  # A..X
+_FLOAT_FIELDS = {"annual_revenue", "payment_amt", "current_balance", "original_funded_amount"}
 _INT_FIELDS = {"open_positions", "credit_score"}
 
 SILO_RANGE_SUFFIX = "!A2:H"
@@ -120,6 +128,36 @@ def _parse_date(value: str) -> dt.datetime | None:
     return None
 
 
+def _parse_funded_date(value: str) -> tuple[dt.date | None, DatePrecision | None]:
+    """Funded Date (W) is written either as an exact "M/D/YYYY"/"YYYY-MM-DD"
+    (most deals, entered close to when they funded) or a bare "M/YYYY"/
+    "YYYY-MM" when only the month is remembered (common for backfilling
+    deals that funded before this column existed). The month-only forms
+    are stored as the 1st of that month with precision=MONTH so nothing
+    downstream mistakes that placeholder day for a real one."""
+    if not value:
+        return None, None
+    value = value.strip()
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return dt.datetime.strptime(value, fmt).date(), DatePrecision.EXACT
+        except ValueError:
+            continue
+    for fmt in ("%m/%Y", "%Y-%m"):
+        try:
+            parsed = dt.datetime.strptime(value, fmt).date()
+            return parsed.replace(day=1), DatePrecision.MONTH
+        except ValueError:
+            continue
+    return None, None
+
+
+def _format_funded_date(funded_date: dt.date | None, precision: DatePrecision | None) -> str:
+    if funded_date is None or precision is None:
+        return ""
+    return funded_date.strftime("%m/%d/%Y") if precision == DatePrecision.EXACT else funded_date.strftime("%m/%Y")
+
+
 def row_to_master_log_fields(row: list[str]) -> dict:
     padded = row + [""] * (MASTER_LOG_COLUMN_COUNT - len(row))
     fields: dict = {"extra_columns": {}}
@@ -137,6 +175,16 @@ def row_to_master_log_fields(row: list[str]) -> dict:
             fields["status"] = (_STATUS_ALIASES.get(value) or MasterLogStatus(value)) if value else MasterLogStatus.NEW_LEAD
         elif field_name == "follow_up_date":
             fields["follow_up_date"] = _parse_date(value)
+        elif field_name == "funded_date":
+            if value:
+                funded_date, precision = _parse_funded_date(value)
+                if funded_date is None:
+                    logger.warning("Unparseable funded_date value %r -- stored as null", value)
+                fields["funded_date"] = funded_date
+                fields["funded_date_precision"] = precision
+            else:
+                fields["funded_date"] = None
+                fields["funded_date_precision"] = None
         elif field_name in _FLOAT_FIELDS:
             # Field-level tolerance, not row-level: 353 rows of months of
             # manual entry turned up real free-text garbage in numeric
@@ -182,6 +230,8 @@ def master_log_entry_to_row(entry: MasterLogEntry) -> list[str]:
     # row[18] (Event ID, S) and row[19] (unlabeled, T) intentionally left blank here -- restored below
     row[20] = entry.financials_link or ""
     row[21] = entry.transcripts_link or ""
+    row[22] = str(entry.original_funded_amount) if entry.original_funded_amount is not None else ""
+    row[23] = _format_funded_date(entry.funded_date, entry.funded_date_precision)
     # Note: entry.dossier_drive_link has no column to write to -- see module docstring.
     for letter, value in (entry.extra_columns or {}).items():
         index = ord(letter.upper()) - ord("A")
@@ -300,7 +350,7 @@ def push_master_log_entry(service, sheet_id: str, entry: MasterLogEntry) -> None
         row_number = ids.index(str(entry.lead_uid)) + 2
         service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
-            range=f"{MASTER_LOG_SHEET_NAME}!A{row_number}:V{row_number}",
+            range=f"{MASTER_LOG_SHEET_NAME}!A{row_number}:X{row_number}",
             valueInputOption="RAW",
             body={"values": [row_values]},
         ).execute()

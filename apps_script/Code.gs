@@ -12,8 +12,11 @@
  *      this installs `installableOnEdit` as an installable "On edit"
  *      trigger instead, which runs with full authorization.
  *   2. Run `setupDropdowns()` once to add data-validation dropdowns for
- *      the Status and Co-Broker columns on Master Log V2 (restricts entry
- *      to the canonical values below instead of free text).
+ *      the Status, Co-Broker, and Payment Freq columns on Master Log V2
+ *      (restricts entry to the canonical values below instead of free
+ *      text -- Payment Freq in particular had real garbage in it:
+ *      "wEEKLY", a typo'd "Weekl", "500 weekly", bare numbers with no
+ *      unit, hybrids like "Daily / Weekly").
  *
  * Script Properties required (Project Settings -> Script Properties):
  *   BACKEND_BASE_URL       e.g. https://your-vps-host/  (no trailing slash)
@@ -44,6 +47,13 @@ const MASTER_LOG_STATUSES = [
   "Offer Made Not Sold", "Sold Deal Killed", "Deal Stalled Proxy Pass", "Funded",
   "Ghosted", "Lost To Competitor", "Dog Shit",
 ];
+
+// Keep this in lockstep with floor_language.py's _PAYMENTS_PER_WEEK keys
+// (case there is case-insensitive on the backend, but the dropdown fixes
+// the free-text mess real data turned up -- "wEEKLY", "Weekl", "500
+// weekly", bare numbers with no unit, etc. -- at the source instead of
+// parsing around it after the fact).
+const PAYMENT_FREQS = ["Weekly", "Bi-Weekly", "Monthly", "Daily", "CC%"];
 
 // Master Log V2 column indices (1-based, A=1) -- confirmed against the
 // REAL, live sheet (downloaded and parsed directly, not inferred -- a
@@ -79,7 +89,9 @@ const ML_COL_OPEN_POSITIONS = 17; // Q
 const ML_COL_CREDIT_SCORE = 18; // R
 const ML_COL_FINANCIALS = 21; // U
 const ML_COL_TRANSCRIPTS = 22; // V
-const ML_COLUMN_COUNT = 22;
+const ML_COL_FUNDED_AMOUNT = 23; // W -- new, appended (see sheets_sync.py module docstring)
+const ML_COL_FUNDED_DATE = 24; // X -- new, appended; "M/D/YYYY" or "M/YYYY" if only the month is known
+const ML_COLUMN_COUNT = 24;
 
 // Silo tab column indices (1-based, A=1) -- 8-column schema
 const SILO_COL_UID = 1; // A
@@ -144,6 +156,12 @@ function setupDropdowns() {
     .setAllowInvalid(false)
     .build();
   sheet.getRange(2, ML_COL_COBROKER, MAX_ROW - 1, 1).setDataValidation(coBrokerRule);
+
+  const paymentFreqRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(PAYMENT_FREQS, true)
+    .setAllowInvalid(false)
+    .build();
+  sheet.getRange(2, ML_COL_PAYMENT_FREQ, MAX_ROW - 1, 1).setDataValidation(paymentFreqRule);
 }
 
 function installableOnEdit(e) {
@@ -190,10 +208,13 @@ function onMasterLogEdit(e) {
   }
 
   const col = e.range.getColumn();
-  if (col !== ML_COL_FOLLOWUP && col !== ML_COL_NOTES) return;
+  const watchedCols = [ML_COL_FOLLOWUP, ML_COL_NOTES, ML_COL_FUNDED_AMOUNT, ML_COL_FUNDED_DATE];
+  if (watchedCols.indexOf(col) === -1) return;
 
   const followUpRaw = sheet.getRange(row, ML_COL_FOLLOWUP).getValue();
   const notes = sheet.getRange(row, ML_COL_NOTES).getValue();
+  const fundedAmountRaw = sheet.getRange(row, ML_COL_FUNDED_AMOUNT).getValue();
+  const fundedDateRaw = sheet.getRange(row, ML_COL_FUNDED_DATE).getValue();
 
   const payload = {
     lead_uid: String(leadUid),
@@ -201,6 +222,19 @@ function onMasterLogEdit(e) {
   };
   if (followUpRaw instanceof Date) {
     payload.follow_up_date = followUpRaw.toISOString();
+  }
+  if (fundedAmountRaw !== "") {
+    payload.original_funded_amount = fundedAmountRaw;
+  }
+  // Funded Date is free text ("M/D/YYYY" or "M/YYYY" when only the month
+  // is known, see sheets_sync.py::_parse_funded_date) -- sent as a string,
+  // never coerced to a Date object here, so a month-only entry isn't
+  // silently promoted to a fake day-1 Date before the backend ever sees
+  // whether the day was real.
+  if (fundedDateRaw !== "") {
+    payload.funded_date = fundedDateRaw instanceof Date
+      ? Utilities.formatDate(fundedDateRaw, Session.getScriptTimeZone(), "MM/dd/yyyy")
+      : String(fundedDateRaw);
   }
 
   postToBackend_("/webhooks/master-log-edit", payload);

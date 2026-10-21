@@ -1,11 +1,12 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.models.enums import (
     CallAnalysisStatus,
     CoBroker,
+    DatePrecision,
     DialerCallDirection,
     DialerCallStatus,
     DialerCampaignType,
@@ -45,6 +46,9 @@ class MasterLogEntryOut(BaseModel):
     current_balance: float | None
     open_positions: int | None
     credit_score: int | None
+    original_funded_amount: float | None
+    funded_date: date | None
+    funded_date_precision: DatePrecision | None
     follow_up_date: datetime | None
     notes: str | None
     dossier_drive_link: str | None
@@ -74,6 +78,9 @@ class MasterLogEntryUpdate(BaseModel):
     current_balance: float | None = None
     open_positions: int | None = None
     credit_score: int | None = None
+    original_funded_amount: float | None = None
+    funded_date: date | None = None
+    funded_date_precision: DatePrecision | None = None
     follow_up_date: datetime | None = None
     notes: str | None = None
     dossier_drive_link: str | None = None
@@ -128,6 +135,11 @@ class MasterLogEditWebhook(BaseModel):
     lead_uid: uuid.UUID
     follow_up_date: datetime | None = None
     notes: str | None = None
+    original_funded_amount: float | None = None
+    # Raw sheet text ("M/D/YYYY" or "M/YYYY") -- parsed server-side via
+    # sheets_sync._parse_funded_date, same as a full-sheet pull, so a
+    # month-only entry is never silently promoted to a fake exact date.
+    funded_date: str | None = None
 
 
 class SiloStatusEditWebhook(BaseModel):
