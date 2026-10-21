@@ -769,7 +769,7 @@ DEAD_STATUSES = frozenset(
 # ASSUMPTIONS, documented like the paydown threshold above -- real
 # defaults driving the queue, not guaranteed "this lead is actually dead"
 # calls:
-_DRIFT_OVERDUE_DAYS = 7  # a follow-up date more than a week past due, with nothing since, counts as drifted
+_DRIFT_OVERDUE_DAYS = 14  # a follow-up date two weeks or more past due, with nothing since, counts as drifted
 _DRIFT_NEVER_TOUCHED_DAYS = 14  # no follow-up ever set AND no dated note entry (or the lead itself) in 2+ weeks
 
 # ASSUMPTION, documented like the paydown threshold above: a momentum
@@ -791,17 +791,32 @@ def _drift_reason(lead) -> tuple[str, int | None] | tuple[None, None]:
     created_at age for a lead with no dated entries either. A lead with a
     current/future follow_up_date is correctly NOT a candidate here --
     it's already on the calendar grind, which is exactly the thing this
-    queue is meant to complement, not duplicate."""
+    queue is meant to complement, not duplicate.
+
+    "follow_up_stale_vs_notes" is a DATA-HYGIENE alert, not a real drift
+    case: an overdue follow_up_date, but a dated note entry exists AFTER
+    that date -- someone already got this merchant on the phone past the
+    date that was supposed to mean "next contact", the field just was
+    never moved forward to match. This is exactly the case that would
+    otherwise slip through silently: the lead LOOKS drifted by the
+    numbers, but a human already acted and the data needs rectifying,
+    not a revival call."""
     now = dt.datetime.now(dt.timezone.utc)
+    timeline = extract_timeline(lead.notes or "")
+    last_note_date = dt.date.fromisoformat(timeline["last_entry_date"]) if timeline["last_entry_date"] else None
 
     if lead.status in STALLED_STATUSES:
         return "stalled_status", None
 
     if lead.follow_up_date is not None:
         days_overdue = (now - lead.follow_up_date).days
-        return ("overdue_follow_up", days_overdue) if days_overdue >= _DRIFT_OVERDUE_DAYS else (None, None)
+        if days_overdue < _DRIFT_OVERDUE_DAYS:
+            return None, None
+        if last_note_date is not None and last_note_date > lead.follow_up_date.date():
+            return "follow_up_stale_vs_notes", days_overdue
+        return "overdue_follow_up", days_overdue
 
-    days_quiet = extract_timeline(lead.notes or "")["days_since_last_entry"]
+    days_quiet = timeline["days_since_last_entry"]
     if days_quiet is None and lead.created_at is not None:
         days_quiet = (now - lead.created_at).days
     return ("never_followed_up", days_quiet) if days_quiet is not None and days_quiet >= _DRIFT_NEVER_TOUCHED_DAYS else (None, None)
@@ -840,6 +855,7 @@ def revival_queue(leads, min_revenue: float | None = None) -> list[dict]:
             "stalled_status": f"marked {lead.status.value}",
             "overdue_follow_up": f"follow-up was {days}d overdue, nothing since",
             "never_followed_up": f"never followed up, quiet {days}d",
+            "follow_up_stale_vs_notes": "RECTIFY: notes show contact after the follow-up date -- update the follow-up date/status, not a cold lead",
         }[reason]
         rows.append({
             "lead_uid": str(lead.lead_uid),

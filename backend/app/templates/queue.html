@@ -119,6 +119,10 @@ const DRIFT_LABEL = {
   stalled_status: "Formally Stalled/Ghosted",
   overdue_follow_up: "Follow-Up Overdue",
   never_followed_up: "Never Followed Up",
+  follow_up_stale_vs_notes: "⚠ RECTIFY: Notes Newer Than Follow-Up",
+};
+const DRIFT_COLOR = {
+  follow_up_stale_vs_notes: "var(--crimson)",
 };
 
 async function loadRevival() {
@@ -128,7 +132,7 @@ async function loadRevival() {
       <td>${callBtn(r.lead_uid)}</td>
       <td class="font-medium">${r.business_name}<div class="text-[var(--text-dim)]">${r.phone || ''}</div></td>
       <td>${r.co_broker || '—'}</td>
-      <td style="color:var(--amber)">${DRIFT_LABEL[r.drift_reason] || r.drift_reason}${r.days_drifted != null ? ` (${r.days_drifted}d)` : ''}</td>
+      <td style="color:${DRIFT_COLOR[r.drift_reason] || 'var(--amber)'}">${DRIFT_LABEL[r.drift_reason] || r.drift_reason}${r.days_drifted != null ? ` (${r.days_drifted}d)` : ''}</td>
       <td class="text-[var(--text-dim)]">${r.status}</td>
       <td>${r.annual_revenue != null ? '$' + Number(r.annual_revenue).toLocaleString() : '—'}</td>
       <td class="text-[var(--text-dim)]">${r.industry || '—'}</td>
