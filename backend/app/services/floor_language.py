@@ -376,6 +376,51 @@ def project_payoff(current_balance: float | None, payment_amt: float | None, pay
     }
 
 
+# ASSUMPTION, same documented-default pattern as _PAYMENTS_PER_WEEK: the
+# floor's working default factor rate when a call doesn't surface the
+# real one. A real stated rate (see _FACTOR_RATE_RE elsewhere in this
+# file) always wins when one exists -- this is only the fallback for
+# reverse-engineering a missing field from a quick call.
+_DEFAULT_FACTOR_RATE = 1.40
+
+
+def reverse_engineer_deal_terms(
+    funded_amount: float | None, payment_amt: float | None, term_weeks: float | None, factor_rate: float = _DEFAULT_FACTOR_RATE
+) -> dict:
+    """A call often surfaces only two of {funded amount, payment, term} --
+    the relationship total_payback = funded_amount * factor_rate =
+    payment_amt * term_weeks lets the missing one be solved for from
+    whichever two are known, the same mental math worked on the floor
+    (funded amount x 1.40, divided by payment or by term). Returns the
+    field that was actually missing plus the implied total payback;
+    returns everything as None, not a guess, when fewer than two of the
+    three inputs are present -- there's nothing to solve for. Never
+    overwrites a value that was actually given: if all three are present
+    this doesn't recompute or sanity-check them (that's a different
+    question -- see the balance/funded-amount mismatch flag in
+    additional_position_eligibility for how a real inconsistency gets
+    surfaced instead of silently picked one way)."""
+    known = sum(x is not None for x in (funded_amount, payment_amt, term_weeks))
+    if known < 2 or factor_rate <= 0:
+        return {"funded_amount": funded_amount, "payment_amt": payment_amt, "term_weeks": term_weeks, "solved_field": None, "total_payback": None}
+
+    if term_weeks is None:
+        if not payment_amt:
+            return {"funded_amount": funded_amount, "payment_amt": payment_amt, "term_weeks": None, "solved_field": None, "total_payback": None}
+        total_payback = funded_amount * factor_rate
+        return {"funded_amount": funded_amount, "payment_amt": payment_amt, "term_weeks": round(total_payback / payment_amt, 1), "solved_field": "term_weeks", "total_payback": round(total_payback, 2)}
+
+    if payment_amt is None:
+        if not term_weeks:
+            return {"funded_amount": funded_amount, "payment_amt": None, "term_weeks": term_weeks, "solved_field": None, "total_payback": None}
+        total_payback = funded_amount * factor_rate
+        return {"funded_amount": funded_amount, "payment_amt": round(total_payback / term_weeks, 2), "term_weeks": term_weeks, "solved_field": "payment_amt", "total_payback": round(total_payback, 2)}
+
+    # funded_amount missing
+    total_payback = payment_amt * term_weeks
+    return {"funded_amount": round(total_payback / factor_rate, 2), "payment_amt": payment_amt, "term_weeks": term_weeks, "solved_field": "funded_amount", "total_payback": round(total_payback, 2)}
+
+
 _RELATIVE_TIME_RE = re.compile(r"\b(\d{1,2})\s*(?:to|-)?\s*(\d{1,2})?\s*(weeks?|months?)\b", re.IGNORECASE)
 _READINESS_CONTEXT_RE = re.compile(
     r"\bpif\b|pa(?:y(?:'s|s)?|id)\s+off|ready|on\s+schedule|will\s+(?:need|use|take)|can\s+use|crack",
