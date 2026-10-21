@@ -332,3 +332,126 @@ def extract_timeline(notes: str | None) -> dict:
         "balance_sequence": balance_sequence,
         "new_advance_detected": bool(_NEW_ADVANCE_RE.search(notes)),
     }
+
+
+# ---------------------------------------------------------------------------
+# Renewal/refi eligibility -- two independent signals, deliberately not
+# blended into one number: a CALCULATED projection (pure arithmetic on
+# balance/payment, no text involved) and a MERCHANT-STATED one (what they
+# actually told a broker on a call). The calculated one is higher-
+# confidence when the inputs exist; the stated one is the only option
+# when they don't, and is kept lower-confidence/labeled as such rather
+# than presented with false precision.
+# ---------------------------------------------------------------------------
+
+# Payments/week per frequency -- "Daily" is a documented ASSUMPTION
+# (standard ACH business-day convention, 5x/week), not a certainty: real
+# lender schedules do vary (some run 7x/week) and notes alone can't say
+# which for a given deal. Easy to override per-deal once that's tracked
+# explicitly; until then this is the industry-standard default.
+_PAYMENTS_PER_WEEK = {"weekly": 1.0, "bi-weekly": 0.5, "biweekly": 0.5, "monthly": 12 / 52, "daily": 5.0}
+
+
+def project_payoff(current_balance: float | None, payment_amt: float | None, payment_freq: str | None) -> dict:
+    """Pure arithmetic: at the current payment rate, how many weeks until
+    this balance hits zero. Returns None fields (not a guess) when any
+    required input is missing, or when payment_freq isn't one of the
+    frequencies above."""
+    if not current_balance or not payment_amt or not payment_freq:
+        return {"weeks_to_payoff": None, "projected_payoff_date": None, "weekly_paydown_rate": None}
+    per_week = _PAYMENTS_PER_WEEK.get(payment_freq.strip().lower())
+    if per_week is None:
+        return {"weeks_to_payoff": None, "projected_payoff_date": None, "weekly_paydown_rate": None}
+
+    weekly_rate = payment_amt * per_week
+    if weekly_rate <= 0:
+        return {"weeks_to_payoff": None, "projected_payoff_date": None, "weekly_paydown_rate": weekly_rate}
+
+    weeks = current_balance / weekly_rate
+    projected_date = dt.date.today() + dt.timedelta(weeks=weeks)
+    return {
+        "weeks_to_payoff": round(weeks, 1),
+        "projected_payoff_date": projected_date.isoformat(),
+        "weekly_paydown_rate": round(weekly_rate, 2),
+    }
+
+
+_RELATIVE_TIME_RE = re.compile(r"\b(\d{1,2})\s*(?:to|-)?\s*(\d{1,2})?\s*(weeks?|months?)\b", re.IGNORECASE)
+_READINESS_CONTEXT_RE = re.compile(
+    r"\bpif\b|pa(?:y(?:'s|s)?|id)\s+off|ready|on\s+schedule|will\s+(?:need|use|take)|can\s+use|crack",
+    re.IGNORECASE,
+)
+
+
+def extract_merchant_stated_readiness(notes: str | None) -> dict | None:
+    """The merchant's OWN estimate of when they'll be ready -- "6 to 8
+    weeks", "4-5 months" -- read from the most recent dated entry where a
+    relative-time phrase co-occurs with payoff/readiness language (so
+    "call back in 2 weeks" alone, with no PIF/readiness context, doesn't
+    get mistaken for a payoff estimate). Later mentions supersede earlier
+    ones -- a merchant revising "6-8 weeks" down to "2 weeks" later means
+    the later number is what's current. Returns None if no dated entry
+    has both signals -- an honest "not stated", not a guess."""
+    entries = _parse_dated_entries(notes or "")
+    best: dict | None = None
+
+    for entry_date, text in entries:
+        if not _READINESS_CONTEXT_RE.search(text):
+            continue
+        time_match = _RELATIVE_TIME_RE.search(text)
+        if not time_match:
+            continue
+        low, high, unit = time_match.groups()
+        value = (int(low) + int(high)) / 2 if high else int(low)
+        days = value * 30 if unit.lower().startswith("month") else value * 7
+        estimated_date = entry_date + dt.timedelta(days=days)
+        if best is None or entry_date >= best["_source_entry_date"]:
+            best = {
+                "estimated_ready_date": estimated_date.isoformat(),
+                "stated_on": entry_date.isoformat(),
+                "source_text": text.strip()[:200],
+                "_source_entry_date": entry_date,
+            }
+
+    if best is not None:
+        del best["_source_entry_date"]
+    return best
+
+
+def renewal_queue(leads) -> list[dict]:
+    """The actual "who to call and when" queue: for every active lead,
+    prefers the calculated payoff projection (current_balance/payment_amt/
+    payment_freq -- deterministic) and falls back to the merchant's own
+    stated estimate only when the calculated one isn't available. Sorted
+    soonest-first. `leads` is any iterable of MasterLogEntry; leads with
+    neither signal are left out entirely -- there's nothing to queue them
+    by, not a 0 indicating they're ready now."""
+    rows = []
+    for lead in leads:
+        calculated = project_payoff(
+            float(lead.current_balance) if lead.current_balance is not None else None,
+            float(lead.payment_amt) if lead.payment_amt is not None else None,
+            lead.payment_freq,
+        )
+        if calculated["projected_payoff_date"] is not None:
+            rows.append({
+                "lead_uid": str(lead.lead_uid),
+                "business_name": lead.business_name,
+                "estimated_date": calculated["projected_payoff_date"],
+                "source": "calculated",
+                "detail": f"{calculated['weeks_to_payoff']} weeks at current paydown rate",
+            })
+            continue
+
+        stated = extract_merchant_stated_readiness(lead.notes)
+        if stated is not None:
+            rows.append({
+                "lead_uid": str(lead.lead_uid),
+                "business_name": lead.business_name,
+                "estimated_date": stated["estimated_ready_date"],
+                "source": "merchant_stated",
+                "detail": f"merchant said this on {stated['stated_on']}: \"{stated['source_text']}\"",
+            })
+
+    rows.sort(key=lambda r: r["estimated_date"])
+    return rows

@@ -52,6 +52,12 @@ def get_floor_signals(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
     return {
         **floor_language.extract_signals(entry.business_name, entry.notes),
         "timeline": floor_language.extract_timeline(entry.notes),
+        "calculated_payoff": floor_language.project_payoff(
+            float(entry.current_balance) if entry.current_balance is not None else None,
+            float(entry.payment_amt) if entry.payment_amt is not None else None,
+            entry.payment_freq,
+        ),
+        "merchant_stated_readiness": floor_language.extract_merchant_stated_readiness(entry.notes),
     }
 
 

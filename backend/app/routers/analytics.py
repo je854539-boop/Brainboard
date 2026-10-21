@@ -1,11 +1,13 @@
 from typing import Literal
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.enums import MasterLogStatus
-from app.services import hazard_engine
+from app.models.enums import MasterLogStatus, TERMINAL_STATUSES
+from app.models.orm import MasterLogEntry
+from app.services import floor_language, hazard_engine
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -62,3 +64,14 @@ def outcome_rates(group_by: Literal["co_broker", "state"] | None = None, db: Ses
     """Ghost rate, kill rate, fund rate -- fraction of CLOSED leads landing
     in each terminal status, optionally broken out by co_broker or state."""
     return hazard_engine.outcome_rates(db, group_by=group_by)
+
+
+@router.get("/renewal-queue")
+def renewal_queue(limit: int = 50, db: Session = Depends(get_db)):
+    """Who to call and when for a renewal/second-position/refi, soonest
+    first. Prefers the calculated balance/payment payoff projection;
+    falls back to the merchant's own stated timeline from notes when the
+    calculated inputs aren't there. Only active (non-terminal) leads --
+    a Funded or dead lead isn't a renewal candidate from this queue."""
+    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.not_in(TERMINAL_STATUSES))).scalars().all()
+    return floor_language.renewal_queue(leads)[:limit]
