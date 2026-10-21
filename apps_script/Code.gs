@@ -148,22 +148,39 @@ function installableOnEdit(e) {
 }
 
 /**
- * Follow-up date (Column J) or notes (Column K) mutated -> push to
- * Postgres + sync the linked Calendar event via lead_uid.
+ * Any edit on Master Log V2 -> branch on whether this row already has a
+ * lead_uid (Column A).
+ *
+ *   - No lead_uid yet: this is a brand-new row (e.g. typed/pasted in
+ *     straight from the dialer, not through the intake terminal or CSV
+ *     upload) -- once it has at minimum business_name + co_broker, create
+ *     it in Postgres via maybeCreateLeadFromRow_ so it actually enters
+ *     the backend (enrichment sweep, Brain scoring, dialer queue, Sheet/
+ *     Calendar sync) instead of sitting invisibly in the Sheet until
+ *     someone happens to also touch Notes/Follow-up on it.
+ *   - Already has a lead_uid: existing behavior -- Column J (follow-up)
+ *     or K (notes) changed -> push the update into Postgres and sync the
+ *     linked Calendar event.
+ *
+ * Known limitation: like the rest of this file's onEdit handling, this
+ * reads e.range as a single cell -- a multi-row paste/fill operation
+ * only processes its top-left cell. For bulk-adding many leads at once,
+ * use the CSV upload on the Intelligence page instead, which doesn't
+ * have this limitation.
  */
 function onMasterLogEdit(e) {
-  const col = e.range.getColumn();
-  if (col !== ML_COL_FOLLOWUP && col !== ML_COL_NOTES) return;
-
   const sheet = e.range.getSheet();
   const row = e.range.getRow();
   if (row === 1) return; // header row
 
-  let leadUid = sheet.getRange(row, ML_COL_UID).getValue();
+  const leadUid = sheet.getRange(row, ML_COL_UID).getValue();
   if (!leadUid) {
-    leadUid = Utilities.getUuid();
-    sheet.getRange(row, ML_COL_UID).setValue(leadUid);
+    maybeCreateLeadFromRow_(sheet, row);
+    return;
   }
+
+  const col = e.range.getColumn();
+  if (col !== ML_COL_FOLLOWUP && col !== ML_COL_NOTES) return;
 
   const followUpRaw = sheet.getRange(row, ML_COL_FOLLOWUP).getValue();
   const notes = sheet.getRange(row, ML_COL_NOTES).getValue();
@@ -177,6 +194,51 @@ function onMasterLogEdit(e) {
   }
 
   postToBackend_("/webhooks/master-log-edit", payload);
+}
+
+/**
+ * A row with no lead_uid yet -- checks whether it now has the minimum
+ * required fields (business_name + a valid co_broker, same requirement
+ * doPost enforces) and if so, creates it in Postgres via
+ * /webhooks/lead-intake and writes the returned lead_uid back into
+ * Column A so the Sheet and Postgres share the same UUID going forward.
+ * Safe to fire repeatedly while a row is still being filled in --
+ * no-ops (no API call at all) until both required fields are present.
+ */
+function maybeCreateLeadFromRow_(sheet, row) {
+  const businessName = String(sheet.getRange(row, ML_COL_BUSINESS).getValue() || "").trim();
+  const coBrokerRaw = String(sheet.getRange(row, ML_COL_COBROKER).getValue() || "").trim();
+  if (!businessName || !coBrokerRaw) return; // not enough to create yet -- wait for the rest
+  if (CO_BROKERS.indexOf(coBrokerRaw) === -1) return; // dropdown enforces this normally, but don't guess on free text
+
+  const leadUid = Utilities.getUuid();
+  const statusRaw = String(sheet.getRange(row, ML_COL_STATUS).getValue() || "").trim();
+  const status = MASTER_LOG_STATUSES.indexOf(statusRaw) !== -1 ? statusRaw : "New lead";
+  const followUpRaw = sheet.getRange(row, ML_COL_FOLLOWUP).getValue();
+  const revenueRaw = sheet.getRange(row, ML_COL_REVENUE).getValue();
+
+  const payload = {
+    lead_uid: leadUid,
+    business_name: businessName,
+    co_broker: coBrokerRaw,
+    status: status,
+    state: sheet.getRange(row, ML_COL_STATE).getValue() || null,
+    contact_name: sheet.getRange(row, ML_COL_CONTACT).getValue() || null,
+    phone: sheet.getRange(row, ML_COL_PHONE).getValue() || null,
+    email: sheet.getRange(row, ML_COL_EMAIL).getValue() || null,
+    annual_revenue: revenueRaw !== "" ? revenueRaw : null,
+    notes: sheet.getRange(row, ML_COL_NOTES).getValue() || null,
+    lender: sheet.getRange(row, ML_COL_LENDER).getValue() || null,
+    dossier_drive_link: sheet.getRange(row, ML_COL_DOSSIER).getValue() || null,
+    financials_link: sheet.getRange(row, ML_COL_FINANCIALS).getValue() || null,
+    transcripts_link: sheet.getRange(row, ML_COL_TRANSCRIPTS).getValue() || null,
+  };
+  if (followUpRaw instanceof Date) payload.follow_up_date = followUpRaw.toISOString();
+
+  const response = postToBackend_("/webhooks/lead-intake", payload);
+  if (response.getResponseCode() === 201) {
+    sheet.getRange(row, ML_COL_UID).setValue(leadUid);
+  }
 }
 
 /**
