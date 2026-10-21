@@ -86,12 +86,18 @@ def renewal_queue(limit: int = 50, db: Session = Depends(get_db)):
 
 @router.get("/revival-queue")
 def revival_queue(min_revenue: float | None = None, limit: int = 50, db: Session = Depends(get_db)):
-    """Stalled/ghosted leads (Deal Stalled Proxy Pass / Ghosted) that
-    still look like a real, qualified MCA opportunity -- a separate
-    queue from renewal-queue, built to revive deals that went cold but
-    shouldn't have been given up on. See floor_language.revival_queue
-    for the disqualifying-language and momentum filtering. Pass
-    min_revenue to also require a minimum annual_revenue (e.g. the
-    floor's MCA target range) -- omit it to skip that filter entirely."""
-    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.in_(floor_language.STALLED_STATUSES))).scalars().all()
+    """Every lead that's drifted out of the daily calendar-follow-up
+    grind -- formally Stalled/Ghosted, OR still technically active but
+    its follow_up_date is overdue with nothing since, OR never followed
+    up at all and gone quiet -- that still looks like a real, qualified
+    MCA opportunity. A separate queue from renewal-queue, built to revive
+    deals that went cold (by status OR by neglect) but shouldn't have
+    been given up on. Excludes Funded/Lost To Competitor/Sold Deal
+    Killed/Dog Shit outright (resolved outcomes, not drift) -- see
+    floor_language.revival_queue/_drift_reason for exactly how a lead
+    qualifies as a candidate and the disqualifying-language/momentum
+    filtering that runs after. Pass min_revenue to also require a
+    minimum annual_revenue (e.g. the floor's MCA target range) -- omit
+    it to skip that filter entirely."""
+    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.not_in(floor_language.DEAD_STATUSES))).scalars().all()
     return floor_language.revival_queue(leads, min_revenue=min_revenue)[:limit]

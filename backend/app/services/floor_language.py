@@ -745,15 +745,32 @@ def renewal_queue(leads) -> list[dict]:
 
 # ---------------------------------------------------------------------------
 # Revival queue -- a SEPARATE question from everything above: not "when is
-# an active deal next ready", but "this deal already went quiet (Deal
-# Stalled Proxy Pass / Ghosted) -- does it still look like a real,
-# qualified MCA opportunity worth calling again". Pulled from the two
-# "went cold" statuses specifically, not every terminal status: Lost To
-# Competitor/Sold Deal Killed/Dog Shit are deliberate, resolved outcomes,
-# not a merchant who just stopped answering.
+# an active deal next ready", but "this deal has drifted out of the daily
+# calendar-follow-up grind -- does it still look like a real, qualified
+# MCA opportunity worth calling again". Two stages, matching how this was
+# actually asked for: stage 1 finds the CANDIDATES (every way a lead can
+# drift -- formally stalled, an overdue follow-up nobody reset, or one
+# that was never followed up at all), stage 2 is the Brain actually
+# reading the lead's info/notes to decide whether it's still qualified
+# before it's worth a human's time.
 # ---------------------------------------------------------------------------
 
 STALLED_STATUSES = frozenset({MasterLogStatus.DEAL_STALLED_PROXY_PASS, MasterLogStatus.GHOSTED})
+
+# Deliberately NOT every terminal status -- Funded/Lost To Competitor/Sold
+# Deal Killed/Dog Shit are resolved outcomes (someone funded, lost, or
+# explicitly judged this dead), not a merchant who just stopped
+# answering. Revival is about reviving momentum, not overriding a human's
+# already-made call on a closed deal.
+DEAD_STATUSES = frozenset(
+    {MasterLogStatus.FUNDED, MasterLogStatus.LOSS_TO_COMPETITOR, MasterLogStatus.SOLD_DEAL_KILLED, MasterLogStatus.DOG_SHIT}
+)
+
+# ASSUMPTIONS, documented like the paydown threshold above -- real
+# defaults driving the queue, not guaranteed "this lead is actually dead"
+# calls:
+_DRIFT_OVERDUE_DAYS = 7  # a follow-up date more than a week past due, with nothing since, counts as drifted
+_DRIFT_NEVER_TOUCHED_DAYS = 14  # no follow-up ever set AND no dated note entry (or the lead itself) in 2+ weeks
 
 # ASSUMPTION, documented like the paydown threshold above: a momentum
 # score this negative means the notes are dominated by dead-deal language
@@ -764,24 +781,51 @@ _REVIVAL_MOMENTUM_FLOOR = -2
 _DISQUALIFYING_RE = re.compile(r"no\s+business|no\s+rev(?:enue)?\b|not\s+in\s+business|out\s+of\s+business", re.IGNORECASE)
 
 
+def _drift_reason(lead) -> tuple[str, int | None] | tuple[None, None]:
+    """Stage 1: why (if at all) this lead counts as drifted. Checked in
+    order -- a formally stalled/ghosted status is the clearest signal and
+    wins outright; otherwise an overdue follow_up_date is the next most
+    reliable (someone set an explicit date and it passed); only when
+    there's no follow_up_date at all does this fall back to the notes'
+    own dated-entry history (extract_timeline), and finally to the lead's
+    created_at age for a lead with no dated entries either. A lead with a
+    current/future follow_up_date is correctly NOT a candidate here --
+    it's already on the calendar grind, which is exactly the thing this
+    queue is meant to complement, not duplicate."""
+    now = dt.datetime.now(dt.timezone.utc)
+
+    if lead.status in STALLED_STATUSES:
+        return "stalled_status", None
+
+    if lead.follow_up_date is not None:
+        days_overdue = (now - lead.follow_up_date).days
+        return ("overdue_follow_up", days_overdue) if days_overdue >= _DRIFT_OVERDUE_DAYS else (None, None)
+
+    days_quiet = extract_timeline(lead.notes or "")["days_since_last_entry"]
+    if days_quiet is None and lead.created_at is not None:
+        days_quiet = (now - lead.created_at).days
+    return ("never_followed_up", days_quiet) if days_quiet is not None and days_quiet >= _DRIFT_NEVER_TOUCHED_DAYS else (None, None)
+
+
 def revival_queue(leads, min_revenue: float | None = None) -> list[dict]:
-    """Stalled/ghosted leads that still look like a real, qualified MCA
-    opportunity based on their own data -- a separate queue from
-    renewal_queue's active-deal tracking, built to "catch deals that
-    went cold but shouldn't have been given up on". Excludes a lead
-    outright when its notes explicitly say there's no real business/
-    revenue behind it (a real example read off the calendar: "Dale Bragg
-    - No Business (No Rev)"), or when `min_revenue` is given and either
-    annual_revenue is missing or under it, or when the floor-language
-    momentum score is too deep in dead-deal territory (see
-    _REVIVAL_MOMENTUM_FLOOR). `leads` should already be filtered to
-    DEAL_STALLED_PROXY_PASS/GHOSTED by the caller (see
-    STALLED_STATUSES) -- this re-checks status defensively but the
-    revenue/momentum/disqualifying-language filtering is the real work
-    here, not the status filter."""
+    """Every lead that's drifted out of the daily calendar-follow-up
+    grind (see _drift_reason) AND still looks like a real, qualified MCA
+    opportunity based on its own data -- built to "catch deals that went
+    quiet but shouldn't have been given up on", whether or not anyone
+    ever formally marked them stalled. Excludes a lead outright when its
+    notes explicitly say there's no real business/revenue behind it (a
+    real example read off the calendar: "Dale Bragg - No Business (No
+    Rev)"), or when `min_revenue` is given and either annual_revenue is
+    missing or under it, or when the floor-language momentum score is
+    too deep in dead-deal territory (see _REVIVAL_MOMENTUM_FLOOR).
+    `leads` should already exclude DEAD_STATUSES by the caller -- this
+    doesn't re-check that itself, since a Funded/Lost/Killed/Dog-Shit
+    lead passed in here is a caller bug, not something to silently
+    filter twice."""
     rows = []
     for lead in leads:
-        if lead.status not in STALLED_STATUSES:
+        reason, days = _drift_reason(lead)
+        if reason is None:
             continue
         if _DISQUALIFYING_RE.search(lead.notes or ""):
             continue
@@ -792,7 +836,11 @@ def revival_queue(leads, min_revenue: float | None = None) -> list[dict]:
         if signals["momentum_score"] <= _REVIVAL_MOMENTUM_FLOOR:
             continue
 
-        timeline = extract_timeline(lead.notes)
+        detail = {
+            "stalled_status": f"marked {lead.status.value}",
+            "overdue_follow_up": f"follow-up was {days}d overdue, nothing since",
+            "never_followed_up": f"never followed up, quiet {days}d",
+        }[reason]
         rows.append({
             "lead_uid": str(lead.lead_uid),
             "business_name": lead.business_name,
@@ -803,10 +851,10 @@ def revival_queue(leads, min_revenue: float | None = None) -> list[dict]:
             "annual_revenue": lead.annual_revenue,
             "industry": signals["industry"],
             "momentum_score": signals["momentum_score"],
-            "days_since_last_entry": timeline["days_since_last_entry"],
-            "detail": f"stalled, momentum {signals['momentum_score']:+d}, last touched "
-            + (f"{timeline['days_since_last_entry']}d ago" if timeline["days_since_last_entry"] is not None else "unknown"),
+            "drift_reason": reason,
+            "days_drifted": days,
+            "detail": f"{detail}, momentum {signals['momentum_score']:+d}",
         })
 
-    rows.sort(key=lambda r: r["days_since_last_entry"] if r["days_since_last_entry"] is not None else -1, reverse=True)
+    rows.sort(key=lambda r: r["days_drifted"] if r["days_drifted"] is not None else -1, reverse=True)
     return rows

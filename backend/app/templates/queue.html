@@ -46,10 +46,14 @@
 </div>
 
 <div class="tactical-panel scroll-panel">
-  <div class="stencil-header text-[var(--amber)] text-xs p-3 pb-0">Revival Queue // Stalled But Qualified</div>
+  <div class="stencil-header text-[var(--amber)] text-xs p-3 pb-0">Revival Queue // Drifted But Qualified</div>
+  <div class="text-[10px] text-[var(--text-dim)] px-3 pb-2">
+    Not just formally Stalled/Ghosted -- also catches a lead still technically active but whose follow-up date
+    drifted past due with nothing since, or one that was never followed up at all. Longest-drifted first.
+  </div>
   <table class="tactical-table">
     <thead>
-      <tr><th></th><th>Business</th><th>Co-Broker</th><th>Status</th><th>Revenue</th><th>Industry</th><th>Detail</th></tr>
+      <tr><th></th><th>Business</th><th>Co-Broker</th><th>Why It's Here</th><th>Status</th><th>Revenue</th><th>Industry</th></tr>
     </thead>
     <tbody id="revival-body"><tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
   </table>
@@ -111,6 +115,12 @@ async function loadOffers() {
     </tr>`).join("") || `<tr><td colspan="5" class="text-center text-[var(--text-dim)] py-6">No offers pending funding.</td></tr>`;
 }
 
+const DRIFT_LABEL = {
+  stalled_status: "Formally Stalled/Ghosted",
+  overdue_follow_up: "Follow-Up Overdue",
+  never_followed_up: "Never Followed Up",
+};
+
 async function loadRevival() {
   const revival = await fetchJSON("/api/analytics/revival-queue?limit=250");
   document.getElementById("revival-body").innerHTML = revival.map(r => `
@@ -118,11 +128,11 @@ async function loadRevival() {
       <td>${callBtn(r.lead_uid)}</td>
       <td class="font-medium">${r.business_name}<div class="text-[var(--text-dim)]">${r.phone || ''}</div></td>
       <td>${r.co_broker || '—'}</td>
+      <td style="color:var(--amber)">${DRIFT_LABEL[r.drift_reason] || r.drift_reason}${r.days_drifted != null ? ` (${r.days_drifted}d)` : ''}</td>
       <td class="text-[var(--text-dim)]">${r.status}</td>
       <td>${r.annual_revenue != null ? '$' + Number(r.annual_revenue).toLocaleString() : '—'}</td>
       <td class="text-[var(--text-dim)]">${r.industry || '—'}</td>
-      <td class="text-[var(--text-dim)]">${r.detail}</td>
-    </tr>`).join("") || `<tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">No qualified stalled leads right now.</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">No drifted-but-qualified leads right now.</td></tr>`;
 }
 
 async function loadAll() {
