@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models.enums import BrainMode, CallAnalysisStatus, CoBroker, MasterLogStatus, SiloName, TERMINAL_ATTRITION_STATUSES, TERMINAL_STATUSES
 from app.models.orm import CallRecording, LeadActivityEvent, MasterLogEntry, ShadowScore
+from app.services import floor_language
 
 logger = logging.getLogger("brainboard.brain")
 
@@ -90,6 +91,17 @@ def _lead_features(db: Session, leads: list[MasterLogEntry]) -> pd.DataFrame:
         row["avg_call_sentiment"] = (
             call_sentiment_sums.get(lead.lead_uid, 0.0) / analyzed_calls if analyzed_calls else 0.0
         )
+        # The "floor intelligence" track -- deterministic lexicon
+        # extraction over the lead's own notes (services/floor_language.py),
+        # not a third-party call. This is information no enrichment API
+        # can ever see (deal momentum, stacking, PIF/renewal signal,
+        # factor rates actually quoted), complementing rather than
+        # replacing the verified-facts track above.
+        floor_signals = floor_language.extract_signals(lead.business_name, lead.notes)
+        row["floor_momentum_score"] = float(floor_signals["momentum_score"])
+        row["floor_recent_payoff_detected"] = 1.0 if floor_signals["recent_payoff_detected"] else 0.0
+        row["floor_stacking_count"] = float(floor_signals["stacking_count_mentioned"] or 0)
+        row["floor_mentioned_lender_count"] = float(len(floor_signals["mentioned_lenders"]))
         for cb in CoBroker:
             row[f"co_broker__{cb.value}"] = 1.0 if lead.co_broker == cb else 0.0
         # source_silo is NULL for a lead entered directly (intake form,

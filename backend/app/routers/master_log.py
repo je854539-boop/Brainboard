@@ -9,7 +9,7 @@ from app.dependencies import parse_optional_enum
 from app.models.enums import ActivityEventType, ActivitySource, CoBroker, MasterLogStatus
 from app.models.orm import MasterLogEntry
 from app.schemas import ClickEvent, MasterLogEntryOut, MasterLogEntryUpdate
-from app.services import pipeline
+from app.services import floor_language, pipeline
 
 router = APIRouter(prefix="/api/master-log", tags=["master-log"])
 
@@ -38,6 +38,18 @@ def get_master_log_entry(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
     if entry is None:
         raise HTTPException(status_code=404, detail="lead not found")
     return entry
+
+
+@router.get("/{lead_uid}/floor-signals")
+def get_floor_signals(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
+    """Lexicon-extracted signal from this lead's own notes (see
+    services/floor_language.py) -- computed fresh on every call, not
+    persisted, since it's cheap local string matching with no external
+    dependency to decouple from."""
+    entry = db.get(MasterLogEntry, lead_uid)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="lead not found")
+    return floor_language.extract_signals(entry.business_name, entry.notes)
 
 
 @router.post("", response_model=MasterLogEntryOut, status_code=201)
