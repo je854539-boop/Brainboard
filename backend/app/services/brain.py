@@ -102,6 +102,15 @@ def _lead_features(db: Session, leads: list[MasterLogEntry]) -> pd.DataFrame:
         row["floor_recent_payoff_detected"] = 1.0 if floor_signals["recent_payoff_detected"] else 0.0
         row["floor_stacking_count"] = float(floor_signals["stacking_count_mentioned"] or 0)
         row["floor_mentioned_lender_count"] = float(len(floor_signals["mentioned_lenders"]))
+        # The trajectory view -- is this specific deal warming up or
+        # cooling off, not just "what does the whole note blob say". See
+        # floor_language.extract_timeline's docstring for why this is a
+        # materially different (and more predictive) signal than the
+        # aggregate momentum score above.
+        timeline = floor_language.extract_timeline(lead.notes)
+        row["floor_momentum_trend"] = float(timeline["momentum_trend"])
+        row["floor_touch_count"] = float(timeline["entry_count"])
+        row["floor_days_since_last_touch"] = float(timeline["days_since_last_entry"] or 0)
         for cb in CoBroker:
             row[f"co_broker__{cb.value}"] = 1.0 if lead.co_broker == cb else 0.0
         # source_silo is NULL for a lead entered directly (intake form,

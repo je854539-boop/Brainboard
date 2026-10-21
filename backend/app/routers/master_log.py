@@ -49,7 +49,10 @@ def get_floor_signals(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
     entry = db.get(MasterLogEntry, lead_uid)
     if entry is None:
         raise HTTPException(status_code=404, detail="lead not found")
-    return floor_language.extract_signals(entry.business_name, entry.notes)
+    return {
+        **floor_language.extract_signals(entry.business_name, entry.notes),
+        "timeline": floor_language.extract_timeline(entry.notes),
+    }
 
 
 @router.post("", response_model=MasterLogEntryOut, status_code=201)
