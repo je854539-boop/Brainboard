@@ -147,6 +147,96 @@ def average_stage_dwell_days(db: Session) -> dict[str, float]:
     return {status: (sum(days) / len(days) if days else 0.0) for status, days in dwell_by_status.items()}
 
 
+# ---------------------------------------------------------------------------
+# "DNA of the floor" -- milestone timing + outcome-rate breakdowns by
+# co_broker/state, on top of the same StatusHistory ledger. Distinct from
+# average_stage_dwell_days above: dwell time measures one stage in
+# isolation, this measures CUMULATIVE elapsed time from pipeline entry to
+# the first time a lead ever reaches a given milestone (e.g. "how long
+# until docs are in", across however many Chase Docs/Docs Owed cycles it
+# took to get there) -- closer to what actually gets asked on the floor.
+# ---------------------------------------------------------------------------
+
+_GROUP_BY_FIELDS = {"co_broker": "co_broker", "state": "state"}
+
+
+def _group_value(lead: MasterLogEntry, group_by: str | None) -> str:
+    if group_by is None:
+        return "all"
+    value = getattr(lead, _GROUP_BY_FIELDS[group_by])
+    if value is None:
+        return "(unknown)"
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def time_to_milestone(db: Session, milestone_statuses: frozenset[MasterLogStatus], group_by: str | None = None) -> dict:
+    """For every lead that ever reached ANY status in `milestone_statuses`,
+    the elapsed days from pipeline entry to the FIRST such transition.
+    group_by: None, "co_broker", or "state" -- breaks the same stat out per
+    value of that dimension in addition to the overall figure (keyed
+    "all"). Returns {group_key: {"n": int, "median_days": float,
+    "mean_days": float}}."""
+    if group_by is not None and group_by not in _GROUP_BY_FIELDS:
+        raise ValueError(f"group_by must be one of {sorted(_GROUP_BY_FIELDS)} or None")
+
+    leads = db.execute(select(MasterLogEntry)).scalars().all()
+    samples: dict[str, list[float]] = {}
+
+    for lead in leads:
+        history = sorted(lead.status_history, key=lambda h: h.changed_at)
+        if not history:
+            continue
+        entered_at = history[0].changed_at
+        first_hit = next((h for h in history if h.to_status in milestone_statuses), None)
+        if first_hit is None:
+            continue
+        days = max((first_hit.changed_at - entered_at).total_seconds() / 86400.0, 0.0)
+
+        for key in ({"all"} | ({_group_value(lead, group_by)} if group_by else set())):
+            samples.setdefault(key, []).append(days)
+
+    def _stats(values: list[float]) -> dict:
+        sorted_values = sorted(values)
+        n = len(sorted_values)
+        return {
+            "n": n,
+            "median_days": round(sorted_values[n // 2], 2) if n else 0.0,
+            "mean_days": round(sum(sorted_values) / n, 2) if n else 0.0,
+        }
+
+    return {key: _stats(values) for key, values in samples.items()}
+
+
+def outcome_rates(db: Session, group_by: str | None = None) -> dict:
+    """Of leads that have reached a TERMINAL status (closed, one way or
+    another), what fraction landed in each terminal status? This is the
+    real ghost rate / kill rate / fund rate -- a lead still active
+    (New lead/Chase Docs/etc.) isn't counted yet either way, same
+    right-censoring principle as the Kaplan-Meier curves above, just
+    expressed as plain percentages instead of a survival function.
+    group_by: None, "co_broker", or "state". Returns {group_key:
+    {"n_closed": int, "rates": {status_value: fraction, ...}}}."""
+    if group_by is not None and group_by not in _GROUP_BY_FIELDS:
+        raise ValueError(f"group_by must be one of {sorted(_GROUP_BY_FIELDS)} or None")
+
+    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.in_(TERMINAL_STATUSES))).scalars().all()
+    counts: dict[str, dict[str, int]] = {}
+
+    for lead in leads:
+        for key in ({"all"} | ({_group_value(lead, group_by)} if group_by else set())):
+            bucket = counts.setdefault(key, {})
+            bucket[lead.status.value] = bucket.get(lead.status.value, 0) + 1
+
+    result = {}
+    for key, bucket in counts.items():
+        n_closed = sum(bucket.values())
+        result[key] = {
+            "n_closed": n_closed,
+            "rates": {status: round(count / n_closed, 4) for status, count in bucket.items()},
+        }
+    return result
+
+
 def refresh_hazard_snapshots(db: Session) -> int:
     """Recompute survival + transition-off-stage probability for every
     active (non-terminal) lead and upsert HazardSnapshot rows. Returns the
