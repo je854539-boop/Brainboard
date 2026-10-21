@@ -184,6 +184,7 @@ class ActivitySource(str, Enum):
     UI = "ui"
     API = "api"
     WEBHOOK_SHEET = "webhook_sheet"
+    WEBHOOK_CALENDAR = "webhook_calendar"
     SYSTEM = "system"
 
 

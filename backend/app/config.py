@@ -143,6 +143,17 @@ class Settings(BaseSettings):
     enrichment_sweep_interval_seconds: int = 300  # 5 minutes
     enrichment_sweep_batch_size: int = 20  # leads enriched per cycle -- paces paid-API usage
 
+    # Calendar -> Postgres pull (services/google/calendar_sync.py::pull_calendar_updates).
+    # The real calendar carries call notes/deal terms that brokers type
+    # directly into event descriptions and that often never make it back
+    # into the Sheet -- see that module's docstring. Off by default like
+    # river surveillance: it's a real external-API integration, not pure
+    # local computation, so it needs an explicit opt-in once Google
+    # credentials are actually configured.
+    calendar_continuous_pull_enabled: bool = False
+    calendar_pull_interval_seconds: int = 300  # 5 minutes
+    calendar_pull_window_minutes: int = 20  # trailing window scanned each cycle -- wider than the interval so a missed cycle self-heals
+
 
 @lru_cache
 def get_settings() -> Settings:

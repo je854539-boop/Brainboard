@@ -63,7 +63,12 @@ def sync_calendar(db: Session, entry: MasterLogEntry, source: ActivitySource) ->
     """Best-effort push of entry.follow_up_date/notes to the linked
     Calendar event. No-ops quietly if Google isn't configured; logs and
     swallows API errors so a Calendar outage never blocks a pipeline
-    mutation."""
+    mutation. Only called for changes that did NOT originate from a
+    Calendar-edit poll, so a Calendar edit -> Postgres update -> Calendar
+    write-back cycle can't loop (same reasoning as push_to_sheet's
+    WEBHOOK_SHEET check below, mirrored for the other direction)."""
+    if source == ActivitySource.WEBHOOK_CALENDAR:
+        return
     from app.services.google import auth as google_auth  # local import: avoids a hard dependency at module load
     from app.services.google import calendar_sync
 
