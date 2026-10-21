@@ -15,6 +15,7 @@ from app.routers import (
     partials,
     silo,
     surveillance,
+    sync,
     webhooks,
 )
 from app.routers import river_surveillance as river_surveillance_router
@@ -60,6 +61,7 @@ app.include_router(globe.router)
 app.include_router(calls.router)
 app.include_router(dialer.router)
 app.include_router(river_surveillance_router.router)
+app.include_router(sync.router)
 
 
 @app.get("/healthz")

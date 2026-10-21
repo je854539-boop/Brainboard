@@ -283,6 +283,108 @@ async def _pull_loop() -> None:
         await asyncio.sleep(get_settings().calendar_pull_interval_seconds)
 
 
+def reconcile_all_events(db, service, calendar_id: str) -> dict:
+    """One-time (safely re-runnable) full-history scan of every event ever
+    created on the calendar -- not the ongoing updatedMin-windowed
+    pull_calendar_updates above, which only ever looks at a trailing
+    window and would take months to work through a backlog that already
+    exists today. Cross-references each event against Postgres:
+
+      - UUID in the description, lead_uid matches a real MasterLogEntry
+        -> high-confidence, auto-merged: notes are combined via
+        notes_merge.merge_notes (superset-aware, not a blind overwrite)
+        and any lead-data fields present are applied the same way
+        pull_calendar_updates does, tagged WEBHOOK_CALENDAR so the loop-
+        prevention check in pipeline.sync_calendar still holds.
+      - UUID present but no matching lead in Postgres -> "orphaned_uuid":
+        reported only, never auto-created -- a UUID with no row behind
+        it is more likely a deleted/renamed lead than a new one worth
+        materializing sight-unseen.
+      - No UUID at all (legacy event, pre-dates this convention) -> an
+        exact digits-only phone match against every lead's phone column
+        is attempted from the event summary ("{business_name} | {phone}"
+        -- see upsert_follow_up_event). A single match is reported as
+        "fallback_match_phone" for a HUMAN to confirm; this function
+        deliberately never auto-merges or writes back on a phone-only
+        match -- "looks like the same merchant" isn't the same
+        confidence as a UUID actually proving it. Ambiguous (2+ matches)
+        or no match at all both count as "unmatched".
+
+    Returns counts plus the actual event/lead pairs for the orphan and
+    fallback buckets so a human reviews real cases, not an opaque total."""
+    import re as _re
+
+    from sqlalchemy import select
+
+    from app.models.enums import ActivitySource
+    from app.services import notes_merge, pipeline
+
+    leads_by_phone: dict[str, list[str]] = {}
+    for lead_uid, phone in db.execute(select(MasterLogEntry.lead_uid, MasterLogEntry.phone)).all():
+        digits = _re.sub(r"\D", "", phone or "")
+        if digits:
+            leads_by_phone.setdefault(digits, []).append(str(lead_uid))
+
+    matched_by_uuid = 0
+    orphaned_uuid: list[dict] = []
+    fallback_match_phone: list[dict] = []
+    unmatched = 0
+    failed: list[tuple[str, str]] = []
+
+    page_token = None
+    while True:
+        response = service.events().list(
+            calendarId=calendar_id, singleEvents=True, showDeleted=False, maxResults=250, pageToken=page_token,
+        ).execute()
+
+        for event in response.get("items", []):
+            event_id = event.get("id", "?")
+            try:
+                parsed = parse_event_description(event.get("description") or "")
+
+                if parsed is not None:
+                    lead_uid = parsed.pop("lead_uid")
+                    entry = db.get(MasterLogEntry, lead_uid)
+                    if entry is None:
+                        orphaned_uuid.append({"event_id": event_id, "lead_uid": lead_uid, "summary": event.get("summary", "")})
+                        continue
+
+                    calendar_notes = parsed.pop("notes", None)
+                    if calendar_notes:
+                        merged, _diverged = notes_merge.merge_notes(entry.notes, calendar_notes)
+                        if merged != (entry.notes or ""):
+                            parsed["notes"] = merged
+                    if parsed:
+                        pipeline.update_lead_fields(db, entry, parsed, source=ActivitySource.WEBHOOK_CALENDAR)
+                    matched_by_uuid += 1
+                    continue
+
+                summary = event.get("summary") or ""
+                phone_match = _re.search(r"\|\s*(.+)$", summary)
+                digits = _re.sub(r"\D", "", phone_match.group(1)) if phone_match else ""
+                candidates = leads_by_phone.get(digits, []) if digits else []
+                if len(candidates) == 1:
+                    fallback_match_phone.append({"event_id": event_id, "lead_uid": candidates[0], "summary": summary})
+                else:
+                    unmatched += 1
+            except Exception as exc:  # noqa: BLE001 -- one bad event must not abort a scan of the whole history
+                db.rollback()
+                logger.exception("Calendar event %s failed during reconciliation -- skipped", event_id)
+                failed.append((event_id, str(exc)))
+
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    return {
+        "matched_by_uuid": matched_by_uuid,
+        "orphaned_uuid": orphaned_uuid,
+        "fallback_match_phone": fallback_match_phone,
+        "unmatched": unmatched,
+        "failed": failed,
+    }
+
+
 def start_background_pull():
     """Off by default (calendar_continuous_pull_enabled) -- unlike
     brain/enrichment, this hits a real external API, so it stays opt-in
