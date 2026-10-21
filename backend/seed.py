@@ -117,7 +117,6 @@ def seed_master_log(db) -> list[MasterLogEntry]:
             phone=f"({random.randint(200,989)}) {random.randint(200,989)}-{random.randint(1000,9999)}",
             co_broker=co_broker,
             status=final_status,
-            loan_amount_requested=round(random.uniform(75_000, 2_500_000), 2),
             state=random.choice(STATES),
             annual_revenue=round(random.uniform(300_000, 5_000_000), 2),
             lender=random.choice(LENDERS) if is_terminal else None,
