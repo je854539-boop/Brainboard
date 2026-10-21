@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import get_db
 from app.models.orm import EnrichmentResult, MasterLogEntry
 from app.schemas import CSVImportSummary, EnrichmentResultOut
@@ -16,6 +17,24 @@ router = APIRouter(prefix="/api/enrichment", tags=["enrichment"])
 @router.get("/sources")
 def enrichment_sources():
     return [{"source": a.source.value, "enabled": a.enabled} for a in all_enrichment_adapters()]
+
+
+@router.get("/sweep-status")
+def sweep_status(db: Session = Depends(get_db)):
+    """How the background sweep (services/enrichment_orchestrator.py) is
+    doing against the real backlog -- every lead with zero EnrichmentResult
+    rows is still waiting on its first pass."""
+    settings = get_settings()
+    already_enriched = select(EnrichmentResult.entity_uid).distinct()
+    pending = db.execute(
+        select(MasterLogEntry).where(MasterLogEntry.lead_uid.not_in(already_enriched))
+    ).scalars().all()
+    return {
+        "sweep_enabled": settings.enrichment_continuous_sweep_enabled,
+        "interval_seconds": settings.enrichment_sweep_interval_seconds,
+        "batch_size": settings.enrichment_sweep_batch_size,
+        "pending_unenriched": len(pending),
+    }
 
 
 @router.post("/upload", response_model=CSVImportSummary)

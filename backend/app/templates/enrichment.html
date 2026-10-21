@@ -4,6 +4,8 @@
   <h1 class="stencil-header text-lg text-[var(--amber)]">Intelligence // Lead Enrichment</h1>
 </div>
 
+<div id="sweep-status" class="tactical-panel px-3 py-2 mb-4 text-[10px] flex items-center gap-3"></div>
+
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
   <div class="tactical-panel p-4 lg:col-span-1">
     <div class="stencil-header text-[var(--amber)] text-xs mb-3">Upload Leads (CSV)</div>
@@ -113,8 +115,21 @@ document.getElementById("upload-form").addEventListener("submit", async (e) => {
   }
 });
 
+async function renderSweepStatus() {
+  const s = await fetchJSON("/api/enrichment/sweep-status");
+  const badge = s.sweep_enabled
+    ? `<span class="status-badge status-badge--funded">AUTO-SWEEP ON</span>`
+    : `<span class="status-badge status-badge--attrition">AUTO-SWEEP OFF</span>`;
+  document.getElementById("sweep-status").innerHTML = `
+    ${badge}
+    <span class="hud-value">${s.pending_unenriched} lead(s) awaiting first enrichment pass</span>
+    <span class="text-[var(--text-dim)]">— ${s.batch_size}/cycle every ${Math.round(s.interval_seconds / 60)}min</span>
+  `;
+}
+
 renderSourceStatus();
 renderLeads();
 renderResultsFeed();
+renderSweepStatus();
 </script>
 {% endblock %}

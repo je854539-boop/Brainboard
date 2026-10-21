@@ -1,15 +1,21 @@
 """Runs every configured enrichment adapter against one lead and logs the
 results -- the engine behind the Lead Enrichment dashboard section."""
 
+import asyncio
 import csv
 import io
+import logging
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models.enums import ActivityEventType, ActivitySource, CoBroker
 from app.models.orm import EnrichmentResult, MasterLogEntry
 from app.services import pipeline
 from app.services.enrichment import EnrichmentQuery, all_enrichment_adapters
+
+logger = logging.getLogger("brainboard.enrichment")
 
 
 def enrich_lead(db: Session, lead: MasterLogEntry) -> list[EnrichmentResult]:
@@ -86,3 +92,76 @@ def import_leads_csv(db: Session, file_content: bytes) -> dict:
         created += 1
 
     return {"created": created, "skipped": skipped, "errors": errors[:50]}
+
+
+def sweep_unenriched_leads(db: Session, batch_size: int | None = None) -> int:
+    """Finds leads that have never been enriched (zero EnrichmentResult
+    rows) and runs the full adapter set against them, oldest first --
+    this is what actually connects every new lead to every configured API
+    without enrichment blocking lead creation itself. Capped per call via
+    batch_size so one cycle can't burst-hammer paid APIs against a large
+    backlog (e.g. an initial real-Sheet sync); the rest get picked up on
+    the next cycle."""
+    settings = get_settings()
+    cap = batch_size if batch_size is not None else settings.enrichment_sweep_batch_size
+
+    already_enriched = select(EnrichmentResult.entity_uid).distinct()
+    leads = db.execute(
+        select(MasterLogEntry)
+        .where(MasterLogEntry.lead_uid.not_in(already_enriched))
+        .order_by(MasterLogEntry.created_at.asc())
+        .limit(cap)
+    ).scalars().all()
+
+    for lead in leads:
+        enrich_lead(db, lead)
+    return len(leads)
+
+
+# ---------------------------------------------------------------------------
+# Background sweep -- must not block the FastAPI event loop
+# ---------------------------------------------------------------------------
+
+_sweep_task: asyncio.Task | None = None
+
+
+async def _sweep_loop() -> None:
+    from app.database import SessionLocal
+
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                swept = await asyncio.to_thread(sweep_unenriched_leads, db)
+                if swept:
+                    logger.info("Enrichment sweep: ran %d lead(s) through every configured adapter", swept)
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001 -- one bad cycle must not kill the loop
+            logger.exception("Enrichment sweep failed -- will retry next cycle")
+        await asyncio.sleep(get_settings().enrichment_sweep_interval_seconds)
+
+
+def start_background_sweep() -> asyncio.Task | None:
+    """On by default (enrichment_continuous_sweep_enabled) -- every
+    adapter here is already individually inert without its own API key
+    (see config.py), so there's no extra cost to leaving the sweep itself
+    always on; it just finds nothing to charge against until keys are
+    added."""
+    global _sweep_task
+    if not get_settings().enrichment_continuous_sweep_enabled:
+        logger.info("Enrichment continuous sweep disabled (set ENRICHMENT_CONTINUOUS_SWEEP_ENABLED=false to restore manual-only)")
+        return None
+    if _sweep_task is None or _sweep_task.done():
+        _sweep_task = asyncio.create_task(_sweep_loop())
+        logger.info("Enrichment background sweep started (interval=%ss, batch_size=%s)",
+                    get_settings().enrichment_sweep_interval_seconds, get_settings().enrichment_sweep_batch_size)
+    return _sweep_task
+
+
+def stop_background_sweep() -> None:
+    global _sweep_task
+    if _sweep_task is not None:
+        _sweep_task.cancel()
+        _sweep_task = None
+        logger.info("Enrichment background sweep stopped")

@@ -123,6 +123,18 @@ class Settings(BaseSettings):
     brain_continuous_refresh_enabled: bool = True
     brain_shadow_refresh_interval_seconds: int = 900  # 15 minutes
 
+    # Enrichment sweep (services/enrichment_orchestrator.py): decouples lead
+    # *creation* (must stay fast -- Apps Script's doPost blocks on it) from
+    # enrichment *execution* (slow -- up to a dozen external API calls per
+    # lead). Instead of running every adapter inline inside create_lead, a
+    # background loop periodically finds leads with zero EnrichmentResult
+    # rows yet and works through them in small batches, so a 350-lead Sheet
+    # sync (or any CSV import) can't burst-hammer paid APIs or block the
+    # webhook that created them.
+    enrichment_continuous_sweep_enabled: bool = True
+    enrichment_sweep_interval_seconds: int = 300  # 5 minutes
+    enrichment_sweep_batch_size: int = 20  # leads enriched per cycle -- paces paid-API usage
+
 
 @lru_cache
 def get_settings() -> Settings:
