@@ -111,6 +111,17 @@ def _lead_features(db: Session, leads: list[MasterLogEntry]) -> pd.DataFrame:
         row["floor_momentum_trend"] = float(timeline["momentum_trend"])
         row["floor_touch_count"] = float(timeline["entry_count"])
         row["floor_days_since_last_touch"] = float(timeline["days_since_last_entry"] or 0)
+        # How many distinct brokers have actually worked this lead (not
+        # just the one assigned co_broker) and how many hand-offs it's
+        # been through -- a deal passed around a lot is a different
+        # risk/effort profile than one worked by a single owner the whole
+        # way. balance_trend/new_advance_detected are the closest this
+        # lexicon gets to "is this merchant actually approaching a
+        # renewal or just getting more stacked" without a real API call.
+        row["floor_people_touched_count"] = float(timeline["touch_count_people"])
+        row["floor_handoff_count"] = float(len(timeline["handoff_chain"]))
+        row["floor_balance_decreasing"] = 1.0 if timeline["balance_trend"] == "decreasing" else 0.0
+        row["floor_new_advance_detected"] = 1.0 if timeline["new_advance_detected"] else 0.0
         for cb in CoBroker:
             row[f"co_broker__{cb.value}"] = 1.0 if lead.co_broker == cb else 0.0
         # source_silo is NULL for a lead entered directly (intake form,

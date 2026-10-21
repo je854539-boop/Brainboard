@@ -16,6 +16,46 @@ approach over a black-box model.
 import datetime as dt
 import re
 
+from app.models.enums import CoBroker
+
+# Nickname/shorthand variants actually observed in real notes this
+# session, mapped to the canonical CoBroker each one really refers to.
+# Deliberately NOT exhaustive -- a bare first name (e.g. "Nick", "Mike")
+# is matched because the current 20-person roster only has one Nick F
+# and one Mike F, not because that's a safe assumption in general; if a
+# merchant happens to share a broker's first name, this can misfire.
+_BROKER_ALIASES: dict[str, CoBroker] = {
+    "nick f": CoBroker.NICK_F, "nick": CoBroker.NICK_F,
+    "mike f": CoBroker.MIKE_F, "mike falcone": CoBroker.MIKE_F, "mike": CoBroker.MIKE_F,
+    "vinny": CoBroker.VINNY, "vinnie": CoBroker.VINNY,
+    "victor": CoBroker.VICTOR,
+    "gallo": CoBroker.GALLO,
+    "shaun": CoBroker.SHAUN,
+    "kris with a k": CoBroker.KRIS, "kris": CoBroker.KRIS,
+    "danstol": CoBroker.DAN_STOL, "dan stol": CoBroker.DAN_STOL, "dan b": CoBroker.DAN_STOL,
+    "boggie": CoBroker.DAN_STOL, "bogie": CoBroker.DAN_STOL,
+    "roman": CoBroker.ROMAN,
+    "james": CoBroker.JAMES,
+    "alfred": CoBroker.ALFRED,
+    "marcus": CoBroker.MARCUS,
+    "ricky": CoBroker.RICKY,
+    "zack": CoBroker.ZACK,
+    "emilio": CoBroker.EMILIO,
+    "boula": CoBroker.BOULA,
+    "ariel": CoBroker.ARIEL,
+    "tony": CoBroker.TONY,
+    "max": CoBroker.MAX,
+    "sebastian": CoBroker.SEBASTIAN, "seb": CoBroker.SEBASTIAN, "sebas": CoBroker.SEBASTIAN,
+    "sea-bass": CoBroker.SEBASTIAN, "seabass": CoBroker.SEBASTIAN, "sea bass": CoBroker.SEBASTIAN,
+    "bass": CoBroker.SEBASTIAN,
+}
+# Longest alias first so "kris with a k" matches before the bare "kris"
+# inside it does, "dan b" before "dan stol", etc.
+_BROKER_ALIAS_RE = re.compile(
+    r"\b(" + "|".join(re.escape(a) for a in sorted(_BROKER_ALIASES, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
 # Lenders actually named in real notes this session. Matched case-
 # insensitively as whole words/phrases so "On Deck"/"OnDeck" both hit.
 _KNOWN_LENDERS = [
@@ -168,6 +208,40 @@ def _entry_momentum(text: str) -> int:
     return sum(1 for p in _POSITIVE_PHRASES if p in lower) - sum(1 for p in _NEGATIVE_PHRASES if p in lower)
 
 
+def _find_people(text: str) -> list[str]:
+    """Distinct co-brokers named in this text, in order of first mention,
+    resolved from the real nickname variants in _BROKER_ALIASES (e.g.
+    "Dan B got him on the line and passed him to me and then i passed to
+    Shaun" -> ["DanStol", "Shaun"])."""
+    seen: list[str] = []
+    for match in _BROKER_ALIAS_RE.finditer(text):
+        canonical = _BROKER_ALIASES[match.group(1).lower()].value
+        if canonical not in seen:
+            seen.append(canonical)
+    return seen
+
+
+_PASSED_TO_RE = re.compile(
+    r"(?:pass(?:ed)?|headset\s+pass|proxy\s+pass)[^.\n]{0,20}?\bto\b[^.\n]{0,25}?\b("
+    + "|".join(re.escape(a) for a in sorted(_BROKER_ALIASES, key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
+
+_DOCS_IN_RE = re.compile(r"docs\s+(?:are\s+)?in|sent\s+docs|docs\s+and\s+app\s+in|submitted", re.IGNORECASE)
+_NEW_ADVANCE_RE = re.compile(r"\btook\s+(?:another\s+)?\$?[\d,]+\s*k?\b|picked\s+up|stacked|another\s+position", re.IGNORECASE)
+_BALANCE_RE = re.compile(r"balance[^.\n\d]{0,20}\$?([\d,]+)\s*k?", re.IGNORECASE)
+
+
+def _find_handoffs(text: str) -> list[str]:
+    """Who this entry says the call was passed TO -- the handoff chain,
+    not just who's named. "Dan B got him on the line and passed him to
+    me and then i passed to Shaun" -> ["Shaun"] (the speaker, "me", isn't
+    resolvable to a name from text alone, so only the named recipient is
+    captured)."""
+    return [_BROKER_ALIASES[m.group(1).lower()].value for m in _PASSED_TO_RE.finditer(text)]
+
+
 def extract_timeline(notes: str | None) -> dict:
     """The trajectory view: entry_count, touch cadence, days since last
     contact, and momentum_trend (recent entries' average momentum minus
@@ -177,7 +251,13 @@ def extract_timeline(notes: str | None) -> dict:
     limitation: this only sees entries the floor actually dated: a note
     with no dates in it, or a date typo'd badly enough to not parse,
     contributes nothing to the timeline even though the text is real."""
-    entries = _parse_dated_entries(notes or "")
+    notes = notes or ""
+    entries = _parse_dated_entries(notes)
+    # People/handoffs/docs-in attribution still count undated header text
+    # (the original note) -- a deal can be "touched" by whoever opened it
+    # even before any dated follow-up exists.
+    all_people = _find_people(notes)
+
     if not entries:
         return {
             "entry_count": 0,
@@ -186,11 +266,19 @@ def extract_timeline(notes: str | None) -> dict:
             "days_since_last_entry": None,
             "avg_days_between_entries": None,
             "momentum_trend": 0.0,
+            "distinct_people_touched": all_people,
+            "touch_count_people": len(all_people),
+            "handoff_chain": _find_handoffs(notes),
+            "docs_in_attributed_to": [],
+            "balance_trend": None,
+            "balance_sequence": [],
+            "new_advance_detected": bool(_NEW_ADVANCE_RE.search(notes)),
         }
 
     entries.sort(key=lambda e: e[0])
     dates = [e[0] for e in entries]
-    momentums = [_entry_momentum(text) for _, text in entries]
+    texts = [text for _, text in entries]
+    momentums = [_entry_momentum(text) for text in texts]
 
     gaps = [(b - a).days for a, b in zip(dates, dates[1:])]
     avg_gap = round(sum(gaps) / len(gaps), 1) if gaps else None
@@ -203,6 +291,32 @@ def extract_timeline(notes: str | None) -> dict:
     else:
         trend = 0.0
 
+    handoff_chain: list[str] = []
+    for text in texts:
+        handoff_chain.extend(_find_handoffs(text))
+
+    docs_in_people: list[str] = []
+    for text in texts:
+        if _DOCS_IN_RE.search(text):
+            for person in _find_people(text):
+                if person not in docs_in_people:
+                    docs_in_people.append(person)
+
+    balance_sequence: list[float] = []
+    for text in texts:
+        m = _BALANCE_RE.search(text)
+        if m:
+            try:
+                balance_sequence.append(float(m.group(1).replace(",", "")))
+            except ValueError:
+                pass
+    if len(balance_sequence) >= 2:
+        balance_trend = "decreasing" if balance_sequence[-1] < balance_sequence[0] else (
+            "increasing" if balance_sequence[-1] > balance_sequence[0] else "flat"
+        )
+    else:
+        balance_trend = None
+
     return {
         "entry_count": len(entries),
         "first_entry_date": dates[0].isoformat(),
@@ -210,4 +324,11 @@ def extract_timeline(notes: str | None) -> dict:
         "days_since_last_entry": (dt.date.today() - dates[-1]).days,
         "avg_days_between_entries": avg_gap,
         "momentum_trend": trend,
+        "distinct_people_touched": all_people,
+        "touch_count_people": len(all_people),
+        "handoff_chain": handoff_chain,
+        "docs_in_attributed_to": docs_in_people,
+        "balance_trend": balance_trend,
+        "balance_sequence": balance_sequence,
+        "new_advance_detected": bool(_NEW_ADVANCE_RE.search(notes)),
     }
