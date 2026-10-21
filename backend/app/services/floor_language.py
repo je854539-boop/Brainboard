@@ -437,9 +437,10 @@ _POSITION_PAYDOWN_THRESHOLD = 0.5
 _ORDINAL_SUFFIXES = {1: "1st", 2: "2nd", 3: "3rd"}
 
 _WANTS_MORE_RE = re.compile(
-    r"wants?\s+(?:more|additional)|needs?\s+(?:more|additional)\s+(?:capital|money|funds?)|"
+    r"(?<!not )(?<!n't )(?<!never )(?<!doesn't)"
+    r"(?:wants?\s+(?:more|additional)|needs?\s+(?:more|additional)\s+(?:capital|money|funds?)|"
     r"asked\s+(?:about|for)\s+(?:a\s+)?(?:second|2nd|third|3rd|more)|"
-    r"interested\s+in\s+(?:more|additional|stacking)|wants?\s+to\s+stack",
+    r"interested\s+in\s+(?:more|additional|stacking)|wants?\s+to\s+stack)",
     re.IGNORECASE,
 )
 
