@@ -108,6 +108,21 @@ _PIF_RE = re.compile(r"\bPIF\b|paid\s+(it\s+)?off|paid\s+in\s+full", re.IGNORECA
 _FACTOR_RATE_RE = re.compile(r"@\s*(1\.\d{1,2})")
 _LEAD_SOURCE_RE = re.compile(r"Lead\s+Source[: \t]*([A-Za-z0-9 &+/-]+)", re.IGNORECASE)
 _STACKING_RE = re.compile(r"\b(\d)\s*(?:positions?|poitions?)\b", re.IGNORECASE)
+# Scoped to right after a factor-rate mention specifically ("25k@1.37 44
+# weeks" is the real observed convention) rather than any bare "NN weeks"
+# in the notes -- a deal TERM and an unrelated follow-up timeframe
+# ("call back in 2 weeks") read identically as a bare number otherwise,
+# and only the former belongs here (the latter is _RELATIVE_TIME_RE's
+# job, for merchant-stated readiness, a different question entirely).
+_TERM_WEEKS_RE = re.compile(r"(\d{1,3})\s*(?:wks?|weeks?)", re.IGNORECASE)
+
+
+def _term_weeks_mentioned(notes: str) -> int | None:
+    for rate_match in _FACTOR_RATE_RE.finditer(notes):
+        term_match = _TERM_WEEKS_RE.search(notes, rate_match.end(), rate_match.end() + 25)
+        if term_match:
+            return int(term_match.group(1))
+    return None
 
 
 def _find_lenders(text: str) -> list[str]:
@@ -146,6 +161,7 @@ def extract_signals(business_name: str, notes: str | None) -> dict:
         "lead_source": lead_source_match.group(1).strip() if lead_source_match else None,
         "mentioned_lenders": _find_lenders(notes),
         "factor_rates_mentioned": factor_rates,
+        "term_weeks_mentioned": _term_weeks_mentioned(notes),
         "recent_payoff_detected": bool(_PIF_RE.search(notes)),
         "stacking_count_mentioned": max(stacking_matches) if stacking_matches else None,
         "momentum_score": positive_hits - negative_hits,
