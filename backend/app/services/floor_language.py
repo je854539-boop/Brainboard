@@ -978,3 +978,81 @@ def revival_queue(leads, min_revenue: float | None = None) -> list[dict]:
 
     rows.sort(key=lambda r: r["days_drifted"] if r["days_drifted"] is not None else -1, reverse=True)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Hot-leads queue -- a THIRD, distinct question from the other two: not
+# "this deal went quiet, is it still worth reviving" (revival_queue) and
+# not "this deal funded, is it ready for a stack/refi" (renewal_queue) --
+# "this deal is still in the normal daily chase, but the notes say NOW is
+# a particularly good moment to call, ahead of whatever date is already
+# on the calendar". Deliberately built entirely from the SAME floor-
+# language signals used everywhere else (never a new, hidden scoring
+# model) -- every reason here is legible and traceable to real note
+# text, same rule as the rest of this file.
+# ---------------------------------------------------------------------------
+
+_HOT_RECENT_DAYS = 3  # ASSUMPTION: a signal this fresh is worth a same-week nudge, not a guaranteed "call today or lose it"
+
+
+def _days_ago(iso_date: str) -> str:
+    days = (dt.date.today() - dt.date.fromisoformat(iso_date)).days
+    return "today" if days <= 0 else f"{days}d ago"
+
+
+def hot_leads_queue(leads) -> list[dict]:
+    """Leads still in the normal daily chase (caller should pass leads
+    already excluding STALLED_STATUSES/DEAD_STATUSES -- a stalled lead
+    belongs to revival_queue, a funded one to renewal_queue, not here)
+    where recent notes suggest THIS WEEK is a better moment to call than
+    whatever's already on the calendar. Each lead can carry multiple
+    independent reasons (never blended into one score):
+      - "warming_momentum": the timeline's momentum_trend (recent entries
+        vs earlier ones) is positive -- the deal is heating up.
+      - "fresh_capital_ask": a dollar-amount ask was stated within
+        _HOT_RECENT_DAYS.
+      - "fresh_readiness_statement": a merchant-stated readiness timeline
+        was given within _HOT_RECENT_DAYS.
+      - "recent_positive_touch": the most recent dated entry is within
+        _HOT_RECENT_DAYS AND reads net-positive (momentum_score > 0).
+    A lead with none of these is left out entirely -- no reason to flag
+    it ahead of its normal follow-up date."""
+    rows = []
+    for lead in leads:
+        notes = lead.notes or ""
+        timeline = extract_timeline(notes)
+        signals = extract_signals(lead.business_name, notes)
+        capital_ask = extract_capital_ask(notes)
+        readiness = extract_merchant_stated_readiness(notes)
+        today = dt.date.today()
+
+        reasons: list[tuple[str, str]] = []
+        if timeline["entry_count"] >= 2 and timeline["momentum_trend"] > 0:
+            reasons.append(("warming_momentum", f"momentum trending up ({timeline['momentum_trend']:+.1f})"))
+        if capital_ask and capital_ask["stated_on"] and (today - dt.date.fromisoformat(capital_ask["stated_on"])).days <= _HOT_RECENT_DAYS:
+            reasons.append(("fresh_capital_ask", f"asked for ~${capital_ask['amount']:,.0f} {_days_ago(capital_ask['stated_on'])}"))
+        if readiness and (today - dt.date.fromisoformat(readiness["stated_on"])).days <= _HOT_RECENT_DAYS:
+            reasons.append(("fresh_readiness_statement", f"gave a readiness timeline {_days_ago(readiness['stated_on'])}"))
+        if (
+            timeline["days_since_last_entry"] is not None
+            and timeline["days_since_last_entry"] <= _HOT_RECENT_DAYS
+            and signals["momentum_score"] > 0
+        ):
+            reasons.append(("recent_positive_touch", f"positive note {timeline['days_since_last_entry']}d ago"))
+
+        if not reasons:
+            continue
+
+        rows.append({
+            "lead_uid": str(lead.lead_uid),
+            "business_name": lead.business_name,
+            "phone": lead.phone,
+            "co_broker": lead.co_broker.value if lead.co_broker else None,
+            "status": lead.status.value,
+            "hot_reasons": [r for r, _ in reasons],
+            "days_since_last_entry": timeline["days_since_last_entry"],
+            "detail": "; ".join(d for _, d in reasons),
+        })
+
+    rows.sort(key=lambda r: r["days_since_last_entry"] if r["days_since_last_entry"] is not None else 999)
+    return rows

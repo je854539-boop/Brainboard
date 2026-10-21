@@ -59,6 +59,21 @@
   </table>
 </div>
 
+<div class="tactical-panel scroll-panel mt-4">
+  <div class="stencil-header text-[var(--amber)] text-xs p-3 pb-0">Hot Leads // Call Ahead Of Schedule</div>
+  <div class="text-[10px] text-[var(--text-dim)] px-3 pb-2">
+    Still in the normal daily chase (not stalled, not funded) -- recent notes suggest THIS WEEK is a better moment
+    to call than whatever's already on the calendar. Entirely deterministic, built from the same note signals as
+    the rest of this page -- never a hidden score.
+  </div>
+  <table class="tactical-table">
+    <thead>
+      <tr><th></th><th>Business</th><th>Co-Broker</th><th>Status</th><th>Why Now</th></tr>
+    </thead>
+    <tbody id="hot-body"><tr><td colspan="5" class="text-center text-[var(--text-dim)] py-6">Loading...</td></tr></tbody>
+  </table>
+</div>
+
 <script>
 const REASON_LABEL = {
   merchant_requested: "Merchant Requested",
@@ -139,8 +154,20 @@ async function loadRevival() {
     </tr>`).join("") || `<tr><td colspan="7" class="text-center text-[var(--text-dim)] py-6">No drifted-but-qualified leads right now.</td></tr>`;
 }
 
+async function loadHotLeads() {
+  const hot = await fetchJSON("/api/analytics/hot-leads-queue?limit=250");
+  document.getElementById("hot-body").innerHTML = hot.map(h => `
+    <tr>
+      <td>${callBtn(h.lead_uid)}</td>
+      <td class="font-medium">${h.business_name}<div class="text-[var(--text-dim)]">${h.phone || ''}</div></td>
+      <td>${h.co_broker || '—'}</td>
+      <td class="text-[var(--text-dim)]">${h.status}</td>
+      <td class="text-[var(--text-dim)]" style="color:var(--green)">${h.detail}</td>
+    </tr>`).join("") || `<tr><td colspan="5" class="text-center text-[var(--text-dim)] py-6">Nothing flagged ahead of schedule right now.</td></tr>`;
+}
+
 async function loadAll() {
-  await Promise.all([loadRefiQueue(), loadOffers(), loadRevival()]);
+  await Promise.all([loadRefiQueue(), loadOffers(), loadRevival(), loadHotLeads()]);
 }
 
 document.getElementById("reason-filter").addEventListener("change", renderRefiQueue);

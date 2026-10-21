@@ -107,3 +107,16 @@ def revival_queue(min_revenue: float | None = None, limit: int = 50, db: Session
     it to skip that filter entirely."""
     leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.not_in(floor_language.DEAD_STATUSES))).scalars().all()
     return floor_language.revival_queue(leads, min_revenue=min_revenue)[:limit]
+
+
+@router.get("/hot-leads-queue")
+def hot_leads_queue(limit: int = 50, db: Session = Depends(get_db)):
+    """Leads still in the normal daily chase (not Stalled/Ghosted -- see
+    revival-queue -- not Funded -- see renewal-queue) where recent notes
+    suggest THIS WEEK is a better moment to call than whatever's already
+    on the calendar. Entirely deterministic, built from the same floor-
+    language signals as everywhere else -- see
+    floor_language.hot_leads_queue for exactly which reasons can fire."""
+    excluded = floor_language.STALLED_STATUSES | floor_language.DEAD_STATUSES
+    leads = db.execute(select(MasterLogEntry).where(MasterLogEntry.status.not_in(excluded))).scalars().all()
+    return floor_language.hot_leads_queue(leads)[:limit]
