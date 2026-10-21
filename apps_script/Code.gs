@@ -46,30 +46,40 @@ const MASTER_LOG_STATUSES = [
 ];
 
 // Master Log V2 column indices (1-based, A=1) -- confirmed against the
-// real, live sheet (not inferred). Keep in lockstep with the matching
-// backend-side mapping in app/services/google/sheets_sync.py
-// (MASTER_LOG_COLUMN_FIELDS) if either one changes.
+// REAL, live sheet (downloaded and parsed directly, not inferred -- a
+// prior version of this file and of the matching backend-side mapping
+// in app/services/google/sheets_sync.py had drifted from the actual
+// sheet entirely and would have written data into the wrong columns;
+// caught before either one was ever run against real data). Keep in
+// lockstep with MASTER_LOG_COLUMN_FIELDS there if either one changes.
+//
+// Column B ("Date Added") and the real sheet's Column S ("Event ID" --
+// holds a human flag like "Synced", not an actual calendar event ID)
+// and Column T (unlabeled, unknown purpose) are deliberately NOT given
+// constants here -- nothing in this file reads or writes them, so
+// whatever's already there is left alone. There is also no separate
+// "Dossier Link" column in the real sheet (only Financials Link and
+// Transcripts Link), so dossier_drive_link is not sheet-synced.
 const ML_COL_UID = 1; // A
-const ML_COL_STATE = 2; // B
-const ML_COL_BUSINESS = 3; // C
-const ML_COL_CONTACT = 4; // D
-const ML_COL_PHONE = 5; // E
-const ML_COL_EMAIL = 6; // F
-const ML_COL_COBROKER = 7; // G
-const ML_COL_STATUS = 8; // H
-const ML_COL_REVENUE = 9; // I
-const ML_COL_FOLLOWUP = 10; // J
-const ML_COL_NOTES = 11; // K
-const ML_COL_LENDER = 12; // L
-const ML_COL_PAYMENT_AMT = 13; // M
-const ML_COL_PAYMENT_FREQ = 14; // N
-const ML_COL_CURRENT_BALANCE = 15; // O
-const ML_COL_OPEN_POSITIONS = 16; // P
-const ML_COL_CREDIT_SCORE = 17; // Q
-const ML_COL_DOSSIER = 18; // R
-const ML_COL_FINANCIALS = 19; // S
-const ML_COL_TRANSCRIPTS = 20; // T
-const ML_COLUMN_COUNT = 20;
+const ML_COL_STATE = 3; // C
+const ML_COL_CONTACT = 4; // D -- sheet header reads "Owner Name"
+const ML_COL_BUSINESS = 5; // E
+const ML_COL_PHONE = 6; // F
+const ML_COL_EMAIL = 7; // G
+const ML_COL_REVENUE = 8; // H
+const ML_COL_COBROKER = 9; // I
+const ML_COL_STATUS = 10; // J
+const ML_COL_FOLLOWUP = 11; // K
+const ML_COL_NOTES = 12; // L
+const ML_COL_LENDER = 13; // M
+const ML_COL_PAYMENT_AMT = 14; // N
+const ML_COL_PAYMENT_FREQ = 15; // O
+const ML_COL_CURRENT_BALANCE = 16; // P
+const ML_COL_OPEN_POSITIONS = 17; // Q
+const ML_COL_CREDIT_SCORE = 18; // R
+const ML_COL_FINANCIALS = 21; // U
+const ML_COL_TRANSCRIPTS = 22; // V
+const ML_COLUMN_COUNT = 22;
 
 // Silo tab column indices (1-based, A=1) -- 8-column schema
 const SILO_COL_UID = 1; // A
@@ -229,7 +239,6 @@ function maybeCreateLeadFromRow_(sheet, row) {
     annual_revenue: revenueRaw !== "" ? revenueRaw : null,
     notes: sheet.getRange(row, ML_COL_NOTES).getValue() || null,
     lender: sheet.getRange(row, ML_COL_LENDER).getValue() || null,
-    dossier_drive_link: sheet.getRange(row, ML_COL_DOSSIER).getValue() || null,
     financials_link: sheet.getRange(row, ML_COL_FINANCIALS).getValue() || null,
     transcripts_link: sheet.getRange(row, ML_COL_TRANSCRIPTS).getValue() || null,
   };
@@ -353,7 +362,6 @@ function doPost(e) {
   row[ML_COL_CURRENT_BALANCE - 1] = currentBalance || "";
   row[ML_COL_OPEN_POSITIONS - 1] = openPositions || "";
   row[ML_COL_CREDIT_SCORE - 1] = creditScore || "";
-  row[ML_COL_DOSSIER - 1] = data.dossier_drive_link || "";
   row[ML_COL_FINANCIALS - 1] = data.financials_link || "";
   row[ML_COL_TRANSCRIPTS - 1] = data.transcripts_link || "";
   sheet.appendRow(row);
