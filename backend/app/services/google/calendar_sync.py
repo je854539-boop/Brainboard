@@ -332,11 +332,25 @@ def reconcile_all_events(db, service, calendar_id: str) -> dict:
         if digits:
             leads_by_phone.setdefault(digits, []).append(str(lead_uid))
 
+    # Not just "{business_name} | {phone}" -- confirmed by reading the
+    # real calendar that a large share of summaries carry a phone number
+    # with no pipe at all ("FOLLOW UP: Sparta Security and Courier (754)
+    # 204-7733 Eric Reid", "Raul Pena Herrera (704) 258-2135"). Scanning
+    # the whole summary for every phone-shaped substring and requiring
+    # the matches across all of them collapse to exactly one lead (not
+    # one per phone found) keeps this as conservative as the narrower
+    # pipe-only version -- it only recovers more real matches, it doesn't
+    # loosen what counts as a match.
+    _phone_shape_re = _re.compile(r"\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}")
+
     def _phone_match(summary: str) -> str | None:
-        phone_match = _re.search(r"\|\s*(.+)$", summary or "")
-        digits = _re.sub(r"\D", "", phone_match.group(1)) if phone_match else ""
-        candidates = leads_by_phone.get(digits, []) if digits else []
-        return candidates[0] if len(candidates) == 1 else None
+        candidates = set()
+        for raw in _phone_shape_re.findall(summary or ""):
+            digits = _re.sub(r"\D", "", raw)
+            matches = leads_by_phone.get(digits, [])
+            if len(matches) == 1:
+                candidates.add(matches[0])
+        return candidates.pop() if len(candidates) == 1 else None
 
     matched_by_uuid = 0
     orphaned_uuid: list[dict] = []
