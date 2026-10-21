@@ -17,11 +17,11 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.enums import ActivityEventType, ActivitySource, CoBroker, MasterLogStatus, SiloCandidateStatus
-from app.models.orm import LeadActivityEvent, MasterLogEntry, SiloCandidate, StatusHistory
+from app.models.enums import ActivityEventType, ActivitySource, CoBroker, DatePrecision, MasterLogStatus, SiloCandidateStatus
+from app.models.orm import FundingEvent, LeadActivityEvent, MasterLogEntry, SiloCandidate, StatusHistory
 
 logger = logging.getLogger("brainboard.pipeline")
 
@@ -217,6 +217,7 @@ def convert_or_update_silo_candidate(
     candidate.status = new_status
     db.commit()
     db.refresh(candidate)
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -323,4 +324,62 @@ def offers_pending_funding(db: Session) -> list[dict]:
 
     rows.sort(key=lambda r: r["days_since_offer"] if r["days_since_offer"] is not None else -1, reverse=True)
     return rows
-    return candidate
+
+
+def record_funding_event(
+    db: Session,
+    lead: MasterLogEntry,
+    funded_amount: float,
+    funded_date=None,
+    funded_date_precision: DatePrecision | None = None,
+    term_weeks: float | None = None,
+    factor_rate: float | None = None,
+    payment_amt: float | None = None,
+    payment_freq: str | None = None,
+    lender: str | None = None,
+    notes: str | None = None,
+) -> FundingEvent:
+    """Appends one real funding to this lead's history -- a repeat
+    merchant funded 4 times gets 4 of these, never overwritten. Also
+    keeps MasterLogEntry's original_funded_amount/funded_date/
+    funded_date_precision/payment_amt/payment_freq/lender in sync with
+    THIS (the newest) event, since the existing floor_language
+    eligibility functions read those as plain scalar args, not by
+    querying this table -- FundingEvent is the authoritative history,
+    those fields are a denormalized "most recent funding" projection of
+    it. Assumes events are recorded in the order they actually happened
+    (position_number = count of prior events + 1); recording an
+    out-of-order historical event after a newer one is a caller error,
+    not something this function detects or corrects."""
+    position_number = db.execute(
+        select(func.count()).select_from(FundingEvent).where(FundingEvent.lead_uid == lead.lead_uid)
+    ).scalar_one() + 1
+
+    event = FundingEvent(
+        lead_uid=lead.lead_uid,
+        funded_amount=funded_amount,
+        funded_date=funded_date,
+        funded_date_precision=funded_date_precision,
+        term_weeks=term_weeks,
+        factor_rate=factor_rate,
+        payment_amt=payment_amt,
+        payment_freq=payment_freq,
+        lender=lender,
+        position_number=position_number,
+        notes=notes,
+    )
+    db.add(event)
+
+    lead.original_funded_amount = funded_amount
+    lead.funded_date = funded_date
+    lead.funded_date_precision = funded_date_precision
+    if payment_amt is not None:
+        lead.payment_amt = payment_amt
+    if payment_freq is not None:
+        lead.payment_freq = payment_freq
+    if lender is not None:
+        lead.lender = lender
+
+    db.commit()
+    db.refresh(event)
+    return event

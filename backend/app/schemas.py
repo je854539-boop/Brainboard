@@ -131,6 +131,38 @@ class SurvivalPointOut(BaseModel):
     survival_probability: float
 
 
+class FundingEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    lead_uid: uuid.UUID
+    funded_amount: float
+    funded_date: date | None
+    funded_date_precision: DatePrecision | None
+    term_weeks: float | None
+    factor_rate: float | None
+    payment_amt: float | None
+    payment_freq: str | None
+    lender: str | None
+    position_number: int | None
+    notes: str | None
+    created_at: datetime
+
+
+class FundingEventCreate(BaseModel):
+    funded_amount: float
+    # "M/D/YYYY" or "M/YYYY" -- parsed the same way as the sheet's Funded
+    # Date column (see sheets_sync._parse_funded_date), so a month-only
+    # entry is never silently promoted to a fake exact date.
+    funded_date: str | None = None
+    term_weeks: float | None = None
+    factor_rate: float | None = None
+    payment_amt: float | None = None
+    payment_freq: str | None = None
+    lender: str | None = None
+    notes: str | None = None
+
+
 class MasterLogEditWebhook(BaseModel):
     lead_uid: uuid.UUID
     follow_up_date: datetime | None = None

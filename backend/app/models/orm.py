@@ -120,6 +120,9 @@ class MasterLogEntry(Base):
     activity_events: Mapped[list["LeadActivityEvent"]] = relationship(
         back_populates="lead", cascade="all, delete-orphan"
     )
+    funding_events: Mapped[list["FundingEvent"]] = relationship(
+        back_populates="lead", cascade="all, delete-orphan", order_by="FundingEvent.funded_date"
+    )
 
 
 class StatusHistory(Base):
@@ -136,6 +139,41 @@ class StatusHistory(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     lead: Mapped["MasterLogEntry"] = relationship(back_populates="status_history")
+
+
+class FundingEvent(Base):
+    """Append-only log of every time this lead/merchant actually got
+    funded -- a real one-to-many relationship (a repeat merchant funded
+    4 times has 4 rows here), not a single scalar that would lose all
+    but the most recent funding the way MasterLogEntry.original_funded_
+    amount/funded_date would if overwritten on each stack. This is the
+    authoritative history; MasterLogEntry.original_funded_amount/
+    funded_date/funded_date_precision stay as a denormalized "most
+    recent funding" projection (kept in sync by pipeline.record_funding_
+    event) so the existing floor_language eligibility functions -- which
+    take plain scalar args, not DB-aware lead objects -- don't need
+    rewriting to consume this table directly. position_number is this
+    funding's order for THIS merchant (1st, 2nd, 3rd...), independent of
+    MasterLogEntry.open_positions (which can include positions held with
+    OTHER lenders this firm never funded)."""
+
+    __tablename__ = "funding_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lead_uid: Mapped[uuid.UUID] = mapped_column(ForeignKey("master_log_entries.lead_uid", ondelete="CASCADE"))
+    funded_amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    funded_date: Mapped[date | None] = mapped_column(Date)
+    funded_date_precision: Mapped[DatePrecision | None] = mapped_column(_pg_enum(DatePrecision, "date_precision"))
+    term_weeks: Mapped[float | None] = mapped_column(Numeric(6, 1))
+    factor_rate: Mapped[float | None] = mapped_column(Numeric(5, 3))
+    payment_amt: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    payment_freq: Mapped[str | None] = mapped_column(String(64))
+    lender: Mapped[str | None] = mapped_column(String(256))
+    position_number: Mapped[int | None] = mapped_column()
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    lead: Mapped["MasterLogEntry"] = relationship(back_populates="funding_events")
 
 
 class SiloCandidate(Base):

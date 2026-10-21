@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import parse_optional_enum
 from app.models.enums import ActivityEventType, ActivitySource, CoBroker, MasterLogStatus
-from app.models.orm import MasterLogEntry
-from app.schemas import ClickEvent, MasterLogEntryOut, MasterLogEntryUpdate
+from app.models.orm import FundingEvent, MasterLogEntry
+from app.schemas import ClickEvent, FundingEventCreate, FundingEventOut, MasterLogEntryOut, MasterLogEntryUpdate
 from app.services import floor_language, pipeline
+from app.services.google.sheets_sync import _parse_funded_date
 
 router = APIRouter(prefix="/api/master-log", tags=["master-log"])
 
@@ -55,6 +56,43 @@ def get_master_log_entry(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
     if entry is None:
         raise HTTPException(status_code=404, detail="lead not found")
     return entry
+
+
+@router.get("/{lead_uid}/funding-events", response_model=list[FundingEventOut])
+def list_funding_events(lead_uid: uuid.UUID, db: Session = Depends(get_db)):
+    """Full funding history for this lead/merchant, oldest first -- a
+    repeat merchant funded 4 times has 4 rows here, nothing overwritten.
+    See pipeline.record_funding_event for how a new one gets added."""
+    entry = db.get(MasterLogEntry, lead_uid)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="lead not found")
+    return db.execute(
+        select(FundingEvent).where(FundingEvent.lead_uid == lead_uid).order_by(FundingEvent.funded_date, FundingEvent.created_at)
+    ).scalars().all()
+
+
+@router.post("/{lead_uid}/funding-events", response_model=FundingEventOut, status_code=201)
+def create_funding_event(lead_uid: uuid.UUID, payload: FundingEventCreate, db: Session = Depends(get_db)):
+    """Records a new funding for this merchant -- appends to the history,
+    never overwrites a prior funding. Also updates MasterLogEntry's own
+    original_funded_amount/funded_date/payment fields to this (the
+    newest) event -- see pipeline.record_funding_event's docstring for
+    why that denormalization exists."""
+    entry = db.get(MasterLogEntry, lead_uid)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="lead not found")
+
+    funded_date, funded_date_precision = (None, None)
+    if payload.funded_date:
+        funded_date, funded_date_precision = _parse_funded_date(payload.funded_date)
+        if funded_date is None:
+            raise HTTPException(status_code=422, detail=f"unparseable funded_date: {payload.funded_date!r} (use M/D/YYYY or M/YYYY)")
+
+    return pipeline.record_funding_event(
+        db, entry, payload.funded_amount, funded_date=funded_date, funded_date_precision=funded_date_precision,
+        term_weeks=payload.term_weeks, factor_rate=payload.factor_rate, payment_amt=payload.payment_amt,
+        payment_freq=payload.payment_freq, lender=payload.lender, notes=payload.notes,
+    )
 
 
 @router.get("/{lead_uid}/floor-signals")

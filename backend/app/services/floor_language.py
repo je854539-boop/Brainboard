@@ -245,8 +245,8 @@ _PASSED_TO_RE = re.compile(
 )
 
 _DOCS_IN_RE = re.compile(r"docs\s+(?:are\s+)?in|sent\s+docs|docs\s+and\s+app\s+in|submitted", re.IGNORECASE)
-_NEW_ADVANCE_RE = re.compile(r"\btook\s+(?:another\s+)?\$?[\d,]+\s*k?\b|picked\s+up|stacked|another\s+position", re.IGNORECASE)
-_BALANCE_RE = re.compile(r"balance[^.\n\d]{0,20}\$?([\d,]+)\s*k?", re.IGNORECASE)
+_NEW_ADVANCE_RE = re.compile(r"\btook\s+(?:another\s+)?\$?\d[\d,]*\s*k?\b|picked\s+up|stacked|another\s+position", re.IGNORECASE)
+_BALANCE_RE = re.compile(r"balance[^.\n\d]{0,20}\$?(\d[\d,]*)\s*k?", re.IGNORECASE)
 
 
 def _find_handoffs(text: str) -> list[str]:
@@ -554,10 +554,10 @@ _WANTS_MORE_RE = re.compile(
 # priority ahead of a calculated projection that hasn't happened yet.
 # The negative lookahead excludes a number that's actually a duration
 # ("needs 2 weeks") or a position count ("needs 2 positions"), not money.
-_MONEY_RE = re.compile(r"\$?\s*([\d,]+(?:\.\d+)?)\s*(?:(?:to|-)\s*\$?\s*([\d,]+(?:\.\d+)?))?\s*(k|K)?\b")
+_MONEY_RE = re.compile(r"\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(?:(?:to|-)\s*\$?\s*(\d[\d,]*(?:\.\d+)?))?\s*(k|K)?\b")
 _CAPITAL_ASK_RE = re.compile(
     r"\b(?:needs?|wants?|looking\s+for|asking\s+for|requesting)\s+(?:an?\s+|another\s+|additional\s+)?"
-    r"\$?\s*[\d,]+(?:\.\d+)?\s*k?\b"
+    r"\$?\s*\d[\d,]*(?:\.\d+)?\s*k?\b"
     r"(?!\s*(?:weeks?|months?|days?|years?|positions?|payments?|%))",
     re.IGNORECASE,
 )
@@ -566,10 +566,15 @@ _CAPITAL_ASK_RE = re.compile(
 # 130K funded 12 months ago"). This recovers original_funded_amount
 # straight from free text for the hundreds of existing leads that predate
 # the tracked column, instead of leaving them with nothing to anchor
-# percent-paid-down to.
+# percent-paid-down to. Every [\d,]+ in this file was changed to
+# \d[\d,]* after a real bug: a bare comma (", funded") satisfies
+# [\d,]+ on its own (a comma IS in that character class), so a
+# comma-then-"funded" elsewhere in the sentence could match BEFORE the
+# real number ever got a chance to, silently producing no result (or a
+# wrong one) for a real funding mention later in the same text.
 _FUNDED_AMOUNT_RE = re.compile(
-    r"\$?\s*([\d,]+(?:\.\d+)?)\s*(k|K)?\s*(?:funded|advance[d]?)\b"
-    r"|(?:funded|advanced)\s+(?:him|her|them)?\s*\$?\s*([\d,]+(?:\.\d+)?)\s*(k|K)?",
+    r"\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|K)?\s*(?:funded|advance[d]?)\b"
+    r"|(?:funded|advanced)\s+(?:him|her|them)?\s*\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|K)?",
     re.IGNORECASE,
 )
 
@@ -655,6 +660,43 @@ def extract_funded_amount_from_notes(notes: str | None) -> float | None:
     Returns None, not a guess, when no plausible mention exists."""
     match = _FUNDED_AMOUNT_RE.search(notes or "")
     return _parse_money(match.group(0)) if match else None
+
+
+def extract_funding_history_from_notes(notes: str | None) -> list[dict]:
+    """Reconstructs a MULTI-funding history straight from notes text --
+    the only channel available for recording "funded this merchant 4
+    times" before a structured Funding History sheet tab/sync exists
+    (see models.orm.FundingEvent / pipeline.record_funding_event for the
+    real schema this should eventually feed). Unlike extract_funded_
+    amount_from_notes (which only ever returns the first/only mention,
+    by design -- it's answering "what's the ORIGIN of their existing
+    balance", not "list every funding"), this walks every dated entry
+    and returns one item per "X funded"/"funded X" mention found,
+    pairing it with whatever lender/term/rate also appear in that same
+    entry. Oldest-first, on the same assumption extract_timeline already
+    makes (notes are written in chronological order) -- a funding
+    mentioned out of order will come out mis-ordered too. Returns an
+    empty list, not a guess, when nothing matches."""
+    history: list[dict] = []
+    for entry_date, text in _parse_dated_entries(notes or ""):
+        for match in _FUNDED_AMOUNT_RE.finditer(text):
+            amount = _parse_money(text[match.start():match.end()])
+            if amount is None:
+                continue
+            lenders = _find_lenders(text)
+            rate_match = _FACTOR_RATE_RE.search(text)
+            term_match = None
+            if rate_match:
+                term_match = _TERM_WEEKS_RE.search(text, rate_match.end(), rate_match.end() + 25)
+            history.append({
+                "funded_amount": amount,
+                "stated_on": entry_date.isoformat(),
+                "lender": lenders[0] if lenders else None,
+                "factor_rate": float(rate_match.group(1)) if rate_match else None,
+                "term_weeks": int(term_match.group(1)) if term_match else None,
+                "source_text": text.strip()[:200],
+            })
+    return history
 
 
 def _position_label(open_positions: int | None) -> str:
