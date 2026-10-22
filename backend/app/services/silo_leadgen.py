@@ -368,6 +368,11 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     # a renovation contractor's own buying pattern genuinely crosses
     # into both.
     "construction_contractor": ("construction materials", "building materials", "lumber", "steel", "renovation supplies"),
+    "poultry_producer": ("poultry", "chicken", "broiler", "live poultry"),
+    # One tier downstream of petrochemical_producer -- finished
+    # specialty-chemical goods, not raw resin/feedstock, which is
+    # already covered by petrochemical's own goods keywords above.
+    "chemical_products_manufacturer": ("detergent", "soap", "cleaning product", "coating", "adhesive"),
     # "oil"/"natural gas"/"lng"/"petroleum" added so a crude/NG cargo
     # shipment -- or a geopolitical oil/gas headline -- classifies here
     # too, not just a finished-plastics shipment.
@@ -931,6 +936,10 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # entirely by the HigherGov standing channel -- nationwide sweep,
     # same as aerospace_defense.
     "construction_contractor": 50.0,
+    # Poultry farms are rural/dispersed like livestock_producer -- same
+    # nationwide-sweep-only, wide-catchment logic.
+    "poultry_producer": 60.0,
+    "chemical_products_manufacturer": 50.0,
     # Same wide-catchment logic as the food-chain tiers -- wholesalers/
     # retailers in these categories are dispersed nationally, not
     # clustered at a dock or plant.
@@ -1006,6 +1015,8 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "apparel": ("apparel", "clothing", "garment", "footwear", "textile"),
     "auto_parts": ("auto parts", "automotive parts", "auto components", "vehicle parts distribution"),
     "construction_contractor": ("construction", "general contractor", "renovation", "building contractor"),
+    "poultry_producer": ("poultry", "chicken", "broiler", "live poultry"),
+    "chemical_products_manufacturer": ("detergent", "soap", "cleaning product", "coating", "adhesive"),
     "produce_wholesaler": ("produce distribution", "fruit and vegetable wholesale", "fresh produce", "cold storage"),
     "produce_retailer": ("produce market", "farmers market", "fruit stand", "grocery"),
     "liquor_distributor": ("liquor distribution", "beverage distributor", "spirits importer"),
@@ -1293,10 +1304,17 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     # diversion-beneficiary importer, domestic producer), and Apollo's
     # org search can't pre-filter by country of origin the way Import
     # Genius's own records can (see _tariff_trade_diversion_note).
-    "furniture_wood": ["furniture manufacturer", "furniture importer", "furniture wholesaler", "wood products manufacturer", "cabinetry manufacturer"],
-    "apparel": ["apparel importer", "clothing wholesaler", "footwear distributor", "garment manufacturer", "textile importer"],
+    "furniture_wood": ["furniture manufacturer", "furniture importer", "furniture wholesaler", "wood products manufacturer", "cabinetry manufacturer", "furniture store", "furniture retailer"],
+    # "clothing store"/"footwear retailer" added -- the import/
+    # wholesale/manufacturer keywords alone never actually reached
+    # retail stores, even though the commodity was meant to cover the
+    # whole chain the same way furniture_wood claims to (same gap
+    # fixed there below).
+    "apparel": ["apparel importer", "clothing wholesaler", "footwear distributor", "garment manufacturer", "textile importer", "clothing store", "footwear retailer"],
     "auto_parts": ["auto parts distributor", "automotive parts supplier", "auto parts wholesaler", "automotive components importer"],
     "construction_contractor": ["general contractor", "construction company", "renovation contractor", "building contractor"],
+    "poultry_producer": ["poultry farm", "chicken producer", "broiler operation", "poultry hatchery"],
+    "chemical_products_manufacturer": ["detergent manufacturer", "soap manufacturer", "cleaning products company", "coatings manufacturer", "adhesives manufacturer"],
     "produce_wholesaler": ["produce wholesaler", "fresh produce distributor", "fruit and vegetable importer"],
     "produce_retailer": ["produce market", "grocery store", "specialty food market"],
     "liquor_distributor": ["liquor distributor", "beverage distributor", "spirits importer"],
@@ -1471,6 +1489,8 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "apparel": "clothing wholesaler",
     "auto_parts": "auto parts distributor",
     "construction_contractor": "general contractor",
+    "poultry_producer": "poultry farm",
+    "chemical_products_manufacturer": "chemical products manufacturer",
     "produce_wholesaler": "produce distributor",
     "produce_retailer": "grocery",
     "liquor_distributor": "beverage distributor",
@@ -1618,7 +1638,19 @@ _GOOD_STANDING_KEYWORDS = ("active", "good standing", "in good standing", "curre
 # consumers from the exact same price move, not one signal pretending
 # to speak for both sides.
 SYMBOL_COMMODITIES: dict[str, list[str]] = {
-    "ZC.c.0": ["grain"], "ZS.c.0": ["grain"], "ZW.c.0": ["grain"], "ZM.c.0": ["grain"], "ZL.c.0": ["grain"],
+    # ZC (corn) and ZM (soybean meal) are poultry's two real feed-cost
+    # inputs -- adding "poultry_producer" as a THIRD tag on these two
+    # (not ZW wheat or ZL soybean oil, neither a real poultry feed
+    # input) gives corn/soy producers their existing expansion/distress
+    # framing while ALSO tagging poultry farms as consumer-side: a
+    # grain price spike is a feed-cost squeeze for them, not a
+    # windfall, the same mirror-image logic as petrochemical plants
+    # buying NG. This is poultry's ONLY price-driven trigger -- unlike
+    # cattle/hogs/dairy, there's no actively-traded CME broiler/poultry
+    # futures contract to tag directly (see SYMBOL_COMMODITIES'
+    # cattle/hog/dairy comment below for that contrast).
+    "ZC.c.0": ["grain", "poultry_producer"], "ZS.c.0": ["grain"], "ZW.c.0": ["grain"],
+    "ZM.c.0": ["grain", "poultry_producer"], "ZL.c.0": ["grain"],
     "HRC.c.0": ["steel_coal"],
     "CL.c.0": ["logistics_fuel"], "HO.c.0": ["logistics_fuel"],
     # US petrochemical cracking overwhelmingly runs on natural-gas-
@@ -1626,8 +1658,13 @@ SYMBOL_COMMODITIES: dict[str, list[str]] = {
     # real petrochemical feedstock signal. Same dual-tag pattern as
     # livestock: one price move, two populations with opposite stories
     # -- plants that BUY NG as feedstock (squeezed by a spike) and NGL
-    # processors/intermediate producers who SELL it (windfall).
-    "NG.c.0": ["petrochemical", "petrochemical_producer"],
+    # processors/intermediate producers who SELL it (windfall). A
+    # THIRD tag added here -- chemical_products_manufacturer -- one
+    # tier further downstream: detergent/soap/coatings/adhesives
+    # manufacturers who buy RESINS (not raw NG) as their input, the
+    # same real trickle-down the Argentina-beef chain has at the food
+    # retailer/foodservice tiers, just one commodity over.
+    "NG.c.0": ["petrochemical", "petrochemical_producer", "chemical_products_manufacturer"],
     # Each livestock/dairy symbol now tags FIVE populations off one
     # price move, not two -- the producer side, plus all four
     # downstream tiers of the Argentina-beef chain (processor,
@@ -1693,6 +1730,15 @@ _COMMODITY_TRADE_SIDE: dict[str, str] = {
     # consumer-side commodity.
     "semiconductor_distributor": "consumer",
     "electronics_manufacturer": "consumer",
+    # Poultry farms buy corn/soybean meal as feed -- a grain price
+    # spike is a cost squeeze, not the windfall it is for grain's own
+    # producer side (see SYMBOL_COMMODITIES' ZC/ZM comment).
+    "poultry_producer": "consumer",
+    # Detergent/soap/coatings/adhesives manufacturers buy RESINS as
+    # input, one tier further downstream from the plants petrochemical
+    # already covers -- same mirror-image logic, different rung of the
+    # same ladder.
+    "chemical_products_manufacturer": "consumer",
 }
 
 
@@ -2049,7 +2095,7 @@ _GEOPOLITICAL_SUPPLY_DISRUPTION_QUERY = (
 # text (which several other callers rely on returning a single
 # commodity), just this one dual-population case handled explicitly.
 _GEOPOLITICAL_COMMODITY_SIBLING_TAGS: dict[str, list[str]] = {
-    "petrochemical": ["petrochemical_producer"],
+    "petrochemical": ["petrochemical_producer", "chemical_products_manufacturer"],
 }
 
 
@@ -2113,6 +2159,58 @@ def _gdelt_geopolitical_disruption_signals(db: Session, commodities: set[str] | 
                     signal_type=signal_type,
                 )
             )
+
+    db.commit()
+    return signals
+
+
+# Avian flu/bird flu outbreaks are a real, recurring, well-documented
+# supply-destruction event for poultry -- not a price move, a direct
+# cull. Unlike a tariff (which genuinely can go either way depending
+# on which side of it you're on), a disease outbreak culling flocks
+# has an unambiguous real-world direction: always distress for the
+# affected population, same confidence posture as HigherGov's always-
+# "expansion" and the fertilizer geopolitical signal's always-
+# "distress" before it was generalized. Deliberately NOT extended
+# here to "which OTHER producers benefit from a competitor's culled
+# flock" (the same dual-sided logic petrochemical gets) -- that would
+# need a per-region breakdown this national query doesn't give, a
+# real limit, not a decision that the upside doesn't exist.
+_AVIAN_FLU_QUERY = '("avian flu" OR "bird flu" OR "H5N1" OR "poultry outbreak" OR "flock culled")'
+
+
+def _gdelt_avian_flu_signals(db: Session) -> list[MacroSignal]:
+    """Poultry's only disease-driven trigger, distinct from and
+    additive to its feed-cost trigger (see SYMBOL_COMMODITIES' ZC/ZM
+    tags) -- a grain price spike and a bird flu outbreak are two
+    completely different real capital-need stories for the same
+    population (cost squeeze vs. direct flock loss), so both run,
+    neither replaces the other. One free national GDELT call per
+    sweep, same posture as every other national-level query here."""
+    adapter = GDELTAdapter()
+    try:
+        records = adapter.search(_AVIAN_FLU_QUERY, maxrecords=20)
+    except Exception:
+        return []  # a single failed call here just means no avian flu signal this sweep
+
+    signals: list[MacroSignal] = []
+    for record in records:
+        event = TelemetryEvent(
+            source=TelemetrySource.GDELT,
+            title=record.title,
+            payload={**record.payload, "geopolitical_commodity": "poultry_producer"},
+        )
+        db.add(event)
+        db.flush()
+        signals.append(
+            MacroSignal(
+                kind="poultry_disease_outbreak",
+                description=f"GDELT avian flu/bird flu outbreak coverage: {record.title}",
+                source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                commodity="poultry_producer",
+                signal_type="distress",
+            )
+        )
 
     db.commit()
     return signals
@@ -2576,6 +2674,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + usace_signals
         + _tariff_policy_signals()
         + _latin_america_import_signals()
+        + _gdelt_avian_flu_signals(db)
     )
 
 
