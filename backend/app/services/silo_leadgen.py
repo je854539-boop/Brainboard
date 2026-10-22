@@ -311,7 +311,16 @@ def _trade_linked_port_note(payload: dict, targets: list["GeoTarget"]) -> str:
 _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grain": ("corn", "soybean", "wheat", "grain", "oilseed"),
     "steel_coal": ("steel", "coal", "iron ore", "coke", "aluminum"),
-    "petrochemical": ("petrochemical", "resin", "plastic", "polymer", "chemical"),
+    # "oil"/"natural gas"/"lng"/"petroleum" added so a crude/NG cargo
+    # shipment -- or a geopolitical oil/gas headline -- classifies here
+    # too, not just a finished-plastics shipment.
+    "petrochemical": ("petrochemical", "resin", "plastic", "polymer", "chemical", "oil", "natural gas", "lng", "petroleum"),
+    # The seller side of the petrochemical complex -- NGL processors
+    # and intermediate chemical/resin producers who SELL what the
+    # "petrochemical" tier above BUYS as feedstock. Same goods content
+    # either way; the trade_side split (see _COMMODITY_TRADE_SIDE) is
+    # what actually tells them apart.
+    "petrochemical_producer": ("petrochemical", "resin", "plastic", "polymer", "chemical", "oil", "natural gas", "lng", "petroleum"),
     # Same cargo-content keywords across all four downstream tiers --
     # the physical commodity in a shipment doesn't change by which TIER
     # of the chain happens to be moving it; see SYMBOL_COMMODITIES and
@@ -398,8 +407,19 @@ def _commodity_trade_linked_note(payload: dict, targets: list["GeoTarget"]) -> s
 
 # Standard bill-of-lading country-of-origin field name isn't confirmed
 # against Import Genius's live schema -- same defensive multi-key
-# posture as _extract_address/_extract_port_of_entry.
-_COUNTRY_OF_ORIGIN_KEYS = ("country_of_origin", "origin_country", "shipper_country", "exporter_country", "country")
+# posture as _extract_address/_extract_port_of_entry. Also checks
+# SeaVantage's real milestone-tracking field names (origin port /
+# empty-equipment-dispatch location -- see telemetry/seavantage.py's
+# confirmed real product scope) since a company's OWN container
+# milestones are a second, independent way to confirm where a
+# shipment actually originated, not just whatever Import Genius's
+# customs field says -- genuinely useful when a company runs MIXED
+# sourcing (some containers from one country, some from another) and
+# a single customs record alone wouldn't show the full picture.
+_COUNTRY_OF_ORIGIN_KEYS = (
+    "country_of_origin", "origin_country", "shipper_country", "exporter_country", "country",
+    "pol_country", "origin_port_country", "empty_dispatch_country",
+)
 
 
 def _extract_country_of_origin(payload: dict) -> str | None:
@@ -524,6 +544,64 @@ def _tariff_policy_signals() -> list[MacroSignal]:
         )
         for commodity, countries in _TARIFF_AFFECTED_COUNTRIES.items()
     ]
+
+
+def _detect_mixed_sourcing_companies(db: Session) -> dict[str, str]:
+    """What if the same company shows up as BOTH a tariffed-country
+    importer AND a diversion-beneficiary importer this sweep -- i.e.
+    it's actively mid-transition, running containers from China and
+    Vietnam at the same time. That's not a weaker signal than either
+    side alone, it's a SHARPER one: a company caught mid-
+    diversification has its own distinct capital need (funding the
+    transition itself -- qualifying new factories, new supplier
+    contracts, temporarily double-paying for overlapping inventory
+    during the switchover) that neither a pure-distress nor a pure-
+    expansion read captures on its own.
+
+    Scans every fresh Import Genius shipment this sweep ONCE, groups
+    by company name, and flags any company whose shipments show BOTH
+    a "distress" (tariff-affected) and an "expansion" (diversion-
+    beneficiary) classification across different shipments -- this is
+    why it's a separate pre-pass rather than folded into the per-
+    shipment check: detecting "mixed" requires seeing ALL of a
+    company's shipments together, not just one at a time.
+
+    Scans BOTH Import Genius (customs manifest) and SeaVantage (real
+    per-container milestone tracking, see telemetry/seavantage.py) --
+    a company running mixed sourcing might show up with one country on
+    its customs record and a different one on a container's own
+    milestone history; checking both sources catches a split that
+    either one alone could miss.
+
+    HONESTY NOTE on precision: this groups by company NAME only, the
+    same name-matching posture as every other cross-shipment check in
+    this module -- a guaranteed per-container join (confirming the
+    SAME company's containers specifically, not just a name collision
+    across two different providers) would need SeaVantage's exact
+    schema confirmed against live docs first; see telemetry/
+    seavantage.py's own TODO. Until then, this is a reasonable
+    approximation, not a guaranteed fact.
+
+    Returns {company_name: note} for flagged companies only."""
+    seen: dict[str, set[str]] = {}
+    for source in (TelemetrySource.IMPORT_GENIUS, TelemetrySource.SEAVANTAGE):
+        for event in _fresh_events(db, source, limit=25):
+            name = event.payload.get("consignee_name") or event.payload.get("company_name")
+            if not name:
+                continue
+            _, signal_type = _tariff_trade_diversion_note(event.payload)
+            if signal_type:
+                seen.setdefault(str(name), set()).add(signal_type)
+
+    return {
+        name: (
+            f"MIXED SOURCING: '{name}' shows BOTH tariff-affected AND trade-diversion-beneficiary "
+            f"shipments this sweep -- actively mid-transition between suppliers, a real capital need "
+            f"to fund the diversification itself, not just a distress or expansion read alone"
+        )
+        for name, types in seen.items()
+        if {"distress", "expansion"} <= types
+    }
 
 
 # The Argentina-beef chain, generalized to its own standing category
@@ -698,6 +776,10 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     "grain": 25.0,
     "steel_coal": 15.0,
     "petrochemical": 10.0,
+    # NGL processors/intermediate producers cluster tightly around the
+    # same industrial corridors as the plants that buy from them
+    # (Houston Ship Channel, Baton Rouge) -- same tight radius.
+    "petrochemical_producer": 10.0,
     "port_congestion": 60.0,
     # Trucking companies aren't tied to one dock the way a mill or
     # elevator is -- a diesel-price shock affects fleets regionally, so
@@ -774,7 +856,8 @@ _LAND_USE_KEYS = ("land_use", "landuse", "usedesc", "use_description", "zoning_d
 _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grain": ("grain", "elevator", "agricultural", "farm", "silo"),
     "steel_coal": ("steel", "iron", "ore", "coal", "metal", "foundry", "mill", "smelt", "aluminum"),
-    "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics"),
+    "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics", "oil", "natural gas", "lng"),
+    "petrochemical_producer": ("petrochemical", "chemical", "refinery", "petroleum", "plastics", "oil", "natural gas", "lng", "ngl processing"),
     # "container"/"shipping"/"cargo" added specifically so a Red Sea/
     # Suez/Panama Canal chokepoint headline -- which talks about ships
     # and canals, not warehouses -- still classifies as port_congestion
@@ -1074,6 +1157,7 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "grain": ["grain elevator", "agricultural exporter", "grain trading", "farm supply"],
     "steel_coal": ["steel mill", "steel fabrication", "metal service center", "coal mining", "primary metal manufacturing"],
     "petrochemical": ["petrochemical", "chemical manufacturing", "petroleum refining", "plastics manufacturing"],
+    "petrochemical_producer": ["NGL processor", "natural gas liquids", "chemical producer", "resin producer", "intermediate chemical manufacturer"],
     "port_congestion": ["import", "distribution center", "freight forwarding", "warehousing and storage", "wholesale trade"],
     "logistics_fuel": ["trucking company", "freight carrier", "logistics company", "transportation company", "trucking fleet"],
     "meat_processor": ["meat processing company", "poultry processor", "dairy processor", "food manufacturer", "meat packing plant"],
@@ -1250,6 +1334,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "grain": "grain elevator",
     "steel_coal": "steel",
     "petrochemical": "petrochemical",
+    "petrochemical_producer": "chemical producer",
     "port_congestion": "distribution",
     "logistics_fuel": "trucking",
     "meat_processor": "meat processing",
@@ -1413,7 +1498,13 @@ SYMBOL_COMMODITIES: dict[str, list[str]] = {
     "ZC.c.0": ["grain"], "ZS.c.0": ["grain"], "ZW.c.0": ["grain"], "ZM.c.0": ["grain"], "ZL.c.0": ["grain"],
     "HRC.c.0": ["steel_coal"],
     "CL.c.0": ["logistics_fuel"], "HO.c.0": ["logistics_fuel"],
-    "NG.c.0": ["petrochemical"],
+    # US petrochemical cracking overwhelmingly runs on natural-gas-
+    # liquids feedstock (ethane), not crude -- so NG, not CL/HO, is the
+    # real petrochemical feedstock signal. Same dual-tag pattern as
+    # livestock: one price move, two populations with opposite stories
+    # -- plants that BUY NG as feedstock (squeezed by a spike) and NGL
+    # processors/intermediate producers who SELL it (windfall).
+    "NG.c.0": ["petrochemical", "petrochemical_producer"],
     # Each livestock/dairy symbol now tags FIVE populations off one
     # price move, not two -- the producer side, plus all four
     # downstream tiers of the Argentina-beef chain (processor,
@@ -1451,6 +1542,12 @@ _COMMODITY_TRADE_SIDE: dict[str, str] = {
     "grain": "producer",
     "steel_coal": "producer",
     "petrochemical": "consumer",
+    # The seller side of the petrochemical complex -- NGL processors/
+    # intermediate chemical producers who SELL what "petrochemical"
+    # above buys as feedstock. A price UP (NG shock, or a geopolitical
+    # oil/gas supply-at-risk headline) is a windfall for them, the
+    # mirror image of the squeeze it is for the plants that buy it.
+    "petrochemical_producer": "producer",
     "logistics_fuel": "consumer",
     # All four downstream food-chain tiers buy this commodity as an
     # input, same mirror-image logic as petrochemical/logistics_fuel.
@@ -1803,16 +1900,34 @@ def _highergov_contract_signals(db: Session, commodities: set[str] | None = None
 # anymore): Russia/Belarus/Ukraine (grain, steel, potash), Iran (urea/
 # ammonia), Taiwan/China (semiconductors -- Taiwan fabs the overwhelming
 # majority of advanced chips; Ukraine separately supplies a large share
-# of the neon gas used in chip lithography), and the Red Sea/Suez/
-# Panama Canal chokepoints (general shipping/container disruption,
-# classified to port_congestion/ecommerce_logistics via the "container"/
-# "shipping"/"cargo" keywords added to that commodity's land-use list).
+# of the neon gas used in chip lithography), the Red Sea/Suez/Panama
+# Canal chokepoints (general shipping/container disruption, classified
+# to port_congestion/ecommerce_logistics via the "container"/
+# "shipping"/"cargo" keywords added to that commodity's land-use list),
+# and the Middle East/OPEC+/Russia for oil/natural gas -- the real
+# petrochemical-feedstock angle a war or sanctions headline implies
+# (supply at risk = price pressure up), same mechanism as every other
+# commodity here.
 _GEOPOLITICAL_SUPPLY_DISRUPTION_QUERY = (
-    '(war OR sanctions OR "export ban" OR "export controls" OR blockade OR conflict) AND '
+    '(war OR sanctions OR "export ban" OR "export controls" OR blockade OR conflict OR OPEC) AND '
     '(grain OR wheat OR fertilizer OR potash OR ammonia OR steel OR semiconductor OR chip OR '
-    '"neon gas" OR wafer OR container OR shipping) AND '
-    '(Russia OR Ukraine OR Belarus OR Iran OR Taiwan OR China OR "Red Sea" OR Suez OR "Panama Canal")'
+    '"neon gas" OR wafer OR container OR shipping OR oil OR "natural gas" OR LNG OR petrochemical) AND '
+    '(Russia OR Ukraine OR Belarus OR Iran OR Taiwan OR China OR "Red Sea" OR Suez OR "Panama Canal" OR "Middle East")'
 )
+
+# A geopolitical headline about oil/gas supply risk should produce the
+# SAME dual-population split a real NG price shock does (see
+# SYMBOL_COMMODITIES' NG.c.0 entry) -- but _classify_commodity_from_text
+# only ever returns its FIRST keyword match, so it can't emit both tags
+# from one headline on its own. This is the targeted fix: after the
+# primary commodity is classified, also emit a signal for each listed
+# sibling tag, each independently run through the same trade-side
+# classification -- not a general rewrite of _classify_commodity_from_
+# text (which several other callers rely on returning a single
+# commodity), just this one dual-population case handled explicitly.
+_GEOPOLITICAL_COMMODITY_SIBLING_TAGS: dict[str, list[str]] = {
+    "petrochemical": ["petrochemical_producer"],
+}
 
 
 def _gdelt_geopolitical_disruption_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
@@ -1847,32 +1962,34 @@ def _gdelt_geopolitical_disruption_signals(db: Session, commodities: set[str] | 
 
     signals: list[MacroSignal] = []
     for record in records:
-        commodity = _classify_commodity_from_text(record.title)
-        if not commodity:
-            continue
-        if commodities is not None and commodity not in commodities:
+        primary_commodity = _classify_commodity_from_text(record.title)
+        if not primary_commodity:
             continue
 
-        signal_type = _signal_type_for_price_direction(commodity, price_up=True)
         event = TelemetryEvent(
             source=TelemetrySource.GDELT,
             title=record.title,
-            payload={**record.payload, "geopolitical_commodity": commodity},
+            payload={**record.payload, "geopolitical_commodity": primary_commodity},
         )
         db.add(event)
         db.flush()
-        signals.append(
-            MacroSignal(
-                kind="geopolitical_supply_disruption",
-                description=(
-                    f"GDELT geopolitical supply-disruption coverage classified {commodity} "
-                    f"({signal_type or 'unclassified'}): {record.title}"
-                ),
-                source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
-                commodity=commodity,
-                signal_type=signal_type,
+
+        for commodity in [primary_commodity] + _GEOPOLITICAL_COMMODITY_SIBLING_TAGS.get(primary_commodity, []):
+            if commodities is not None and commodity not in commodities:
+                continue
+            signal_type = _signal_type_for_price_direction(commodity, price_up=True)
+            signals.append(
+                MacroSignal(
+                    kind="geopolitical_supply_disruption",
+                    description=(
+                        f"GDELT geopolitical supply-disruption coverage classified {commodity} "
+                        f"({signal_type or 'unclassified'}): {record.title}"
+                    ),
+                    source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                    commodity=commodity,
+                    signal_type=signal_type,
+                )
             )
-        )
 
     db.commit()
     return signals
@@ -2145,6 +2262,12 @@ def _gfw_anomaly_signals(db: Session) -> list[MacroSignal]:
 # constant in this module.
 _MIN_COMMODITY_WEIGHT = 0.15
 
+# See _usace_disruption_signals' docstring -- "doesn't matter who's
+# the winner or loser, we capitalize both." Petrochemical is the
+# proof case (Gulf Coast corridor, explosion/hurricane-prone); the
+# same mechanism applies to any commodity added here.
+_DUAL_SIDED_DISRUPTION_COMMODITIES = {"petrochemical", "petrochemical_producer"}
+
 
 def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
     """Every USACE event (see telemetry/usace.py) already crossed a real
@@ -2165,7 +2288,18 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
     mistake, while the CME Macro Funnel (broader, cross-industry) passes
     None for every corridor. Each event's commodity mix was written into
     its payload by usace.py's fetch() -- read back here rather than
-    re-deriving it from the lock name."""
+    re-deriving it from the lock name.
+
+    DUAL-SIDED for commodities in _DUAL_SIDED_DISRUPTION_COMMODITIES --
+    "doesn't matter who's the winner or loser, we capitalize both." A
+    disrupted plant/lock doesn't just hurt the business it directly
+    affects; every OTHER producer in that same corridor and commodity
+    that's still operating has a real capacity/share-capture
+    opportunity. Starting with petrochemical (the Gulf Coast corridor
+    is explosion/hurricane-prone, and a disrupted plant's lost orders
+    have to go somewhere) -- deliberately NOT applied to every
+    commodity yet, extend the set the same way once you want the same
+    logic for grain/steel_coal/other corridors."""
     signals = []
     for event in _fresh_events(db, TelemetrySource.USACE, limit=20):
         commodity_mix = event.payload.get("commodities") or {}
@@ -2193,6 +2327,25 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
                     signal_type="distress",
                 )
             )
+            if commodity in _DUAL_SIDED_DISRUPTION_COMMODITIES:
+                signals.append(
+                    MacroSignal(
+                        kind="river_corridor_competitor_opportunity",
+                        description=(
+                            f"USACE {label} disruption ({weight:.0%} of this corridor's traffic) -- COMPETITOR "
+                            f"OPPORTUNITY READ: a real share-capture opportunity for every OTHER {label} "
+                            f"producer still operating in this same corridor, not the directly affected "
+                            f"business itself: {event.title}"
+                        ),
+                        source_reference=f"telemetry_event:{event.id} [usace] {event.title}",
+                        commodity=commodity,
+                        coordinates=coordinates,
+                        weight=weight,
+                        location_hint=location_hint,
+                        state=state,
+                        signal_type="expansion",
+                    )
+                )
     return signals
 
 
@@ -2596,6 +2749,11 @@ _TARIFF_CLASSIFICATION_SCORE_BONUS = 12.0
 
 # Same confidence tier, same reasoning -- see _latin_america_sourcing_note.
 _LATIN_AMERICA_SOURCING_SCORE_BONUS = 12.0
+
+# Higher than the plain tariff bonus -- a company mid-diversification
+# across BOTH sides of a tariff is a sharper, more specific read than
+# either side alone (see _detect_mixed_sourcing_companies).
+_MIXED_SOURCING_SCORE_BONUS = 18.0
 
 
 def _extract_arrival_date(payload: dict) -> date | None:
@@ -3054,6 +3212,11 @@ def run_silo_leadgen(db: Session) -> dict:
     # (event, silo) pair happened to trigger the one real Apollo call.
     revenue_check_cache: dict[str, tuple[float | None, SiloCandidateStatus, str | None]] = {}
 
+    # Pre-pass, not per-event -- detecting "mixed sourcing" needs to see
+    # ALL of a company's shipments together before any row is written
+    # (see _detect_mixed_sourcing_companies).
+    mixed_sourcing_companies = _detect_mixed_sourcing_companies(db)
+
     for event in fresh_events:
         for silo in SOURCE_TO_SILOS.get(event.source, []):
             source_reference = f"telemetry_event:{event.id} [{event.source.value}] {event.title}"
@@ -3099,10 +3262,13 @@ def run_silo_leadgen(db: Session) -> dict:
                     notes = f"{notes} | {demurrage_note}" if notes else demurrage_note
 
             # Tariff trade-diversion check -- same per-shipment, standing
-            # posture as demurrage above, Import Genius only (country of
-            # origin is a customs-manifest field, not something
-            # SeaVantage's vessel/cargo-report payload carries).
-            if event.source == TelemetrySource.IMPORT_GENIUS:
+            # posture as demurrage above. Checked for BOTH Import Genius
+            # (customs country-of-origin field) and SeaVantage (real
+            # per-container milestone data can carry an origin port/
+            # country too -- see _COUNTRY_OF_ORIGIN_KEYS) -- a company
+            # with mixed sourcing might only show the full picture
+            # across both sources, not either one alone.
+            if event.source in (TelemetrySource.IMPORT_GENIUS, TelemetrySource.SEAVANTAGE):
                 tariff_note, _tariff_signal_type = _tariff_trade_diversion_note(event.payload)
                 if tariff_note:
                     score = (score if score is not None else 50.0) + _TARIFF_CLASSIFICATION_SCORE_BONUS
@@ -3116,6 +3282,14 @@ def run_silo_leadgen(db: Session) -> dict:
                 if latam_note:
                     score = (score if score is not None else 50.0) + _LATIN_AMERICA_SOURCING_SCORE_BONUS
                     notes = f"{notes} | {latam_note}" if notes else latam_note
+
+                # Mixed-sourcing beats either single read -- see
+                # _detect_mixed_sourcing_companies for why this scores
+                # higher than the plain tariff bonus above.
+                mixed_note = mixed_sourcing_companies.get(company_name)
+                if mixed_note:
+                    score = (score if score is not None else 50.0) + _MIXED_SOURCING_SCORE_BONUS
+                    notes = f"{notes} | {mixed_note}" if notes else mixed_note
 
             db.add(
                 SiloCandidate(
