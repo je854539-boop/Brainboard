@@ -172,6 +172,66 @@ class MacroSignal:
 # guessing one and silently missing real matches.
 _ADDRESS_KEYS = ("address", "business_address", "consignee_address", "mailing_address", "principal_address", "site_address")
 
+# Standard bill-of-lading fields -- a customs manifest always names the
+# US port the shipment actually cleared through. Field name isn't
+# confirmed against Import Genius's live schema (same posture as
+# _ADDRESS_KEYS), hence the multi-key defensive lookup.
+_PORT_OF_ENTRY_KEYS = ("port_of_unlading", "port_of_discharge", "us_port", "arrival_port", "port_name", "discharge_port")
+
+
+def _extract_port_of_entry(payload: dict) -> str | None:
+    for key in _PORT_OF_ENTRY_KEYS:
+        value = payload.get(key)
+        if value:
+            return str(value).lower()
+    return None
+
+
+# Maps each port_congestion MONITORED_LOCKS entry (see telemetry/usace.py)
+# to the plain-language keywords its own name is built from -- matched
+# against a shipment's port-of-entry text to find businesses a
+# disruption actually affects by transaction, not by proximity. This is
+# the DISTANCE-FREE counterpart to _geo_match_note below: a Dallas-based
+# importer whose own manifest clears through a congested Houston port is
+# a real, confirmed link regardless of how far Dallas is from the dock
+# -- exactly the case a fixed search radius can never catch.
+_PORT_TRADE_LINK_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "Port of Los Angeles / Long Beach anchorage": ("los angeles", "long beach", "lax", "lgb"),
+    "Houston Ship Channel anchorage": ("houston",),
+    "Port of New York / New Jersey anchorage": ("new york", "new jersey", "newark", "elizabeth"),
+    "Port Everglades / Miami anchorage": ("miami", "port everglades", "fort lauderdale", "ft lauderdale"),
+}
+
+
+def _trade_link_keywords_for_target(target: "GeoTarget") -> tuple[str, ...]:
+    for lock_name, keywords in _PORT_TRADE_LINK_KEYWORDS.items():
+        if lock_name in target.label:
+            return keywords
+    return ()
+
+
+def _trade_linked_port_note(payload: dict, targets: list["GeoTarget"]) -> str:
+    """A business whose OWN shipment manifest names a currently-congested
+    port as its port of entry is linked to that disruption by an actual
+    transaction -- deliberately NOT distance-limited, unlike
+    _geo_match_note. Many importers are headquartered far inland from
+    the port they actually ship through; this is how those get caught
+    instead of only businesses sitting physically next to the dock.
+    Scoped to port_congestion targets only -- there's no equivalent
+    transactional dataset for domestic river/lake barge movements (Import
+    Genius is ocean customs data), so a steel_coal or grain disruption
+    can't be trade-linked this way yet, only geo-matched."""
+    port_of_entry = _extract_port_of_entry(payload)
+    if not port_of_entry:
+        return ""
+    for target in targets:
+        if target.commodity != "port_congestion":
+            continue
+        keywords = _trade_link_keywords_for_target(target)
+        if keywords and any(k in port_of_entry for k in keywords):
+            return f"TRADE-LINKED MATCH: shipment's port of entry '{port_of_entry}' is the actively congested port ({target.label}) -- "
+    return ""
+
 _STREET_SUFFIXES = {
     "street": "st", "avenue": "ave", "boulevard": "blvd", "drive": "dr", "road": "rd",
     "lane": "ln", "suite": "ste", "court": "ct", "highway": "hwy", "parkway": "pkwy",
@@ -564,8 +624,15 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
     coordinates) tuples -- coordinates is None for Import Genius-sourced
     identifications (that provider's payload carries no confirmed geo
     field, see telemetry/import_genius.py), populated for Regrid-sourced
-    ones from the parcel's own geometry.
+    ones from the parcel's own geometry. Import Genius candidates ALSO
+    get checked for a trade link against any active port_congestion
+    target (see _trade_linked_port_note) -- a shipment whose own
+    manifest cleared through the congested port is linked by that
+    transaction regardless of how far the business's address is from
+    the dock, which is what actually catches a business the 60-mile
+    geo radius alone would miss.
     """
+    targets = targets or []
     corroboration_events: list[TelemetryEvent] = []
     for source in (
         TelemetrySource.SEAVANTAGE,
@@ -586,7 +653,9 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
     for event in _fresh_events(db, TelemetrySource.IMPORT_GENIUS, limit=25):
         name = event.payload.get("consignee_name") or event.payload.get("company_name")
         if name:
-            identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", corroboration_note, None))
+            trade_link_note = _trade_linked_port_note(event.payload, targets)
+            note = f"{trade_link_note}{corroboration_note}" if trade_link_note else corroboration_note
+            identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", note, None))
 
     for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(db, targets=targets):
         identified.append((company_name, source_reference, f"{corroboration_note} | {regrid_note}", coordinates))
