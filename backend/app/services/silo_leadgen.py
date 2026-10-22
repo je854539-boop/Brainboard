@@ -812,6 +812,107 @@ def _latin_america_import_signals() -> list[MacroSignal]:
     ]
 
 
+# HONEST GAP THIS FIXES: _TARIFF_AFFECTED_COUNTRIES tracks exactly one
+# Asian country -- China -- across apparel/auto_parts/
+# semiconductor_distributor/solar_manufacturer/ecommerce_seller, even
+# though the real, documented sourcing base for every one of those
+# categories is far wider than China alone (Vietnam/Bangladesh/
+# Cambodia/India for apparel; Japan/South Korea/Taiwan/India for auto
+# parts and electronics; Taiwan/South Korea/Japan for semiconductors --
+# arguably a BIGGER real source than China for that one). Latin America
+# got its own 12-country standing-sourcing category; Asia, which is
+# genuinely where most of what the US imports actually comes from, had
+# nothing analogous -- a real, asymmetric blind spot, not a close call.
+#
+# Deliberately NOT a "diversion beneficiary" framing like furniture-to-
+# Vietnam -- that implies a specific tariff-driven shift away from one
+# named country. This is simpler and more honest: these are independent,
+# large, standing sourcing hubs in their own right, real import volume
+# regardless of whether it started as China-diversion or was always
+# there. Always "expansion" when it fires, same posture as Latin
+# America -- confirmation of a real, scaling import-driven business,
+# not a distress read.
+_ASIA_COUNTRIES = (
+    "china", "vietnam", "india", "bangladesh", "cambodia", "thailand",
+    "indonesia", "malaysia", "taiwan", "south korea", "japan",
+)
+_ASIA_RELEVANT_COMMODITIES = (
+    "apparel", "auto_parts", "semiconductor_distributor", "ecommerce_seller", "electronics_manufacturer",
+)
+
+
+def _asia_sourcing_note(payload: dict) -> tuple[str, str | None]:
+    """A STANDING per-shipment check, same posture as
+    _latin_america_sourcing_note. Deliberately skips any country
+    already carrying a specific tariff classification for that same
+    commodity (either the tariffed country itself, via
+    _TARIFF_AFFECTED_COUNTRIES, or a named diversion beneficiary, via
+    _TARIFF_DIVERSION_BENEFICIARY_COUNTRIES) -- a China-sourced apparel
+    shipment stays a pure tariff-distress read from
+    _tariff_trade_diversion_note, it never also gets tagged "expansion"
+    here, which would directly contradict that finding. This only fires
+    for the real Asian sourcing countries that currently have NO
+    country-specific mechanism at all for that commodity -- e.g.
+    Bangladesh/Cambodia/Vietnam/India for apparel, or Taiwan/South
+    Korea/Japan for semiconductors.
+
+    Returns ("", None) when the shipment's goods don't match a tracked
+    category, or its country of origin isn't a major Asia sourcing hub,
+    or that specific country is already covered by the tariff
+    mechanism for this commodity."""
+    description = _extract_goods_description(payload)
+    country = _extract_country_of_origin(payload)
+    if not description or not country:
+        return "", None
+    if not any(c in country for c in _ASIA_COUNTRIES):
+        return "", None
+
+    for commodity in _ASIA_RELEVANT_COMMODITIES:
+        keywords = _COMMODITY_GOODS_KEYWORDS.get(commodity, ())
+        if not keywords or not any(k in description for k in keywords):
+            continue
+
+        already_tariff_classified = any(
+            c in country
+            for c in (
+                *_TARIFF_AFFECTED_COUNTRIES.get(commodity, ()),
+                *_TARIFF_DIVERSION_BENEFICIARY_COUNTRIES.get(commodity, ()),
+            )
+        )
+        if already_tariff_classified:
+            continue
+
+        return (
+            f"ASIA SOURCING CONFIRMED: shipment's country of origin '{country}' is a major Asia "
+            f"manufacturing/sourcing hub for {commodity} -- heavy, real import volume, a scaling "
+            f"operation that needs capital to keep growing, not a distress read",
+            "expansion",
+        )
+    return "", None
+
+
+def _asia_import_signals() -> list[MacroSignal]:
+    """The standing macro-level counterpart to _asia_sourcing_note --
+    same posture as _latin_america_import_signals. Only generates a
+    signal for electronics_manufacturer, the one commodity in
+    _ASIA_RELEVANT_COMMODITIES with no existing standing nationwide
+    signal of its own -- apparel/auto_parts/semiconductor_distributor/
+    ecommerce_seller already get swept nationwide every cycle via
+    _tariff_policy_signals (they're all in _TARIFF_AFFECTED_COUNTRIES),
+    so a second always-on signal for them here would just double the
+    same nationwide hunt rather than reaching anything new. The per-
+    shipment check above still covers all five regardless."""
+    return [
+        MacroSignal(
+            kind="asia_sourcing",
+            description="Standing Asia import-volume signal for electronics_manufacturer",
+            source_reference="asia_sourcing:electronics_manufacturer",
+            commodity="electronics_manufacturer",
+            signal_type="expansion",
+        )
+    ]
+
+
 _STREET_SUFFIXES = {
     "street": "st", "avenue": "ave", "boulevard": "blvd", "drive": "dr", "road": "rd",
     "lane": "ln", "suite": "ste", "court": "ct", "highway": "hwy", "parkway": "pkwy",
@@ -2905,6 +3006,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + usace_signals
         + _tariff_policy_signals()
         + _latin_america_import_signals()
+        + _asia_import_signals()
         + _gdelt_avian_flu_signals(db)
         + _gdelt_tariff_relief_signals(db)
     )
@@ -3033,8 +3135,10 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
             # signal-gated the way the two checks above are).
             tariff_note, _tariff_signal_type = _tariff_trade_diversion_note(event.payload)
             latam_note, _latam_signal_type = _latin_america_sourcing_note(event.payload)
+            asia_note, _asia_signal_type = _asia_sourcing_note(event.payload)
             standing_note = f"{tariff_note} -- " if tariff_note else ""
             standing_note += f"{latam_note} -- " if latam_note else ""
+            standing_note += f"{asia_note} -- " if asia_note else ""
             trade_link_note = f"{port_link_note}{goods_link_note}{standing_note}"
             note = f"{trade_link_note}{corroboration_note}" if trade_link_note else corroboration_note
             identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", note, None))
@@ -3222,6 +3326,8 @@ _TARIFF_CLASSIFICATION_SCORE_BONUS = 12.0
 
 # Same confidence tier, same reasoning -- see _latin_america_sourcing_note.
 _LATIN_AMERICA_SOURCING_SCORE_BONUS = 12.0
+# Same confidence tier, same reasoning -- see _asia_sourcing_note.
+_ASIA_SOURCING_SCORE_BONUS = 12.0
 
 # Higher than the plain tariff bonus -- a company mid-diversification
 # across BOTH sides of a tariff is a sharper, more specific read than
@@ -3490,8 +3596,15 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
             else 0.0
         )
         latam_bonus = _LATIN_AMERICA_SOURCING_SCORE_BONUS if "LATIN AMERICA SOURCING CONFIRMED" in corroboration_note else 0.0
+        asia_bonus = _ASIA_SOURCING_SCORE_BONUS if "ASIA SOURCING CONFIRMED" in corroboration_note else 0.0
         score_delta = (
-            standing_delta + revenue_delta + cross_source_bonus + macro_corroboration_bonus + tariff_bonus + latam_bonus
+            standing_delta
+            + revenue_delta
+            + cross_source_bonus
+            + macro_corroboration_bonus
+            + tariff_bonus
+            + latam_bonus
+            + asia_bonus
         )
         dismiss = standing_dismiss or revenue_dismiss
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
@@ -3755,6 +3868,15 @@ def run_silo_leadgen(db: Session) -> dict:
                 if latam_note:
                     score = (score if score is not None else 50.0) + _LATIN_AMERICA_SOURCING_SCORE_BONUS
                     notes = f"{notes} | {latam_note}" if notes else latam_note
+
+                # Same standing-check posture as Latin America above --
+                # see _asia_sourcing_note for why this never
+                # double-fires against a country already covered by
+                # the tariff mechanism for this same commodity.
+                asia_note, _asia_signal_type = _asia_sourcing_note(event.payload)
+                if asia_note:
+                    score = (score if score is not None else 50.0) + _ASIA_SOURCING_SCORE_BONUS
+                    notes = f"{notes} | {asia_note}" if notes else asia_note
 
                 # Mixed-sourcing beats either single read -- see
                 # _detect_mixed_sourcing_companies for why this scores
