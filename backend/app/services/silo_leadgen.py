@@ -178,6 +178,14 @@ class MacroSignal:
     # Intelligence's SOS search takes a state, not a city/place string.
     # See _stage2c_cobalt_industry_hunt.
     state: str | None = None
+    # "expansion" (a producer riding a price windfall, or a consumer
+    # getting relief) or "distress" (a producer getting squeezed, or a
+    # consumer getting squeezed by a cost spike) -- see
+    # _COMMODITY_TRADE_SIDE. Only CME price shocks carry clean enough
+    # directional data to classify this; every disruption-style signal
+    # (USACE, GDELT distress/broad sweeps) is definitionally bad news,
+    # so those default to "distress" rather than leaving this unset.
+    signal_type: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +429,11 @@ class GeoTarget:
     location_hint: str | None = None
     # Plain 2-letter state code -- see _stage2c_cobalt_industry_hunt.
     state: str | None = None
+    # "expansion" or "distress" -- see MacroSignal.signal_type. Surfaced
+    # in the Apollo/Cobalt hunt notes so a candidate found off a price
+    # windfall reads as a growth/stacking opportunity, not identical
+    # framing to one found off a plant fire.
+    signal_type: str | None = None
 
 
 # A nationwide commodity price shock (CME Globex, GDELT's national
@@ -478,7 +491,7 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
                 GeoTarget(
                     lat=lat, lon=lon, commodity=signal.commodity, label=signal.description,
                     radius_mi=radius, weight=signal.weight, location_hint=signal.location_hint,
-                    state=signal.state,
+                    state=signal.state, signal_type=signal.signal_type,
                 )
             )
             continue
@@ -491,7 +504,7 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
                     lat=None, lon=None,  # no real geography behind a nationwide sweep -- see GeoTarget docstring
                     commodity=signal.commodity, label=f"{signal.description} (nationwide sweep: {place['apollo_location']})",
                     radius_mi=radius, weight=signal.weight,
-                    location_hint=place["apollo_location"], state=place["state"],
+                    location_hint=place["apollo_location"], state=place["state"], signal_type=signal.signal_type,
                 )
             )
     return targets
@@ -742,11 +755,19 @@ def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
             )
             db.add(event)
             db.flush()  # need event.id to build a real source_reference below
+            situation = (
+                "EXPANSION opportunity -- this commodity move is a revenue/margin windfall for this industry, "
+                "a growth/stacking angle, not a rescue pitch"
+                if target.signal_type == "expansion"
+                else "DISTRESS opportunity -- this commodity move is a cost/margin squeeze for this industry"
+                if target.signal_type == "distress"
+                else "unclassified commodity move"
+            )
             note = (
                 f"APOLLO INDUSTRY HUNT: actively searched for {keywords} companies near {target.location_hint} "
-                f"because of an active {target.commodity} disruption ({target.label}{weight_note}) -- this company "
-                f"was not already sitting in any other feed, found by live industry+location search, not cargo "
-                f"data | {contact_note}"
+                f"because of an active {target.commodity} signal ({target.label}{weight_note}) -- {situation} -- "
+                f"this company was not already sitting in any other feed, found by live industry+location search, "
+                f"not cargo data | {contact_note}"
             )
             identified.append((str(name), f"telemetry_event:{event.id} [apollo] {record.title}", note, None))
 
@@ -843,10 +864,17 @@ def _stage2c_cobalt_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
             )
             db.add(event)
             db.flush()
+            situation = (
+                "EXPANSION opportunity (revenue/margin windfall, growth angle)"
+                if target.signal_type == "expansion"
+                else "DISTRESS opportunity (cost/margin squeeze)"
+                if target.signal_type == "distress"
+                else "unclassified commodity move"
+            )
             note = (
                 f"COBALT INTELLIGENCE INDUSTRY HUNT: actively searched SOS registry for '{search_term}' businesses "
-                f"in {target.state} because of an active {target.commodity} disruption ({target.label}{weight_note}) "
-                f"-- this company was not already sitting in any other feed | {standing_note}{ucc_note}"
+                f"in {target.state} because of an active {target.commodity} signal ({target.label}{weight_note}) "
+                f"-- {situation} -- this company was not already sitting in any other feed | {standing_note}{ucc_note}"
             )
             identified.append((str(name), f"telemetry_event:{event.id} [cobalt_intelligence] {record.title}", note, None))
 
@@ -882,38 +910,95 @@ SYMBOL_COMMODITY: dict[str, str] = {
     "LE.c.0": "food_cost", "GF.c.0": "food_cost", "HE.c.0": "food_cost", "DC.c.0": "food_cost",
 }
 
+# Which side of the trade the businesses we actually target under each
+# commodity sit on -- a price move only tells you "borrow" or "margin
+# squeeze" once you know whether that business SELLS this commodity or
+# BUYS it as an input. A price shock has never been treated as
+# direction-neutral info in real commodity markets; a producer getting
+# a windfall on a price spike is the OPPOSITE financing story from a
+# producer getting squeezed by a price crash, and it's the opposite
+# again for a business that buys this commodity as an input instead of
+# selling it.
+#   "producer": grain elevators/exporters and steel mills are sellers
+#     of what we're tracking -- a price UP is a revenue windfall
+#     (expansion-financing moment, the thing being targeted is
+#     creditworthy and growing), a price DOWN is a margin squeeze
+#     (distress-financing moment).
+#   "consumer": petrochemical plants (NG/crude feedstock), trucking
+#     fleets (diesel), and restaurants/food processors (cattle/hog/
+#     dairy) all BUY this commodity as a cost input -- for them it's
+#     the exact mirror image: a price UP squeezes margin (distress), a
+#     price DOWN is relief, not itself a strong borrowing trigger.
+_COMMODITY_TRADE_SIDE: dict[str, str] = {
+    "grain": "producer",
+    "steel_coal": "producer",
+    "petrochemical": "consumer",
+    "logistics_fuel": "consumer",
+    "food_cost": "consumer",
+}
+
 
 def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
     """A same-day price shock on ANY tracked CME/NYMEX symbol -- not just
     the original grain complex (see telemetry/cme_globex.py::SYMBOLS,
-    which now also covers steel, crude/diesel, and natural gas). Every
-    shock is tagged with its commodity via SYMBOL_COMMODITY so a caller
-    can filter the same way _usace_disruption_signals already requires:
-    the Agriculture & Grain Handling waterfall passes {"grain"} so a
-    steel or diesel price shock can't gate it open by mistake, while the
-    CME Macro Funnel passes None for every commodity. A nationwide price
-    move has no single lat/lon the way a specific lock does, so
-    coordinates/location_hint/state are deliberately left unset here --
-    see the module-level note on why that means these signals can open a
-    gate but can't yet drive a targeted Apollo/Cobalt hunt on their own.
+    which now also covers steel, crude/diesel, natural gas, and the
+    livestock/dairy complex). Every shock is tagged with its commodity
+    via SYMBOL_COMMODITY so a caller can filter the same way
+    _usace_disruption_signals already requires: the Agriculture & Grain
+    Handling waterfall passes {"grain"} so a steel or diesel price
+    shock can't gate it open by mistake, while the CME Macro Funnel
+    passes None for every commodity.
+
+    ALSO classifies the shock as "expansion" or "distress" via
+    _COMMODITY_TRADE_SIDE x direction -- a price move isn't
+    direction-neutral "look here" information; a producer riding a
+    windfall is a completely different financing story than a producer
+    getting squeezed, and the reverse is true for a business that buys
+    this commodity as a cost input rather than selling it. This is what
+    actually answers "when things are good, people borrow too" instead
+    of treating every big move as implicitly bad news.
+
+    A nationwide price move has no single lat/lon the way a specific
+    lock does, so coordinates/location_hint/state are left unset here
+    -- _geo_targets_from_signals sweeps your own top-state metros
+    instead when it sees a commodity with no location attached, so
+    this still drives a real targeted hunt downstream.
     """
     signals: list[MacroSignal] = []
     for event in _fresh_events(db, TelemetrySource.CME_GLOBEX, limit=50):
         open_, close = event.payload.get("open"), event.payload.get("close")
         if not open_ or not close:
             continue
-        pct = abs(close - open_) / open_
-        if pct < PRICE_SHOCK_PCT:
+        pct = (close - open_) / open_
+        if abs(pct) < PRICE_SHOCK_PCT:
             continue
         symbol = event.payload.get("symbol") or str(event.payload.get("instrument_id", "?"))
         commodity = SYMBOL_COMMODITY.get(symbol)
         if commodities is not None and commodity not in commodities:
             continue
+
+        trade_side = _COMMODITY_TRADE_SIDE.get(commodity)
+        price_up = pct > 0
+        if trade_side == "producer":
+            signal_type = "expansion" if price_up else "distress"
+        elif trade_side == "consumer":
+            signal_type = "distress" if price_up else "expansion"
+        else:
+            signal_type = None  # untagged/unclassified symbol -- don't guess
+
+        direction = "up" if price_up else "down"
+        framing = (
+            f"{signal_type} signal ({trade_side} of this commodity)" if signal_type else "shock (unclassified)"
+        )
         signals.append(
             MacroSignal(
                 kind="price_shock",
-                description=f"CME Globex {symbol} moved {pct:.1%} intraday (open {open_:.2f} -> close {close:.2f})",
+                description=(
+                    f"CME Globex {symbol} moved {abs(pct):.1%} {direction} intraday "
+                    f"(open {open_:.2f} -> close {close:.2f}) -- {framing}"
+                ),
                 source_reference=f"telemetry_event:{event.id} [cme_globex] {event.title}",
+                signal_type=signal_type,
                 commodity=commodity,
             )
         )
@@ -1018,6 +1103,7 @@ def _gdelt_local_distress_signals(db: Session, commodities: set[str] | None = No
                         weight=weight,
                         location_hint=location,
                         state=state,
+                        signal_type="distress",
                     )
                 )
 
@@ -1137,6 +1223,7 @@ def _gdelt_broad_disruption_signals(db: Session, commodities: set[str] | None = 
                         location_hint=next((l["apollo_location"] for l in MONITORED_LOCKS if l["apollo_location"].lower().startswith(city)), None)
                         or next((p["apollo_location"] for p in _NATIONWIDE_SWEEP_LOCATIONS if p["apollo_location"].lower().startswith(city)), None),
                         state=info["state"],
+                        signal_type="distress",
                     )
                 )
 
@@ -1211,6 +1298,7 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
                     weight=weight,
                     location_hint=location_hint,
                     state=state,
+                    signal_type="distress",
                 )
             )
     return signals
