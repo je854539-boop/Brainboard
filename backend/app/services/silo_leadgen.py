@@ -76,6 +76,7 @@ from app.config import get_settings
 from app.models.enums import SiloCandidateStatus, SiloName, TelemetrySource
 from app.models.orm import SiloCandidate, TelemetryEvent
 from app.services import entity_matching, telemetry
+from app.services.telemetry.apollo import ApolloAdapter
 
 SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     TelemetrySource.CME_GLOBEX: [SiloName.TARIFF_SILO],
@@ -164,6 +165,12 @@ class MacroSignal:
     # usace.py's MONITORED_LOCKS commodities mix) -- 1.0 for every
     # non-USACE signal kind, where the concept doesn't apply.
     weight: float = 1.0
+    # A real named city/state near the disruption (usace.py's
+    # apollo_location) -- Apollo.io's org search takes a place name, not
+    # a lat/lon radius, so this is what actually drives a disruption-
+    # triggered Apollo hunt (see _stage2b_apollo_industry_hunt). None for
+    # any signal kind without a specific place attached.
+    location_hint: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +371,9 @@ class GeoTarget:
     # the match note so a candidate found via a secondary commodity reads
     # as lower-confidence than one from a dominant signal, not identical.
     weight: float = 1.0
+    # Real named city/state for this target, straight from the
+    # originating MacroSignal -- see _stage2b_apollo_industry_hunt.
+    location_hint: str | None = None
 
 
 def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
@@ -383,7 +393,7 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
             targets.append(
                 GeoTarget(
                     lat=lat, lon=lon, commodity=signal.commodity, label=signal.description,
-                    radius_mi=radius, weight=signal.weight,
+                    radius_mi=radius, weight=signal.weight, location_hint=signal.location_hint,
                 )
             )
     return targets
@@ -504,6 +514,96 @@ def _identify_via_regrid(
     return identified
 
 
+# Maps each commodity tag to the industry keywords an active-hunt Apollo
+# search should actually ask for -- this is deliberately separate from
+# _COMMODITY_LAND_USE_KEYWORDS above (that one matches Regrid's land-use
+# TEXT; this one is what gets sent to Apollo's own org-search API, which
+# has its own keyword-tag vocabulary, not a shared one with Regrid).
+_COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
+    "grain": ["grain elevator", "agricultural exporter", "grain trading", "farm supply"],
+    "steel_coal": ["steel mill", "steel fabrication", "metal service center", "coal mining", "primary metal manufacturing"],
+    "petrochemical": ["petrochemical", "chemical manufacturing", "petroleum refining", "plastics manufacturing"],
+    "port_congestion": ["import", "distribution center", "freight forwarding", "warehousing and storage", "wholesale trade"],
+}
+
+
+def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list[tuple[str, str, str, tuple[float, float] | None]]:
+    """The one identification path that actively HUNTS instead of only
+    checking whatever ImportGenius/Regrid data already happened to flow
+    in. There's no barge-manifest vendor to lean on for river/lake
+    corridors (see the "can we get barge manifest data" discussion --
+    no such market exists), so this uses firmographic/industry data
+    instead of cargo content: when a disruption fires, actively search
+    Apollo for companies in the industry it implies, near the real place
+    it happened.
+
+    Apollo's org search filters by a named location string (city/state),
+    not a lat/lon radius -- see telemetry/apollo.py -- so this uses each
+    target's `location_hint` (explicit per-lock data in usace.py's
+    MONITORED_LOCKS, not derived from coordinates) rather than inventing
+    a geo-radius parameter Apollo's real API doesn't support.
+
+    One Apollo call per distinct location per sweep, not per target --
+    several commodities sharing one lock (e.g. steel_coal + grain on the
+    same Ohio River lock) must not trigger two separate paid API calls
+    for the same place. A bad/failed call is swallowed per-location (one
+    flaky request must not drop every other target's results), same
+    posture as TelemetryAdapter.ingest.
+
+    Every result is written as its own TelemetryEvent, tagged
+    triggered_by_disruption, before being returned -- a candidate here
+    must trace back to a real stored row via source_reference, same
+    invariant as every other identification path in this module, not an
+    in-memory API response that vanishes after this sweep.
+    """
+    api_key = get_settings().apollo_api_key
+    if not api_key:
+        return []
+
+    adapter = ApolloAdapter(api_key=api_key)
+    identified: list[tuple[str, str, str, tuple[float, float] | None]] = []
+    seen_locations: set[str] = set()
+
+    for target in targets:
+        if not target.location_hint or target.location_hint in seen_locations:
+            continue
+        seen_locations.add(target.location_hint)
+
+        keywords = _COMMODITY_APOLLO_KEYWORDS.get(target.commodity)
+        if not keywords:
+            continue
+
+        try:
+            records = adapter.search(keywords, [target.location_hint])
+        except Exception:
+            continue  # one bad call must not drop every other target's results this sweep
+
+        weight_note = "" if target.weight >= 0.5 else f", secondary signal only ({target.weight:.0%} of this corridor's traffic)"
+        for record in records:
+            event = TelemetryEvent(
+                source=TelemetrySource.APOLLO,
+                title=record.title,
+                payload={
+                    **record.payload,
+                    "triggered_by_disruption": target.label,
+                    "hunt_commodity": target.commodity,
+                    "hunt_location": target.location_hint,
+                },
+            )
+            db.add(event)
+            db.flush()  # need event.id to build a real source_reference below
+            name = record.payload.get("name") or record.title
+            note = (
+                f"APOLLO INDUSTRY HUNT: actively searched for {keywords} companies near {target.location_hint} "
+                f"because of an active {target.commodity} disruption ({target.label}{weight_note}) -- this company "
+                "was not already sitting in any other feed, found by live industry+location search, not cargo data"
+            )
+            identified.append((str(name), f"telemetry_event:{event.id} [apollo] {record.title}", note, None))
+
+    db.commit()
+    return identified
+
+
 # ---------------------------------------------------------------------------
 # Shared signal detectors
 # ---------------------------------------------------------------------------
@@ -600,6 +700,7 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
         commodity_mix = event.payload.get("commodities") or {}
         lat, lon = event.payload.get("lat"), event.payload.get("lon")
         coordinates = (float(lat), float(lon)) if lat is not None and lon is not None else None
+        location_hint = event.payload.get("apollo_location")
 
         for commodity, weight in commodity_mix.items():
             if weight < _MIN_COMMODITY_WEIGHT:
@@ -615,6 +716,7 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
                     commodity=commodity,
                     coordinates=coordinates,
                     weight=weight,
+                    location_hint=location_hint,
                 )
             )
     return signals
@@ -695,6 +797,8 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
 
     for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(db, targets=targets):
         identified.append((company_name, source_reference, f"{corroboration_note} | {regrid_note}", coordinates))
+
+    identified += _stage2b_apollo_industry_hunt(db, targets)
 
     return identified
 
@@ -979,9 +1083,9 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
     signal_summary = "; ".join(f"[{s.kind}] {s.description}" for s in signals[:5])
 
     created = 0
-    for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(
-        db, targets=_geo_targets_from_signals(signals)
-    ):
+    geo_targets = _geo_targets_from_signals(signals)
+    identify_results = _identify_via_regrid(db, targets=geo_targets) + _stage2b_apollo_industry_hunt(db, geo_targets)
+    for company_name, source_reference, regrid_note, coordinates in identify_results:
         already = (
             db.query(SiloCandidate)
             .filter(SiloCandidate.silo == GRAIN_SILO, SiloCandidate.source_reference == source_reference)
