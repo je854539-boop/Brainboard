@@ -1025,6 +1025,125 @@ def _gdelt_local_distress_signals(db: Session, commodities: set[str] | None = No
     return signals
 
 
+# Generic business-distress language, with NO place or commodity baked
+# in -- the point of this query is to cast a wider net than
+# _gdelt_local_distress_signals' precise per-place-per-commodity
+# queries, catching disruption language that specific keyword list
+# didn't anticipate (a plant "idles," "cuts shifts," "furloughs
+# workers" instead of the exact words already in
+# _COMMODITY_DISTRESS_LANGUAGE).
+_BROAD_DISRUPTION_QUERY = (
+    '(fire OR explosion OR layoffs OR strike OR shutdown OR bankruptcy OR "plant closure" '
+    'OR closure OR flood OR idled OR furlough OR "cuts shifts" OR recall)'
+)
+
+
+def _build_place_commodity_index() -> dict[str, dict]:
+    """city name (lowercase) -> {lat, lon, state, commodities: set of
+    commodities plausible at that specific place}. Built from
+    MONITORED_LOCKS (real lat/lon + that lock's own real commodity mix)
+    first, then _NATIONWIDE_SWEEP_LOCATIONS fills in any of your top-6
+    metros not already covered by a lock (no real lat/lon for those --
+    a metro isn't anchored to one specific industry the way a lock is,
+    so every commodity except food_cost is left plausible there;
+    food_cost is deliberately excluded from place-based classification
+    since restaurants aren't geographically concentrated the way a mill
+    or elevator is -- that one is better served by the nationwide
+    sweep already built, not a "mentioned near this city" guess)."""
+    index: dict[str, dict] = {}
+    for lock in MONITORED_LOCKS:
+        city = lock["apollo_location"].split(",")[0].strip().lower()
+        if city not in index:
+            index[city] = {"lat": lock["lat"], "lon": lock["lon"], "state": lock["state"], "commodities": set((lock.get("commodities") or {}).keys())}
+    non_food_commodities = set(_COMMODITY_LAND_USE_KEYWORDS.keys()) - {"food_cost"}
+    for place in _NATIONWIDE_SWEEP_LOCATIONS:
+        city = place["apollo_location"].split(",")[0].strip().lower()
+        if city not in index:
+            index[city] = {"lat": None, "lon": None, "state": place["state"], "commodities": non_food_commodities}
+    return index
+
+
+def _gdelt_broad_disruption_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
+    """The open-net counterpart to _gdelt_local_distress_signals' precise
+    per-place queries: ONE unscoped national search for generic
+    business-distress language (no place, no commodity baked into the
+    query), then classify each hit against the real places and
+    industries this system already knows about (see
+    _build_place_commodity_index) by checking whether a known city name
+    AND a matching commodity's land-use keywords both appear in the
+    article's own title.
+
+    This is honestly a cruder classification than the targeted sweep --
+    a keyword match on a short article title, not a verified tag -- so
+    every signal this produces says so plainly in its description. It
+    is NOT full open-ended discovery of an industry/place this system
+    has never heard of: GDELT's article-search API doesn't hand back
+    structured "this article is about Company X in City Y" the way a
+    real entity-extraction product would, so this only ever finds a
+    disruption at a place/industry combination already defined here,
+    just without having to have pre-combined that exact place and that
+    exact commodity into a query string ahead of time. Real open-ended
+    discovery would need GDELT's separate Knowledge Graph product or an
+    actual text-reading step per article -- a different, bigger build,
+    not this one.
+
+    One single free GDELT call for the whole sweep, not one per place --
+    cheaper and catches broader disruption language than the targeted
+    sweep's AND-combined queries do.
+    """
+    adapter = GDELTAdapter()
+    place_index = _build_place_commodity_index()
+
+    try:
+        records = adapter.search(_BROAD_DISRUPTION_QUERY, maxrecords=50)
+    except Exception:
+        return []  # a single failed call here just means no broad-sweep signals this sweep, not an error
+
+    signals: list[MacroSignal] = []
+    for record in records:
+        title_lower = record.title.lower()
+        for city, info in place_index.items():
+            if city not in title_lower:
+                continue
+            for commodity in info["commodities"]:
+                if commodities is not None and commodity not in commodities:
+                    continue
+                keywords = _COMMODITY_LAND_USE_KEYWORDS.get(commodity, ())
+                if not any(k in title_lower for k in keywords):
+                    continue
+
+                event = TelemetryEvent(
+                    source=TelemetrySource.GDELT,
+                    title=record.title,
+                    payload={
+                        **record.payload, "local_news": True, "broad_sweep": True,
+                        "commodity": commodity, "lat": info["lat"], "lon": info["lon"], "state": info["state"], "place": city,
+                    },
+                )
+                db.add(event)
+                db.flush()
+                label = commodity.replace("_", " ")
+                signals.append(
+                    MacroSignal(
+                        kind="broad_news_distress",
+                        description=(
+                            f"GDELT broad-sweep match: '{record.title}' mentions {city.title()} and "
+                            f"{label}-related language -- approximate keyword classification, not a verified tag"
+                        ),
+                        source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                        commodity=commodity,
+                        coordinates=(float(info["lat"]), float(info["lon"])) if info["lat"] is not None else None,
+                        weight=1.0,
+                        location_hint=next((l["apollo_location"] for l in MONITORED_LOCKS if l["apollo_location"].lower().startswith(city)), None)
+                        or next((p["apollo_location"] for p in _NATIONWIDE_SWEEP_LOCATIONS if p["apollo_location"].lower().startswith(city)), None),
+                        state=info["state"],
+                    )
+                )
+
+    db.commit()
+    return signals
+
+
 def _gfw_anomaly_signals(db: Session) -> list[MacroSignal]:
     # GFW 4Wings' raw cell schema isn't confirmed against live docs (see
     # telemetry/gfw_4wings.py) -- rather than invent an unverified
@@ -1119,6 +1238,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         _cme_price_shock_signals(db)
         + _gdelt_shock_signals(db)
         + _gdelt_local_distress_signals(db)
+        + _gdelt_broad_disruption_signals(db)
         + _gfw_anomaly_signals(db)
         + _usace_disruption_signals(db)
     )
@@ -1516,6 +1636,7 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
     signals = (
         _cme_price_shock_signals(db, commodities={"grain"})
         + _gdelt_local_distress_signals(db, commodities={"grain"})
+        + _gdelt_broad_disruption_signals(db, commodities={"grain"})
         + _usace_disruption_signals(db, commodities={"grain"})
     )
     if not signals:
