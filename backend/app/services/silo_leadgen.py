@@ -310,7 +310,24 @@ def _trade_linked_port_note(payload: dict, targets: list["GeoTarget"]) -> str:
 # which means matching cargo content, not a company's industry tag.
 _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grain": ("corn", "soybean", "wheat", "grain", "oilseed"),
-    "steel_coal": ("steel", "coal", "iron ore", "coke", "aluminum"),
+    # "copper" added -- the April/June 2026 Section 232 revision
+    # explicitly expanded the steel/aluminum regime to copper too
+    # (confirmed via direct research, not a guess).
+    "steel_coal": ("steel", "coal", "iron ore", "coke", "aluminum", "copper"),
+    # Apparel/footwear -- one of the most consistently named tariff-
+    # exposed categories in current coverage (confirmed via direct
+    # research). Kept as ONE commodity, not split into wholesaler/
+    # retailer tiers like food -- the financing stories across that
+    # chain aren't differentiated enough here to justify the extra
+    # tiers, same reasoning furniture_wood already uses.
+    "apparel": ("apparel", "clothing", "footwear", "garment", "textile"),
+    # Auto parts/components -- confirmed Section 301 legacy list
+    # coverage on motor vehicles/industrial machinery from China.
+    # Deliberately NOT tied to Mexico despite deep US-auto supply-
+    # chain integration -- CUSMA-compliant auto parts are mostly
+    # exempt, so forcing Mexico in as "affected" here would misstate
+    # the real exemption, not just approximate it.
+    "auto_parts": ("auto parts", "automotive parts", "vehicle components", "auto components"),
     # "oil"/"natural gas"/"lng"/"petroleum" added so a crude/NG cargo
     # shipment -- or a geopolitical oil/gas headline -- classifies here
     # too, not just a finished-plastics shipment.
@@ -455,9 +472,44 @@ def _extract_country_of_origin(payload: dict) -> str | None:
 # fabricators/metal service centers, framed "expansion" -- that's the
 # real expansion story here (domestic producers gaining price
 # advantage), not a specific alternative import source.
+#
+# Four entries added from direct research into the actual July 2026
+# Section 301 forced-labor action and China's stacked legacy tariffs
+# (confirmed, not guessed -- though even professional trade-law
+# trackers disagree on some specifics, like Vietnam's exact rate
+# tier, so treat these as directionally right, not Federal-Register-
+# exact):
+#   - "russia" added to steel_coal -- Russian aluminum specifically
+#     carries a 200% ad valorem rate, far more extreme and
+#     differentiated than the general Canada/Section 232 exposure.
+#     Same commodity, same mechanism, just a second real affected
+#     country, not a replacement for Canada.
+#   - "apparel"/"auto_parts"/"semiconductor_distributor" added with
+#     China -- apparel/footwear and auto parts/industrial machinery
+#     are among the most consistently named tariff-exposed categories
+#     in current coverage; semiconductors reportedly face an
+#     especially high stacked China rate (least-confirmed figure of
+#     the four, flagged accordingly).
+#   - Deliberately NO diversion-beneficiary country for apparel --
+#     unlike furniture-to-Vietnam, Bangladesh/Cambodia/Vietnam (the
+#     realistic alternative sourcing countries) are ALSO tariffed
+#     under the broad 10%/12.5% action, just at a lower rate than
+#     China's stacked total. That's a relative-cost-advantage story,
+#     not a clean untaxed escape -- forcing one of them in as
+#     "beneficiary" here would overstate it.
+#   - HONEST LIMIT on apparel/semiconductor_distributor specifically:
+#     this check is shipment-level country of origin, not component-
+#     level. A device/garment assembled in Vietnam from Chinese
+#     components still carries real Chinese-content tariff exposure
+#     that this check cannot see -- it will under-detect, not
+#     over-claim, which is the safer direction to be wrong in, but
+#     it's a real gap, not a solved problem.
 _TARIFF_AFFECTED_COUNTRIES: dict[str, tuple[str, ...]] = {
     "furniture_wood": ("china",),
-    "steel_coal": ("canada",),
+    "steel_coal": ("canada", "russia"),
+    "apparel": ("china",),
+    "auto_parts": ("china",),
+    "semiconductor_distributor": ("china",),
 }
 _TARIFF_DIVERSION_BENEFICIARY_COUNTRIES: dict[str, tuple[str, ...]] = {
     "furniture_wood": ("vietnam", "malaysia", "indonesia"),
@@ -830,6 +882,11 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # import category at both) -- wide catchment for the nationwide-
     # sweep fallback, same as every other no-single-corridor commodity.
     "furniture_wood": 50.0,
+    # Apparel/footwear and auto parts are both consumer-goods-style
+    # import categories with no single corridor the way a river
+    # commodity has -- same wide-catchment logic.
+    "apparel": 50.0,
+    "auto_parts": 50.0,
     # Same wide-catchment logic as the food-chain tiers -- wholesalers/
     # retailers in these categories are dispersed nationally, not
     # clustered at a dock or plant.
@@ -855,7 +912,7 @@ _LAND_USE_KEYS = ("land_use", "landuse", "usedesc", "use_description", "zoning_d
 # dismisses a radius match for lack of a land-use field.
 _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grain": ("grain", "elevator", "agricultural", "farm", "silo"),
-    "steel_coal": ("steel", "iron", "ore", "coal", "metal", "foundry", "mill", "smelt", "aluminum"),
+    "steel_coal": ("steel", "iron", "ore", "coal", "metal", "foundry", "mill", "smelt", "aluminum", "copper"),
     "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics", "oil", "natural gas", "lng"),
     "petrochemical_producer": ("petrochemical", "chemical", "refinery", "petroleum", "plastics", "oil", "natural gas", "lng", "ngl processing"),
     # "container"/"shipping"/"cargo" added specifically so a Red Sea/
@@ -889,6 +946,8 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "semiconductor_distributor": ("semiconductor", "electronics distribution", "chip distributor", "electronic component"),
     "electronics_manufacturer": ("semiconductor", "electronics manufacturing", "circuit board assembly", "chip fabrication", "wafer fab", "neon gas"),
     "furniture_wood": ("furniture", "woodworking", "cabinetry", "sawmill", "lumber", "wood products"),
+    "apparel": ("apparel", "clothing", "garment", "footwear", "textile"),
+    "auto_parts": ("auto parts", "automotive parts", "auto components", "vehicle parts distribution"),
     "produce_wholesaler": ("produce distribution", "fruit and vegetable wholesale", "fresh produce", "cold storage"),
     "produce_retailer": ("produce market", "farmers market", "fruit stand", "grocery"),
     "liquor_distributor": ("liquor distribution", "beverage distributor", "spirits importer"),
@@ -1177,6 +1236,8 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     # org search can't pre-filter by country of origin the way Import
     # Genius's own records can (see _tariff_trade_diversion_note).
     "furniture_wood": ["furniture manufacturer", "furniture importer", "furniture wholesaler", "wood products manufacturer", "cabinetry manufacturer"],
+    "apparel": ["apparel importer", "clothing wholesaler", "footwear distributor", "garment manufacturer", "textile importer"],
+    "auto_parts": ["auto parts distributor", "automotive parts supplier", "auto parts wholesaler", "automotive components importer"],
     "produce_wholesaler": ["produce wholesaler", "fresh produce distributor", "fruit and vegetable importer"],
     "produce_retailer": ["produce market", "grocery store", "specialty food market"],
     "liquor_distributor": ["liquor distributor", "beverage distributor", "spirits importer"],
@@ -1348,6 +1409,8 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "semiconductor_distributor": "electronics distributor",
     "electronics_manufacturer": "electronics manufacturer",
     "furniture_wood": "furniture manufacturer",
+    "apparel": "clothing wholesaler",
+    "auto_parts": "auto parts distributor",
     "produce_wholesaler": "produce distributor",
     "produce_retailer": "grocery",
     "liquor_distributor": "beverage distributor",
