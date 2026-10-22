@@ -69,6 +69,21 @@ def silo_candidates_geo(db: Session = Depends(get_db)):
     ]
 
 
+@router.get("/performance-report")
+def silo_performance_report(db: Session = Depends(get_db)):
+    """Empirical conversion/funding rate per signal marker (tariff/Latin
+    America/Asia sourcing, demurrage, mixed sourcing, macro-corroboration,
+    cross-source confirmation, big-ticket revenue) and per telemetry
+    source, measured against each converted candidate's REAL Master Log
+    outcome (status, including "Docs in," and real funding_events
+    history) -- not a reasoned assumption. This is how the brain evolves
+    after real funded deals: re-run this periodically and use the real
+    docs_in_rate/funded_rate numbers to decide which _xxx_SCORE_BONUS
+    constants in silo_leadgen.py deserve to go up, down, or be cut --
+    see silo_leadgen.py::_signal_performance_report."""
+    return silo_leadgen._signal_performance_report(db)
+
+
 @router.get("/{candidate_uid}", response_model=SiloCandidateOut)
 def get_silo_candidate(candidate_uid: uuid.UUID, db: Session = Depends(get_db)):
     candidate = db.get(SiloCandidate, candidate_uid)

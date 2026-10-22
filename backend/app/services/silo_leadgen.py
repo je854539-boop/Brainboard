@@ -78,8 +78,8 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models.enums import SiloCandidateStatus, SiloName, TelemetrySource
-from app.models.orm import SiloCandidate, TelemetryEvent
+from app.models.enums import MasterLogStatus, SiloCandidateStatus, SiloName, TelemetrySource
+from app.models.orm import MasterLogEntry, SiloCandidate, TelemetryEvent
 from app.services import entity_matching, telemetry
 from app.services.telemetry.apollo import ApolloAdapter
 from app.services.telemetry.cobalt_intelligence import CobaltIntelligenceAdapter
@@ -3983,6 +3983,147 @@ def run_silo_leadgen(db: Session) -> dict:
         "cme_macro_funnel_waterfall": cme_result,
         "agriculture_grain_handling_waterfall": grain_result,
     }
+
+
+# ---------------------------------------------------------------------------
+# Signal performance report -- "how does the brain evolve after a few
+# funded deals or docs-in conversions." Every corroboration marker this
+# file emits (tariff/Latin America/Asia sourcing, demurrage, mixed
+# sourcing, macro-corroboration, cross-source confirmation, big-ticket
+# revenue) gets written into SiloCandidate.notes as a fixed, literal
+# string -- see each marker's own docstring/comment above. That means
+# the real-world OUTCOME of every one of those markers is already sitting
+# in the database the moment a candidate converts: SiloCandidate.
+# converted_lead_uid points at the MasterLogEntry it became, whose status
+# (including the real pipeline value "Docs in") and funding_events (the
+# real, append-only funded-dollar history, supporting repeat funding)
+# are the actual ground truth this system has been reasoning TOWARD this
+# entire session without ever actually measuring. This is that
+# measurement: it answers "which of our reasoned bonuses are real
+# signal and which are noise that just happens to fire a lot," using
+# real funded/docs-in outcomes, not another guess.
+# ---------------------------------------------------------------------------
+
+# The exact, literal marker strings every corroboration/standing check in
+# this file writes into SiloCandidate.notes -- kept here as the single
+# source of truth for the performance report so adding a new marker
+# anywhere above means adding it here too, not a separate guessed regex.
+_SIGNAL_PERFORMANCE_MARKERS = (
+    "TARIFF-AFFECTED SOURCING",
+    "TARIFF-DIVERSION WINNER",
+    "MIXED SOURCING",
+    "LATIN AMERICA SOURCING CONFIRMED",
+    "ASIA SOURCING CONFIRMED",
+    "DEMURRAGE RISK (CONFIRMED)",
+    "DEMURRAGE RISK (ESTIMATED)",
+    "BIG-TICKET CONFIRMED",
+    "MACRO-CORROBORATED",
+    "CROSS-SOURCE CONFIRMED",
+)
+
+# Every MasterLogStatus that means real paperwork actually came back from
+# the merchant -- "Docs in" itself, plus everything downstream of it in
+# the real pipeline (negotiation, an offer that didn't close, a sold deal
+# that later fell through, or funded). Deliberately NOT
+# DEAL_STALLED_PROXY_PASS -- that can stall before docs ever came in, so
+# counting it here would overstate how many of these leads were real
+# qualified interest, the same overclaim-avoidance posture as every
+# "honest limit" elsewhere in this file.
+_DOCS_IN_OR_FURTHER_STATUSES = frozenset(
+    {
+        MasterLogStatus.DOCS_IN,
+        MasterLogStatus.IN_NEGOTIATION,
+        MasterLogStatus.OFFER_MADE_NOT_SOLD,
+        MasterLogStatus.SOLD_DEAL_KILLED,
+        MasterLogStatus.FUNDED,
+    }
+)
+
+
+def _signal_performance_report(db: Session) -> list[dict]:
+    """Empirical conversion/funding performance per signal marker,
+    measured against real outcomes, not reasoned assumptions.
+
+    For every CONVERTED SiloCandidate that actually became a Master Log
+    lead, this walks that lead's real status and real funding_events
+    history and attributes the outcome back to every marker string
+    present in the candidate's own notes (a candidate can carry more than
+    one marker -- e.g. TARIFF-AFFECTED SOURCING and CROSS-SOURCE
+    CONFIRMED on the same shipment -- and gets counted under each one it
+    actually carries). A candidate with NONE of the known markers is
+    counted under "UNTAGGED" -- the baseline every real marker needs to
+    beat; a marker with a worse docs-in/funded rate than UNTAGGED is
+    noise, not signal, whatever its score bonus currently assumes.
+
+    Returns one row per marker (plus "UNTAGGED" and one row per
+    origin_source actually seen), each with:
+      - total_candidates: how many converted candidates carried this tag
+      - docs_in_or_further: how many of those reached real paperwork
+        (see _DOCS_IN_OR_FURTHER_STATUSES)
+      - funded_count: how many actually funded at least once
+      - total_funded_amount: real dollars funded across every funding
+        event tied to this tag's candidates (repeat funding counts every
+        event, not just the first)
+      - docs_in_rate / funded_rate: the two numbers that actually answer
+        "is this marker worth its score bonus"
+
+    Deliberately read-only and append-nothing -- this doesn't change any
+    score or bonus itself. The point is to hand a human (or a future
+    automated tuning pass) the real numbers needed to decide which
+    _xxx_SCORE_BONUS constants above deserve to go up, down, or be cut
+    entirely, after real deals, not before."""
+    converted = (
+        db.query(SiloCandidate)
+        .filter(SiloCandidate.status == SiloCandidateStatus.CONVERTED, SiloCandidate.converted_lead_uid.isnot(None))
+        .all()
+    )
+
+    stats: dict[str, dict] = {}
+
+    def _bucket(key: str) -> dict:
+        return stats.setdefault(
+            key, {"total_candidates": 0, "docs_in_or_further": 0, "funded_count": 0, "total_funded_amount": 0.0}
+        )
+
+    for candidate in converted:
+        lead = db.get(MasterLogEntry, candidate.converted_lead_uid)
+        if lead is None:
+            continue  # FK is ON DELETE SET NULL, but defensive regardless
+
+        docs_in_or_further = lead.status in _DOCS_IN_OR_FURTHER_STATUSES
+        funding_events = lead.funding_events
+        funded = len(funding_events) > 0
+        funded_amount = sum(float(fe.funded_amount) for fe in funding_events)
+
+        notes = candidate.notes or ""
+        matched_markers = [marker for marker in _SIGNAL_PERFORMANCE_MARKERS if marker in notes]
+        tags = matched_markers or ["UNTAGGED"]
+        if candidate.origin_source:
+            tags = tags + [f"source:{candidate.origin_source.value}"]
+
+        for tag in tags:
+            bucket = _bucket(tag)
+            bucket["total_candidates"] += 1
+            bucket["docs_in_or_further"] += int(docs_in_or_further)
+            bucket["funded_count"] += int(funded)
+            bucket["total_funded_amount"] += funded_amount
+
+    report = []
+    for tag, bucket in stats.items():
+        total = bucket["total_candidates"]
+        report.append(
+            {
+                "tag": tag,
+                "total_candidates": total,
+                "docs_in_or_further": bucket["docs_in_or_further"],
+                "funded_count": bucket["funded_count"],
+                "total_funded_amount": round(bucket["total_funded_amount"], 2),
+                "docs_in_rate": round(bucket["docs_in_or_further"] / total, 3) if total else 0.0,
+                "funded_rate": round(bucket["funded_count"] / total, 3) if total else 0.0,
+            }
+        )
+    report.sort(key=lambda r: (r["funded_rate"], r["total_candidates"]), reverse=True)
+    return report
 
 
 # ---------------------------------------------------------------------------
