@@ -2216,6 +2216,104 @@ def _gdelt_avian_flu_signals(db: Session) -> list[MacroSignal]:
     return signals
 
 
+# The population flagged as missing: a domestic PRODUCER squeezed by
+# a COMPETITOR's tariff relief, not by their own cost structure.
+# Argentina getting a beef tariff exemption doesn't change a US
+# rancher's costs -- it changes what they can sell for, by flooding
+# the market with a cheaper substitute. Economically that's the same
+# real-world direction as a price move DOWN for that commodity, so
+# this reuses _signal_type_for_price_direction(commodity, price_up=
+# False) rather than inventing a new classification rule -- same
+# mechanism as every other signal here, just fed the opposite
+# direction, because tariff RELIEF is the mirror image of tariff
+# IMPOSITION/supply disruption.
+#
+# A dedicated keyword check, NOT _classify_commodity_from_text --
+# that classifier returns only its FIRST match (petrochemical before
+# petrochemical_producer on an oil/gas headline, which would wrongly
+# skip the producer side this function specifically needs) and has no
+# beef/cattle keywords for livestock_producer at all. Both are real
+# limits of the general classifier that don't matter for its other
+# callers but would silently break this one, so this checks the
+# PRODUCER-side commodities directly instead.
+_TARIFF_RELIEF_PRODUCER_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "grain": ("grain", "wheat", "corn", "soybean"),
+    "steel_coal": ("steel", "aluminum", "coal"),
+    "livestock_producer": ("cattle", "beef", "livestock", "dairy"),
+    "petrochemical_producer": ("natural gas", "lng", "petrochemical"),
+}
+
+_TARIFF_RELIEF_QUERY = (
+    '("tariff exemption" OR "tariff waiver" OR "duty-free" OR "quota increase" OR "tariff relief" OR "import quota") AND '
+    '(grain OR wheat OR beef OR cattle OR steel OR aluminum OR "natural gas" OR petrochemical OR dairy)'
+)
+
+
+def _gdelt_tariff_relief_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
+    """Deliberately restricted to the PRODUCER side only (grain,
+    steel_coal, livestock_producer, petrochemical_producer) -- the
+    downstream consumer-side relief this same news creates (cheaper
+    beef is good for restaurants) is already covered by the existing
+    Latin America standing signal and the general GDELT sweep, so
+    this doesn't duplicate it.
+
+    HONEST LIMIT, deliberately NOT solved here: meat_processor
+    (slaughterhouses) sits in a genuinely ambiguous spot for this
+    exact trigger -- real competitive pressure on their OWN finished-
+    goods sales from the same cheap import, but also real input-cost
+    relief if softer domestic cattle demand follows. Those two effects
+    pull in opposite directions and this system has no way to know
+    which dominates, so meat_processor gets NO signal from this
+    function -- not a distress guess, not an expansion guess,
+    genuinely no claim. Forcing one would be exactly the weak signal
+    this was built to avoid.
+
+    No real place to anchor to (a national tariff-policy headline, not
+    a located disruption) -- routes through the nationwide sweep same
+    as every other place-less signal, driving the generic Apollo/
+    Cobalt hunt for ranches/mills/dairy farms/NGL producers, the exact
+    population Import Genius can never show you (they're not
+    importers -- that's the whole point)."""
+    adapter = GDELTAdapter()
+    try:
+        records = adapter.search(_TARIFF_RELIEF_QUERY, maxrecords=20)
+    except Exception:
+        return []  # a single failed call here just means no tariff-relief signal this sweep
+
+    signals: list[MacroSignal] = []
+    for record in records:
+        title_lower = record.title.lower()
+        for commodity, keywords in _TARIFF_RELIEF_PRODUCER_KEYWORDS.items():
+            if not any(k in title_lower for k in keywords):
+                continue
+            if commodities is not None and commodity not in commodities:
+                continue
+            signal_type = _signal_type_for_price_direction(commodity, price_up=False)
+            event = TelemetryEvent(
+                source=TelemetrySource.GDELT,
+                title=record.title,
+                payload={**record.payload, "geopolitical_commodity": commodity},
+            )
+            db.add(event)
+            db.flush()
+            signals.append(
+                MacroSignal(
+                    kind="tariff_relief_competitive_pressure",
+                    description=(
+                        f"GDELT tariff-relief/exemption coverage -- competitive pressure on domestic "
+                        f"{commodity} producers from a cheaper competing import ({signal_type}): {record.title}"
+                    ),
+                    source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                    commodity=commodity,
+                    signal_type=signal_type,
+                )
+            )
+            break  # one commodity match per headline is enough
+
+    db.commit()
+    return signals
+
+
 def _gdelt_shock_signals(db: Session) -> list[MacroSignal]:
     # GDELT's query (see telemetry/gdelt.py::COMMODITY_SHOCK_QUERY) is
     # already scoped to shock-relevant language -- "commodities crash",
@@ -2675,6 +2773,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + _tariff_policy_signals()
         + _latin_america_import_signals()
         + _gdelt_avian_flu_signals(db)
+        + _gdelt_tariff_relief_signals(db)
     )
 
 
