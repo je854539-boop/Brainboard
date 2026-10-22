@@ -310,7 +310,7 @@ def _trade_linked_port_note(payload: dict, targets: list["GeoTarget"]) -> str:
 # which means matching cargo content, not a company's industry tag.
 _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grain": ("corn", "soybean", "wheat", "grain", "oilseed"),
-    "steel_coal": ("steel", "coal", "iron ore", "coke"),
+    "steel_coal": ("steel", "coal", "iron ore", "coke", "aluminum"),
     "petrochemical": ("petrochemical", "resin", "plastic", "polymer", "chemical"),
     # Same cargo-content keywords across all four downstream tiers --
     # the physical commodity in a shipment doesn't change by which TIER
@@ -336,6 +336,14 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     "semiconductor_distributor": ("semiconductor", "integrated circuit", "microchip", "electronic component", "wafer"),
     "electronics_manufacturer": ("semiconductor", "integrated circuit", "microchip", "electronic component", "circuit board"),
     "furniture_wood": ("furniture", "wood", "lumber", "cabinetry", "wood products", "plywood"),
+    # Latin America trickle-down chain, generalized beyond just beef
+    # (meat_processor/food_wholesaler/food_retailer/food_service
+    # already exist for that) -- produce and liquor/spirits are the
+    # other two large, real Latin-America-sourced import categories.
+    "produce_wholesaler": ("produce", "fruit", "vegetable", "fresh produce"),
+    "produce_retailer": ("produce", "fruit", "vegetable", "fresh produce"),
+    "liquor_distributor": ("liquor", "spirits", "rum", "tequila", "wine", "beer"),
+    "liquor_retailer": ("liquor", "spirits", "rum", "tequila", "wine", "beer"),
 }
 
 # Standard bill-of-lading goods-description fields -- same defensive
@@ -411,13 +419,25 @@ def _extract_country_of_origin(payload: dict) -> str | None:
 # textbook case here: Vietnam (and, to a lesser extent, Malaysia/
 # Indonesia) absorbed a large, well-documented share of the sourcing
 # volume that shifted away from China as a direct result -- a real
-# reported pattern, not a guess. Add more commodity/country entries
-# here the same way once you confirm the specific tariff action you
-# want tracked (e.g. a Canada steel/aluminum tariff, a Latin America
-# action) -- deliberately not guessing those specifics without you
-# confirming the actual current policy.
+# reported pattern, not a guess.
+#
+# Section 232 steel/aluminum tariffs (Canada being the largest single
+# source of both US steel and aluminum imports) are the second real
+# entry here -- deliberately with NO diversion-beneficiary country
+# listed. Unlike furniture-to-Vietnam, there isn't one single country
+# that's absorbed Canada's lost steel/aluminum share at anywhere near
+# that same documented scale -- forcing a beneficiary country here
+# would be a guess dressed up as a fact. The expansion side of this
+# tariff is still covered, just through the mechanism already built
+# for it: steel_coal's trade_side is "producer" (see
+# _COMMODITY_TRADE_SIDE), so the standing tariff signal below drives
+# the generic nationwide Apollo/Cobalt hunt for domestic steel mills/
+# fabricators/metal service centers, framed "expansion" -- that's the
+# real expansion story here (domestic producers gaining price
+# advantage), not a specific alternative import source.
 _TARIFF_AFFECTED_COUNTRIES: dict[str, tuple[str, ...]] = {
     "furniture_wood": ("china",),
+    "steel_coal": ("canada",),
 }
 _TARIFF_DIVERSION_BENEFICIARY_COUNTRIES: dict[str, tuple[str, ...]] = {
     "furniture_wood": ("vietnam", "malaysia", "indonesia"),
@@ -503,6 +523,79 @@ def _tariff_policy_signals() -> list[MacroSignal]:
             signal_type="expansion",
         )
         for commodity, countries in _TARIFF_AFFECTED_COUNTRIES.items()
+    ]
+
+
+# The Argentina-beef chain, generalized to its own standing category
+# instead of only ever firing off a CME livestock price shock -- a
+# business with heavy, real import volume from a major Latin America
+# trade partner is a scaling operation on its own, whether or not
+# today's cattle futures moved. Covers the two NEW categories
+# (produce, liquor/spirits) plus the EXISTING beef-chain tiers, so an
+# Argentina-sourced beef shipment still gets this standing confirmation
+# even on a day with no CME price shock at all.
+_LATIN_AMERICA_COUNTRIES = (
+    "mexico", "brazil", "argentina", "colombia", "peru", "chile", "ecuador",
+    "guatemala", "costa rica", "honduras", "dominican republic", "panama",
+)
+_LATIN_AMERICA_RELEVANT_COMMODITIES = (
+    "produce_wholesaler", "produce_retailer", "liquor_distributor", "liquor_retailer",
+    "meat_processor", "food_wholesaler", "food_retailer", "food_service",
+)
+
+
+def _latin_america_sourcing_note(payload: dict) -> tuple[str, str | None]:
+    """A STANDING per-shipment check, same posture as
+    _tariff_trade_diversion_note -- doesn't need any MacroSignal to
+    have fired this sweep, since "this company does heavy business
+    with a major Latin America trade partner" is true independent of
+    today's news or price action. Always "expansion" when it fires --
+    unlike the tariff check, there's no two-sided distress/expansion
+    split here, just confirmation that a real, scaling import-driven
+    growth business exists.
+
+    Returns ("", None) when the shipment's goods don't match any
+    tracked category, or its country of origin isn't a major Latin
+    America trade partner -- never a dismiss, just no claim for that
+    shipment."""
+    description = _extract_goods_description(payload)
+    country = _extract_country_of_origin(payload)
+    if not description or not country:
+        return "", None
+    if not any(c in country for c in _LATIN_AMERICA_COUNTRIES):
+        return "", None
+
+    for commodity in _LATIN_AMERICA_RELEVANT_COMMODITIES:
+        keywords = _COMMODITY_GOODS_KEYWORDS.get(commodity, ())
+        if keywords and any(k in description for k in keywords):
+            return (
+                f"LATIN AMERICA SOURCING CONFIRMED: shipment's country of origin '{country}' is a major "
+                f"Latin America trade partner for {commodity} -- heavy, real import volume from this "
+                f"region, a scaling operation that needs capital to keep growing, not a distress read",
+                "expansion",
+            )
+    return "", None
+
+
+def _latin_america_import_signals() -> list[MacroSignal]:
+    """The standing macro-level counterpart to
+    _latin_america_sourcing_note -- same posture as
+    _tariff_policy_signals. Only generates signals for the two NEW
+    categories (produce, liquor/spirits); the existing beef-chain
+    tiers already have their own CME-price-driven signal generation
+    (_cme_price_shock_signals) and shouldn't get a second, competing
+    always-on "expansion" signal that could blur that existing
+    distress/expansion framing. The per-shipment check above still
+    covers beef-chain shipments regardless."""
+    return [
+        MacroSignal(
+            kind="latin_america_sourcing",
+            description=f"Standing Latin America import-volume signal for {commodity}",
+            source_reference=f"latin_america_sourcing:{commodity}",
+            commodity=commodity,
+            signal_type="expansion",
+        )
+        for commodity in ("produce_wholesaler", "produce_retailer", "liquor_distributor", "liquor_retailer")
     ]
 
 
@@ -655,6 +748,13 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # import category at both) -- wide catchment for the nationwide-
     # sweep fallback, same as every other no-single-corridor commodity.
     "furniture_wood": 50.0,
+    # Same wide-catchment logic as the food-chain tiers -- wholesalers/
+    # retailers in these categories are dispersed nationally, not
+    # clustered at a dock or plant.
+    "produce_wholesaler": 50.0,
+    "produce_retailer": 50.0,
+    "liquor_distributor": 50.0,
+    "liquor_retailer": 50.0,
 }
 _DEFAULT_SEARCH_RADIUS_MILES = 25.0
 
@@ -673,7 +773,7 @@ _LAND_USE_KEYS = ("land_use", "landuse", "usedesc", "use_description", "zoning_d
 # dismisses a radius match for lack of a land-use field.
 _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grain": ("grain", "elevator", "agricultural", "farm", "silo"),
-    "steel_coal": ("steel", "iron", "ore", "coal", "metal", "foundry", "mill", "smelt"),
+    "steel_coal": ("steel", "iron", "ore", "coal", "metal", "foundry", "mill", "smelt", "aluminum"),
     "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics"),
     # "container"/"shipping"/"cargo" added specifically so a Red Sea/
     # Suez/Panama Canal chokepoint headline -- which talks about ships
@@ -706,6 +806,10 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "semiconductor_distributor": ("semiconductor", "electronics distribution", "chip distributor", "electronic component"),
     "electronics_manufacturer": ("semiconductor", "electronics manufacturing", "circuit board assembly", "chip fabrication", "wafer fab", "neon gas"),
     "furniture_wood": ("furniture", "woodworking", "cabinetry", "sawmill", "lumber", "wood products"),
+    "produce_wholesaler": ("produce distribution", "fruit and vegetable wholesale", "fresh produce", "cold storage"),
+    "produce_retailer": ("produce market", "farmers market", "fruit stand", "grocery"),
+    "liquor_distributor": ("liquor distribution", "beverage distributor", "spirits importer"),
+    "liquor_retailer": ("liquor store", "wine shop", "beverage retail"),
 }
 
 
@@ -989,6 +1093,10 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     # org search can't pre-filter by country of origin the way Import
     # Genius's own records can (see _tariff_trade_diversion_note).
     "furniture_wood": ["furniture manufacturer", "furniture importer", "furniture wholesaler", "wood products manufacturer", "cabinetry manufacturer"],
+    "produce_wholesaler": ["produce wholesaler", "fresh produce distributor", "fruit and vegetable importer"],
+    "produce_retailer": ["produce market", "grocery store", "specialty food market"],
+    "liquor_distributor": ["liquor distributor", "beverage distributor", "spirits importer"],
+    "liquor_retailer": ["liquor store", "wine and spirits retailer", "beverage retailer"],
 }
 
 # Who actually makes a financing decision at a small/mid-size business --
@@ -1155,6 +1263,10 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "semiconductor_distributor": "electronics distributor",
     "electronics_manufacturer": "electronics manufacturer",
     "furniture_wood": "furniture manufacturer",
+    "produce_wholesaler": "produce distributor",
+    "produce_retailer": "grocery",
+    "liquor_distributor": "beverage distributor",
+    "liquor_retailer": "liquor store",
 }
 
 
@@ -1920,6 +2032,7 @@ def _build_place_commodity_index() -> dict[str, dict]:
             index[city] = {"lat": lock["lat"], "lon": lock["lon"], "state": lock["state"], "commodities": set((lock.get("commodities") or {}).keys())}
     metro_plausible_commodities = set(_COMMODITY_LAND_USE_KEYWORDS.keys()) - {
         "meat_processor", "food_wholesaler", "food_retailer", "food_service", "livestock_producer",
+        "produce_wholesaler", "produce_retailer", "liquor_distributor", "liquor_retailer",
     }
     for place in _NATIONWIDE_SWEEP_LOCATIONS:
         city = place["apollo_location"].split(",")[0].strip().lower()
@@ -2167,6 +2280,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + _gfw_anomaly_signals(db)
         + usace_signals
         + _tariff_policy_signals()
+        + _latin_america_import_signals()
     )
 
 
@@ -2292,7 +2406,10 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
             # _tariff_trade_diversion_note's docstring on why this isn't
             # signal-gated the way the two checks above are).
             tariff_note, _tariff_signal_type = _tariff_trade_diversion_note(event.payload)
-            trade_link_note = f"{port_link_note}{goods_link_note}{tariff_note + ' -- ' if tariff_note else ''}"
+            latam_note, _latam_signal_type = _latin_america_sourcing_note(event.payload)
+            standing_note = f"{tariff_note} -- " if tariff_note else ""
+            standing_note += f"{latam_note} -- " if latam_note else ""
+            trade_link_note = f"{port_link_note}{goods_link_note}{standing_note}"
             note = f"{trade_link_note}{corroboration_note}" if trade_link_note else corroboration_note
             identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", note, None))
 
@@ -2476,6 +2593,9 @@ _DEMURRAGE_CONFIRMED_SCORE_BONUS = 22.0
 # country of origin is a measured fact about this specific shipment
 # (see _tariff_trade_diversion_note), not an industry-level guess.
 _TARIFF_CLASSIFICATION_SCORE_BONUS = 12.0
+
+# Same confidence tier, same reasoning -- see _latin_america_sourcing_note.
+_LATIN_AMERICA_SOURCING_SCORE_BONUS = 12.0
 
 
 def _extract_arrival_date(payload: dict) -> date | None:
@@ -2738,7 +2858,10 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
             if "TARIFF-AFFECTED SOURCING" in corroboration_note or "TARIFF-DIVERSION WINNER" in corroboration_note
             else 0.0
         )
-        score_delta = standing_delta + revenue_delta + cross_source_bonus + macro_corroboration_bonus + tariff_bonus
+        latam_bonus = _LATIN_AMERICA_SOURCING_SCORE_BONUS if "LATIN AMERICA SOURCING CONFIRMED" in corroboration_note else 0.0
+        score_delta = (
+            standing_delta + revenue_delta + cross_source_bonus + macro_corroboration_bonus + tariff_bonus + latam_bonus
+        )
         dismiss = standing_dismiss or revenue_dismiss
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
 
@@ -2984,6 +3107,15 @@ def run_silo_leadgen(db: Session) -> dict:
                 if tariff_note:
                     score = (score if score is not None else 50.0) + _TARIFF_CLASSIFICATION_SCORE_BONUS
                     notes = f"{notes} | {tariff_note}" if notes else tariff_note
+
+                # Same standing-check posture as tariff above -- a real
+                # Latin America trade partner in the country-of-origin
+                # field is confirmation on its own, not gated on any
+                # macro signal having fired this sweep.
+                latam_note, _latam_signal_type = _latin_america_sourcing_note(event.payload)
+                if latam_note:
+                    score = (score if score is not None else 50.0) + _LATIN_AMERICA_SOURCING_SCORE_BONUS
+                    notes = f"{notes} | {latam_note}" if notes else latam_note
 
             db.add(
                 SiloCandidate(
