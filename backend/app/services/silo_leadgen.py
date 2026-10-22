@@ -329,6 +329,12 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     # land-use/Apollo keywords below
     # (which target the FULFILLMENT/3PL operators, not the importers).
     "ecommerce_logistics": ("consumer goods", "apparel", "footwear", "toys", "electronics", "housewares", "general merchandise"),
+    # Component-level cargo content, distinct from ecommerce_logistics'
+    # generic "electronics" (finished consumer goods) -- this is what
+    # answers "who's actually importing/moving the chips," the same
+    # transactional logic as the beef/fertilizer goods matches.
+    "semiconductor_distributor": ("semiconductor", "integrated circuit", "microchip", "electronic component", "wafer"),
+    "electronics_manufacturer": ("semiconductor", "integrated circuit", "microchip", "electronic component", "circuit board"),
 }
 
 # Standard bill-of-lading goods-description fields -- same defensive
@@ -517,6 +523,13 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # Fulfillment centers/3PLs serve a wide regional catchment, not one
     # dock -- same wide-catchment logic as port_congestion/logistics_fuel.
     "ecommerce_logistics": 60.0,
+    # Electronics distributors/manufacturers are dispersed nationally
+    # (Silicon Valley/Austin/Phoenix concentration exists, but these
+    # commodities flow almost entirely through the nationwide sweep,
+    # same reasoning as aerospace_defense -- no CME price proxy, no
+    # single corridor the way a river commodity has).
+    "semiconductor_distributor": 50.0,
+    "electronics_manufacturer": 50.0,
 }
 _DEFAULT_SEARCH_RADIUS_MILES = 25.0
 
@@ -537,7 +550,11 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grain": ("grain", "elevator", "agricultural", "farm", "silo"),
     "steel_coal": ("steel", "iron", "ore", "coal", "metal", "foundry", "mill", "smelt"),
     "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics"),
-    "port_congestion": ("warehouse", "distribution", "logistics", "fulfillment", "freight", "terminal"),
+    # "container"/"shipping"/"cargo" added specifically so a Red Sea/
+    # Suez/Panama Canal chokepoint headline -- which talks about ships
+    # and canals, not warehouses -- still classifies as port_congestion
+    # via _classify_commodity_from_text instead of matching nothing.
+    "port_congestion": ("warehouse", "distribution", "logistics", "fulfillment", "freight", "terminal", "container", "shipping", "cargo"),
     "logistics_fuel": ("trucking", "logistics", "freight", "warehouse", "distribution", "transportation", "fleet"),
     # Four distinct downstream tiers of the same livestock/dairy
     # complex -- processor, wholesaler, retailer, foodservice -- split
@@ -556,6 +573,13 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "aerospace_defense": ("aerospace", "defense contractor", "aircraft", "avionics", "missile", "satellite", "aviation"),
     "fertilizer": ("fertilizer", "potash", "ammonia", "agricultural chemical", "crop input", "agribusiness"),
     "ecommerce_logistics": ("fulfillment", "warehouse", "distribution", "logistics", "parcel", "last mile", "cold storage"),
+    # "neon"/"wafer"/"fab" catch the Ukraine-neon and Taiwan/China chip
+    # angles specifically -- this list doubles as the keyword vocabulary
+    # _classify_commodity_from_text uses for a geopolitical headline, not
+    # just Regrid land-use text, same dual-purpose reuse as every other
+    # commodity here.
+    "semiconductor_distributor": ("semiconductor", "electronics distribution", "chip distributor", "electronic component"),
+    "electronics_manufacturer": ("semiconductor", "electronics manufacturing", "circuit board assembly", "chip fabrication", "wafer fab", "neon gas"),
 }
 
 
@@ -830,6 +854,8 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "aerospace_defense": ["aerospace manufacturer", "defense contractor", "aircraft parts supplier", "avionics company", "aerospace supplier"],
     "fertilizer": ["fertilizer distributor", "agricultural chemical company", "crop input supplier", "farm supply", "agribusiness"],
     "ecommerce_logistics": ["fulfillment center", "third-party logistics", "last-mile delivery", "e-commerce logistics", "parcel carrier", "warehousing and storage"],
+    "semiconductor_distributor": ["electronics distributor", "semiconductor distributor", "electronic component distributor"],
+    "electronics_manufacturer": ["electronics manufacturer", "contract electronics manufacturer", "circuit board assembly", "electronics manufacturing services"],
 }
 
 # Who actually makes a financing decision at a small/mid-size business --
@@ -993,6 +1019,8 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "aerospace_defense": "aerospace",
     "fertilizer": "fertilizer",
     "ecommerce_logistics": "fulfillment",
+    "semiconductor_distributor": "electronics distributor",
+    "electronics_manufacturer": "electronics manufacturer",
 }
 
 
@@ -1189,7 +1217,36 @@ _COMMODITY_TRADE_SIDE: dict[str, str] = {
     # (e.g. cheap imports flooding the market) squeezes THEM even
     # though it's relief for the four downstream tiers above.
     "livestock_producer": "producer",
+    # US ag buyers (farms, ag retailers, fertilizer distributors) buy
+    # potash/fertilizer as an input -- same mirror-image logic as
+    # petrochemical. No CME-listed futures contract for potash, but
+    # this still drives the geopolitical disruption classifier below.
+    "fertilizer": "consumer",
+    # Both downstream semiconductor/electronics tiers buy chips/
+    # materials as an input, same mirror-image logic as every other
+    # consumer-side commodity.
+    "semiconductor_distributor": "consumer",
+    "electronics_manufacturer": "consumer",
 }
+
+
+def _signal_type_for_price_direction(commodity: str, price_up: bool) -> str | None:
+    """Shared producer/consumer x direction classification -- used by
+    both an actual price move (_cme_price_shock_signals) and a
+    geopolitical supply-disruption headline
+    (_gdelt_geopolitical_disruption_signals), which has no real price
+    number but implies the same direction (a war/sanctions/export-ban
+    on a commodity that concentrated is supply AT RISK, i.e. implied
+    price UP) -- same mirror-image logic either way: a price UP is a
+    revenue windfall for a producer (expansion) and a cost squeeze for
+    a consumer (distress), and the reverse for a price DOWN. Returns
+    None for an untagged/unclassified commodity -- never guessed."""
+    trade_side = _COMMODITY_TRADE_SIDE.get(commodity)
+    if trade_side == "producer":
+        return "expansion" if price_up else "distress"
+    if trade_side == "consumer":
+        return "distress" if price_up else "expansion"
+    return None
 
 
 def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
@@ -1239,14 +1296,8 @@ def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -
             if commodities is not None and commodity not in commodities:
                 continue
 
+            signal_type = _signal_type_for_price_direction(commodity, price_up)
             trade_side = _COMMODITY_TRADE_SIDE.get(commodity)
-            if trade_side == "producer":
-                signal_type = "expansion" if price_up else "distress"
-            elif trade_side == "consumer":
-                signal_type = "distress" if price_up else "expansion"
-            else:
-                signal_type = None  # untagged/unclassified commodity -- don't guess
-
             framing = (
                 f"{signal_type} signal ({trade_side} of this commodity)" if signal_type else "shock (unclassified)"
             )
@@ -1484,72 +1535,96 @@ def _highergov_contract_signals(db: Session, commodities: set[str] | None = None
 # chain, just triggered by a port instead of a price.
 
 
-# Geopolitical supply-disruption language for a critical ag input with
-# no CME-listed futures contract to read a price direction from (potash/
-# fertilizer isn't one of SYMBOL_COMMODITIES' symbols). Russia/Belarus/
-# Ukraine together produce roughly 40% of world potash, and Iran is a
-# major urea/ammonia exporter -- a war, sanctions, or export-ban
-# headline touching any of them is read the same way
-# _highergov_contract_signals reads a contract award: no price proxy to
-# measure direction from, but the real-world direction is unambiguous
-# enough to hardcode. A war or export ban on a commodity this
-# concentrated is supply AT RISK, which is a cost squeeze for the US
-# buyers who need it (farms, ag retailers, fertilizer distributors),
-# never relief -- so this is always "distress", same confidence posture
-# as HigherGov's always-"expansion".
-_FERTILIZER_GEOPOLITICAL_QUERY = (
-    '(potash OR fertilizer OR urea OR ammonia OR phosphate) AND '
-    '(Russia OR Belarus OR Ukraine OR Iran OR war OR sanctions OR "export ban")'
+# Geopolitical supply-disruption language, generalized across EVERY
+# commodity that has a real foreign-concentration story, not just
+# fertilizer -- this is the Argentina-beef chain's logic applied to
+# war/sanctions/export-ban coverage: a conflict or export ban on a
+# commodity concentrated abroad means its GLOBAL supply is at risk,
+# which is the same real-world direction as a price move UP (scarcity)
+# even though there's no CME-listed futures contract to read an actual
+# number from for most of these (potash, neon/semiconductor materials,
+# Ukrainian steel/grain). Rather than hardcoding one direction per
+# commodity the way the old fertilizer-only version did, this runs the
+# SAME producer/consumer x direction classification a real price shock
+# gets (see _signal_type_for_price_direction) -- a war that threatens
+# Ukraine's wheat exports is RELIEF/expansion for US grain producers
+# (they capture the price windfall), while the same war threatening
+# Russia/Belarus potash exports is DISTRESS for US ag buyers who
+# depend on it. One mechanism, correctly opposite outcomes, same as
+# the beef producer/consumer split.
+#
+# Country/hotspot list is deliberately broad (not fertilizer-specific
+# anymore): Russia/Belarus/Ukraine (grain, steel, potash), Iran (urea/
+# ammonia), Taiwan/China (semiconductors -- Taiwan fabs the overwhelming
+# majority of advanced chips; Ukraine separately supplies a large share
+# of the neon gas used in chip lithography), and the Red Sea/Suez/
+# Panama Canal chokepoints (general shipping/container disruption,
+# classified to port_congestion/ecommerce_logistics via the "container"/
+# "shipping"/"cargo" keywords added to that commodity's land-use list).
+_GEOPOLITICAL_SUPPLY_DISRUPTION_QUERY = (
+    '(war OR sanctions OR "export ban" OR "export controls" OR blockade OR conflict) AND '
+    '(grain OR wheat OR fertilizer OR potash OR ammonia OR steel OR semiconductor OR chip OR '
+    '"neon gas" OR wafer OR container OR shipping) AND '
+    '(Russia OR Ukraine OR Belarus OR Iran OR Taiwan OR China OR "Red Sea" OR Suez OR "Panama Canal")'
 )
 
 
-def _gdelt_geopolitical_fertilizer_signals(db: Session) -> list[MacroSignal]:
+def _gdelt_geopolitical_disruption_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
     """Nationwide, not per-place, same posture as _gdelt_shock_signals'
-    national sweep -- a Ukraine/Belarus/Iran supply disruption has no
-    single US location to anchor to. One free GDELT call for the whole
-    sweep.
+    national sweep -- none of these hotspots map to a single US
+    location. One free GDELT call for the whole sweep, then each hit
+    is classified to a commodity by keyword
+    (_classify_commodity_from_text, the same function HigherGov/the
+    national sweep already use) and given a direction via
+    _signal_type_for_price_direction -- no hardcoded direction per
+    commodity anymore.
 
     Routes through the nationwide sweep downstream by default (no
     coordinates/location_hint/state set here) -- UNLESS this sweep's
-    USACE read ALSO shows a disruption on a river corridor that
-    actually carries real fertilizer tonnage (see usace.py's
-    MONITORED_LOCKS: the Mississippi/Illinois grain corridor and the
-    New Orleans GIWW import gateway both now carry a fertilizer weight,
-    since fertilizer genuinely backhauls upriver on the same barges
-    that carry grain down). That corroboration is what
-    _hot_commodities_this_sweep + _stage1_detect_signals' macro_
-    corroborated flag turns a geopolitical headline into a river-scan-
-    confirmed hunt, not a global guess -- this is "narrow it down to
-    the river scan" in code: geopolitical news says fertilizer is hot,
-    USACE says whether that's ALSO showing up as real barge activity on
-    the actual corridor that moves it, before Apollo/Cobalt spend a
-    paid call on it.
+    USACE read ALSO shows a disruption on a river/port corridor that
+    actually carries that commodity's real tonnage (fertilizer on the
+    Mississippi/Illinois + New Orleans GIWW, port_congestion/
+    ecommerce_logistics at the coastal ports -- see usace.py). That
+    corroboration is what _hot_commodities_this_sweep +
+    _stage1_detect_signals' macro_corroborated flag turns a
+    geopolitical headline into a river/port-scan-confirmed hunt, not a
+    global guess -- "narrow it down to the river scan" in code.
 
     Every hit is written as its own TelemetryEvent, same real-stored-
     row invariant as every other active-hunt path in this module.
     """
     adapter = GDELTAdapter()
     try:
-        records = adapter.search(_FERTILIZER_GEOPOLITICAL_QUERY, maxrecords=20)
+        records = adapter.search(_GEOPOLITICAL_SUPPLY_DISRUPTION_QUERY, maxrecords=20)
     except Exception:
-        return []  # a single failed call here just means no geopolitical fertilizer signal this sweep
+        return []  # a single failed call here just means no geopolitical disruption signal this sweep
 
     signals: list[MacroSignal] = []
     for record in records:
+        commodity = _classify_commodity_from_text(record.title)
+        if not commodity:
+            continue
+        if commodities is not None and commodity not in commodities:
+            continue
+
+        signal_type = _signal_type_for_price_direction(commodity, price_up=True)
         event = TelemetryEvent(
             source=TelemetrySource.GDELT,
             title=record.title,
-            payload={**record.payload, "geopolitical_commodity": "fertilizer"},
+            payload={**record.payload, "geopolitical_commodity": commodity},
         )
         db.add(event)
         db.flush()
         signals.append(
             MacroSignal(
-                kind="geopolitical_commodity_disruption",
-                description=f"GDELT geopolitical fertilizer/potash supply-disruption coverage: {record.title}",
+                kind="geopolitical_supply_disruption",
+                description=(
+                    f"GDELT geopolitical supply-disruption coverage classified {commodity} "
+                    f"({signal_type or 'unclassified'}): {record.title}"
+                ),
                 source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
-                commodity="fertilizer",
-                signal_type="distress",
+                commodity=commodity,
+                signal_type=signal_type,
             )
         )
 
@@ -1925,17 +2000,19 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     once one is.
 
     ALSO includes a geopolitical macro-level channel
-    (_gdelt_geopolitical_fertilizer_signals -- a war/sanctions/export-
-    ban headline on potash/fertilizer, treated the same priority as a
-    CME price shock or a contract award). e-commerce/fulfillment has no
-    dedicated channel here anymore -- it's driven by real port
-    disruption instead of a calendar date, so it surfaces through
+    (_gdelt_geopolitical_disruption_signals -- a war/sanctions/export-
+    ban headline covering grain, fertilizer, steel, semiconductors, or
+    a shipping chokepoint, classified by commodity and given a real
+    producer/consumer direction, not a hardcoded one, treated the same
+    priority as a CME price shock or a contract award). e-commerce/
+    fulfillment has no dedicated calendar channel here -- it's driven
+    by real port disruption instead, so it surfaces through
     usace_signals itself (ecommerce_logistics is now a weighted
     commodity on the 4 coastal port_congestion locks, see usace.py)."""
     cme_signals = _cme_price_shock_signals(db)
     national_gdelt_signals = _gdelt_shock_signals(db)
     contract_signals = _highergov_contract_signals(db)
-    geopolitical_signals = _gdelt_geopolitical_fertilizer_signals(db)
+    geopolitical_signals = _gdelt_geopolitical_disruption_signals(db)
     hot = _hot_commodities_this_sweep(cme_signals + national_gdelt_signals + contract_signals + geopolitical_signals)
 
     local_signals = _gdelt_local_distress_signals(db)
