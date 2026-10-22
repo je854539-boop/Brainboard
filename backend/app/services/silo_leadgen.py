@@ -335,6 +335,7 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     # transactional logic as the beef/fertilizer goods matches.
     "semiconductor_distributor": ("semiconductor", "integrated circuit", "microchip", "electronic component", "wafer"),
     "electronics_manufacturer": ("semiconductor", "integrated circuit", "microchip", "electronic component", "circuit board"),
+    "furniture_wood": ("furniture", "wood", "lumber", "cabinetry", "wood products", "plywood"),
 }
 
 # Standard bill-of-lading goods-description fields -- same defensive
@@ -385,6 +386,124 @@ def _commodity_trade_linked_note(payload: dict, targets: list["GeoTarget"]) -> s
                 f"moving that commodity, not just a business near a disruption -- "
             )
     return ""
+
+
+# Standard bill-of-lading country-of-origin field name isn't confirmed
+# against Import Genius's live schema -- same defensive multi-key
+# posture as _extract_address/_extract_port_of_entry.
+_COUNTRY_OF_ORIGIN_KEYS = ("country_of_origin", "origin_country", "shipper_country", "exporter_country", "country")
+
+
+def _extract_country_of_origin(payload: dict) -> str | None:
+    for key in _COUNTRY_OF_ORIGIN_KEYS:
+        value = payload.get(key)
+        if value:
+            return str(value).lower()
+    return None
+
+
+# Known active US tariff actions and their real, documented trade-
+# diversion beneficiaries -- maintained as a standing policy fact, same
+# posture as MONITORED_LOCKS or SYMBOL_COMMODITIES: tariff policy is
+# public and changes rarely, so this is something to UPDATE when it
+# actually changes, not something to "discover" fresh from a news
+# query every sweep. Section 301 tariffs on Chinese furniture are the
+# textbook case here: Vietnam (and, to a lesser extent, Malaysia/
+# Indonesia) absorbed a large, well-documented share of the sourcing
+# volume that shifted away from China as a direct result -- a real
+# reported pattern, not a guess. Add more commodity/country entries
+# here the same way once you confirm the specific tariff action you
+# want tracked (e.g. a Canada steel/aluminum tariff, a Latin America
+# action) -- deliberately not guessing those specifics without you
+# confirming the actual current policy.
+_TARIFF_AFFECTED_COUNTRIES: dict[str, tuple[str, ...]] = {
+    "furniture_wood": ("china",),
+}
+_TARIFF_DIVERSION_BENEFICIARY_COUNTRIES: dict[str, tuple[str, ...]] = {
+    "furniture_wood": ("vietnam", "malaysia", "indonesia"),
+}
+
+
+def _tariff_trade_diversion_note(payload: dict) -> tuple[str, str | None]:
+    """The Argentina-beef producer/consumer split, applied to tariff
+    policy instead of a price move or a war headline. A tariff creates
+    a THREE-WAY split, not a two-way one:
+    1. An importer still sourcing from the TARIFFED country is now
+       paying it -- margin squeeze or a forced re-sourcing cost, a
+       real bridge-capital need regardless of underlying health.
+    2. An importer who shifted sourcing to a real, documented
+       diversion-beneficiary country is scaling a GROWING import flow
+       -- a real expansion-capital need.
+    3. A domestic producer of the competing good benefits too, but
+       Import Genius has no domestic-shipment record to check a
+       country of origin against -- that population is covered
+       separately by the generic nationwide Apollo/Cobalt hunt for
+       this commodity (see _tariff_policy_signals, framed "expansion"
+       by default).
+
+    This is a STANDING per-shipment check, independent of whether any
+    MacroSignal fired this sweep -- tariff policy doesn't "shock" the
+    way a price move does, it's a persistent condition, so every fresh
+    Import Genius shipment matching a tariff-tracked commodity's goods
+    content gets checked against its own country of origin every
+    sweep, not gated on an active signal.
+
+    Returns (note, signal_type) -- ("", None) when the shipment's
+    goods don't match any tariff-tracked commodity, or its country of
+    origin is neither the tariffed country nor a documented diversion
+    beneficiary (true for most countries and most shipments) -- never
+    a dismiss, just no claim either way for that specific shipment.
+    """
+    description = _extract_goods_description(payload)
+    country = _extract_country_of_origin(payload)
+    if not description or not country:
+        return "", None
+
+    for commodity in {**_TARIFF_AFFECTED_COUNTRIES, **_TARIFF_DIVERSION_BENEFICIARY_COUNTRIES}:
+        keywords = _COMMODITY_GOODS_KEYWORDS.get(commodity, ())
+        if not keywords or not any(k in description for k in keywords):
+            continue
+
+        affected = _TARIFF_AFFECTED_COUNTRIES.get(commodity, ())
+        beneficiary = _TARIFF_DIVERSION_BENEFICIARY_COUNTRIES.get(commodity, ())
+        if any(c in country for c in affected):
+            return (
+                f"TARIFF-AFFECTED SOURCING: shipment's country of origin '{country}' is subject to the "
+                f"active {commodity} tariff -- likely margin squeeze or re-sourcing cost, a real "
+                f"bridge-capital need regardless of underlying business health",
+                "distress",
+            )
+        if any(c in country for c in beneficiary):
+            return (
+                f"TARIFF-DIVERSION WINNER: shipment's country of origin '{country}' is a real, documented "
+                f"trade-diversion beneficiary for {commodity} (absorbing volume shifted away from the "
+                f"tariffed country) -- scaling import volume, a real expansion-capital need",
+                "expansion",
+            )
+    return "", None
+
+
+def _tariff_policy_signals() -> list[MacroSignal]:
+    """A standing policy fact, not an event -- tariff policy doesn't
+    expire on a date or need a fresh news hit to still be true, it
+    stays active until _TARIFF_AFFECTED_COUNTRIES is updated to reflect
+    a real policy change. Drives the generic nationwide Apollo/Cobalt
+    hunt for this commodity's domestic manufacturers/distributors
+    (framed "expansion" by default -- the broad story here is import-
+    substitution/trade-diversion growth, not distress) while the
+    PER-SHIPMENT country-of-origin check (_tariff_trade_diversion_note)
+    refines or overrides that framing for any specific Import Genius
+    candidate whose actual country of origin is known."""
+    return [
+        MacroSignal(
+            kind="tariff_policy",
+            description=f"Active US tariff policy affecting {commodity} sourcing from {', '.join(countries)}",
+            source_reference=f"tariff_policy:{commodity}",
+            commodity=commodity,
+            signal_type="expansion",
+        )
+        for commodity, countries in _TARIFF_AFFECTED_COUNTRIES.items()
+    ]
 
 
 _STREET_SUFFIXES = {
@@ -530,6 +649,12 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # single corridor the way a river commodity has).
     "semiconductor_distributor": 50.0,
     "electronics_manufacturer": 50.0,
+    # Furniture/wood importers cluster at the same major container
+    # ports as ecommerce_logistics (real weight added to LA/Long Beach
+    # and Savannah in usace.py -- furniture is a dominant container-
+    # import category at both) -- wide catchment for the nationwide-
+    # sweep fallback, same as every other no-single-corridor commodity.
+    "furniture_wood": 50.0,
 }
 _DEFAULT_SEARCH_RADIUS_MILES = 25.0
 
@@ -580,6 +705,7 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     # commodity here.
     "semiconductor_distributor": ("semiconductor", "electronics distribution", "chip distributor", "electronic component"),
     "electronics_manufacturer": ("semiconductor", "electronics manufacturing", "circuit board assembly", "chip fabrication", "wafer fab", "neon gas"),
+    "furniture_wood": ("furniture", "woodworking", "cabinetry", "sawmill", "lumber", "wood products"),
 }
 
 
@@ -856,6 +982,13 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "ecommerce_logistics": ["fulfillment center", "third-party logistics", "last-mile delivery", "e-commerce logistics", "parcel carrier", "warehousing and storage"],
     "semiconductor_distributor": ["electronics distributor", "semiconductor distributor", "electronic component distributor"],
     "electronics_manufacturer": ["electronics manufacturer", "contract electronics manufacturer", "circuit board assembly", "electronics manufacturing services"],
+    # Deliberately covers BOTH importers/distributors and domestic
+    # manufacturers under one keyword list -- the tariff logic needs
+    # to find all three populations (tariffed-country importer,
+    # diversion-beneficiary importer, domestic producer), and Apollo's
+    # org search can't pre-filter by country of origin the way Import
+    # Genius's own records can (see _tariff_trade_diversion_note).
+    "furniture_wood": ["furniture manufacturer", "furniture importer", "furniture wholesaler", "wood products manufacturer", "cabinetry manufacturer"],
 }
 
 # Who actually makes a financing decision at a small/mid-size business --
@@ -1021,6 +1154,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "ecommerce_logistics": "fulfillment",
     "semiconductor_distributor": "electronics distributor",
     "electronics_manufacturer": "electronics manufacturer",
+    "furniture_wood": "furniture manufacturer",
 }
 
 
@@ -2032,6 +2166,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + _gdelt_llm_discovery_signals(db)
         + _gfw_anomaly_signals(db)
         + usace_signals
+        + _tariff_policy_signals()
     )
 
 
@@ -2152,7 +2287,12 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
             # all -- the link is the cargo itself, not the dock.
             port_link_note = _trade_linked_port_note(event.payload, targets)
             goods_link_note = _commodity_trade_linked_note(event.payload, targets)
-            trade_link_note = f"{port_link_note}{goods_link_note}"
+            # Standing tariff check -- runs on every shipment regardless
+            # of whether a MacroSignal fired this sweep (see
+            # _tariff_trade_diversion_note's docstring on why this isn't
+            # signal-gated the way the two checks above are).
+            tariff_note, _tariff_signal_type = _tariff_trade_diversion_note(event.payload)
+            trade_link_note = f"{port_link_note}{goods_link_note}{tariff_note + ' -- ' if tariff_note else ''}"
             note = f"{trade_link_note}{corroboration_note}" if trade_link_note else corroboration_note
             identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", note, None))
 
@@ -2331,6 +2471,11 @@ _DEMURRAGE_FREE_TIME_DAYS = 5
 # scores higher -- it's a measured fact, not a 5-day guess.
 _DEMURRAGE_SCORE_BONUS = 15.0
 _DEMURRAGE_CONFIRMED_SCORE_BONUS = 22.0
+
+# Same confidence tier as a confirmed revenue-band match -- a known
+# country of origin is a measured fact about this specific shipment
+# (see _tariff_trade_diversion_note), not an industry-level guess.
+_TARIFF_CLASSIFICATION_SCORE_BONUS = 12.0
 
 
 def _extract_arrival_date(payload: dict) -> date | None:
@@ -2584,7 +2729,16 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
         # confirms the COMMODITY is active, not this specific company.
         cross_source_bonus = 10.0 if cross_source_confirmed else 0.0
         macro_corroboration_bonus = 5.0 if "MACRO-CORROBORATED" in corroboration_note else 0.0
-        score_delta = standing_delta + revenue_delta + cross_source_bonus + macro_corroboration_bonus
+        # Same confidence tier either way -- a confirmed country of
+        # origin is a measured fact about THIS shipment (see
+        # _tariff_trade_diversion_note), not a hypothesis, whichever
+        # side of the tariff it lands on.
+        tariff_bonus = (
+            _TARIFF_CLASSIFICATION_SCORE_BONUS
+            if "TARIFF-AFFECTED SOURCING" in corroboration_note or "TARIFF-DIVERSION WINNER" in corroboration_note
+            else 0.0
+        )
+        score_delta = standing_delta + revenue_delta + cross_source_bonus + macro_corroboration_bonus + tariff_bonus
         dismiss = standing_dismiss or revenue_dismiss
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
 
@@ -2820,6 +2974,16 @@ def run_silo_leadgen(db: Session) -> dict:
                     bonus = _DEMURRAGE_CONFIRMED_SCORE_BONUS if demurrage_confirmed else _DEMURRAGE_SCORE_BONUS
                     score = (score if score is not None else 50.0) + bonus
                     notes = f"{notes} | {demurrage_note}" if notes else demurrage_note
+
+            # Tariff trade-diversion check -- same per-shipment, standing
+            # posture as demurrage above, Import Genius only (country of
+            # origin is a customs-manifest field, not something
+            # SeaVantage's vessel/cargo-report payload carries).
+            if event.source == TelemetrySource.IMPORT_GENIUS:
+                tariff_note, _tariff_signal_type = _tariff_trade_diversion_note(event.payload)
+                if tariff_note:
+                    score = (score if score is not None else 50.0) + _TARIFF_CLASSIFICATION_SCORE_BONUS
+                    notes = f"{notes} | {tariff_note}" if notes else tariff_note
 
             db.add(
                 SiloCandidate(
