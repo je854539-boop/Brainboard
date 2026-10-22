@@ -373,6 +373,12 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     # specialty-chemical goods, not raw resin/feedstock, which is
     # already covered by petrochemical's own goods keywords above.
     "chemical_products_manufacturer": ("detergent", "soap", "cleaning product", "coating", "adhesive"),
+    "solar_installer": ("solar panel", "solar module", "photovoltaic", "solar cell"),
+    "solar_manufacturer": ("solar panel", "solar module", "photovoltaic", "solar cell"),
+    "lumber_wholesaler": ("lumber", "softwood lumber", "dimensional lumber", "sawn timber"),
+    "lumber_producer": ("lumber", "softwood lumber", "dimensional lumber", "sawn timber"),
+    "rare_earth_importer": ("rare earth", "neodymium", "rare earth magnet", "rare earth element"),
+    "ev_charging_installer": ("ev charger", "charging station", "evse", "electric vehicle charging"),
     # "oil"/"natural gas"/"lng"/"petroleum" added so a crude/NG cargo
     # shipment -- or a geopolitical oil/gas headline -- classifies here
     # too, not just a finished-plastics shipment.
@@ -549,12 +555,31 @@ def _extract_country_of_origin(payload: dict) -> str | None:
 #     that this check cannot see -- it will under-detect, not
 #     over-claim, which is the safer direction to be wrong in, but
 #     it's a real gap, not a solved problem.
+# Two new entries below are deliberately keyed to the PRODUCER side
+# (solar_manufacturer, lumber_producer), not the consumer side
+# (solar_installer, lumber_wholesaler) -- same goods keywords either
+# way, so the per-shipment check (_tariff_trade_diversion_note) still
+# correctly flags a China-sourced panel or Canada-sourced softwood
+# shipment as "distress" regardless of which key it matches on. But
+# the STANDING signal (_tariff_policy_signals) reads whichever key is
+# here and defaults it to "expansion" -- keying it to the producer
+# side means that default correctly drives the nationwide hunt toward
+# domestic manufacturers/sawmills (who genuinely benefit), not
+# installers/wholesalers (who are squeezed). Same real research-
+# backed confidence as the other entries: Chinese solar cells
+# reportedly carry a ~50% stacked rate (least-confirmed of the two,
+# flagged same as the earlier semiconductor entry); Canada softwood
+# lumber countervailing/anti-dumping duties are one of the longest-
+# running, most specific US-Canada trade disputes there is, separate
+# from the general steel/aluminum Section 232 action.
 _TARIFF_AFFECTED_COUNTRIES: dict[str, tuple[str, ...]] = {
     "furniture_wood": ("china",),
     "steel_coal": ("canada", "russia"),
     "apparel": ("china",),
     "auto_parts": ("china",),
     "semiconductor_distributor": ("china",),
+    "solar_manufacturer": ("china",),
+    "lumber_producer": ("canada",),
 }
 _TARIFF_DIVERSION_BENEFICIARY_COUNTRIES: dict[str, tuple[str, ...]] = {
     "furniture_wood": ("vietnam", "malaysia", "indonesia"),
@@ -940,6 +965,15 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # nationwide-sweep-only, wide-catchment logic.
     "poultry_producer": 60.0,
     "chemical_products_manufacturer": 50.0,
+    # Solar/lumber/EV-charging/rare-earth all nationwide-sweep-only --
+    # none anchor to a single river/port corridor the way grain or
+    # petrochemical does.
+    "solar_installer": 50.0,
+    "solar_manufacturer": 50.0,
+    "lumber_wholesaler": 50.0,
+    "lumber_producer": 50.0,
+    "ev_charging_installer": 50.0,
+    "rare_earth_importer": 50.0,
     # Same wide-catchment logic as the food-chain tiers -- wholesalers/
     # retailers in these categories are dispersed nationally, not
     # clustered at a dock or plant.
@@ -1017,6 +1051,16 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "construction_contractor": ("construction", "general contractor", "renovation", "building contractor"),
     "poultry_producer": ("poultry", "chicken", "broiler", "live poultry"),
     "chemical_products_manufacturer": ("detergent", "soap", "cleaning product", "coating", "adhesive"),
+    "solar_installer": ("solar installation", "solar contractor", "photovoltaic installer"),
+    "solar_manufacturer": ("solar panel manufacturing", "photovoltaic manufacturing", "solar cell production"),
+    "lumber_wholesaler": ("lumber distribution", "lumber yard", "building materials wholesale"),
+    "lumber_producer": ("sawmill", "lumber mill", "timber processing"),
+    # "rare earth" alone added -- without it, a real headline like
+    # "China restricts rare earth exports" would never match (the
+    # longer phrases alone are too narrow for _classify_commodity_
+    # from_text, which needs the keyword to appear as written).
+    "rare_earth_importer": ("rare earth", "rare earth processing", "rare earth refining", "magnet manufacturing"),
+    "ev_charging_installer": ("ev charging installation", "electrical contractor", "charging infrastructure"),
     "produce_wholesaler": ("produce distribution", "fruit and vegetable wholesale", "fresh produce", "cold storage"),
     "produce_retailer": ("produce market", "farmers market", "fruit stand", "grocery"),
     "liquor_distributor": ("liquor distribution", "beverage distributor", "spirits importer"),
@@ -1313,6 +1357,12 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "apparel": ["apparel importer", "clothing wholesaler", "footwear distributor", "garment manufacturer", "textile importer", "clothing store", "footwear retailer"],
     "auto_parts": ["auto parts distributor", "automotive parts supplier", "auto parts wholesaler", "automotive components importer"],
     "construction_contractor": ["general contractor", "construction company", "renovation contractor", "building contractor"],
+    "solar_installer": ["solar installation company", "solar contractor", "photovoltaic installer", "solar energy contractor"],
+    "solar_manufacturer": ["solar panel manufacturer", "photovoltaic manufacturer", "solar cell manufacturer", "solar module producer"],
+    "lumber_wholesaler": ["lumber wholesaler", "lumber importer", "building materials distributor", "lumber yard"],
+    "lumber_producer": ["sawmill operator", "lumber mill", "timber producer", "softwood lumber manufacturer"],
+    "ev_charging_installer": ["ev charging installer", "evse contractor", "electrical contractor", "charging infrastructure company"],
+    "rare_earth_importer": ["rare earth importer", "rare earth materials company", "magnet manufacturer", "rare earth processor"],
     "poultry_producer": ["poultry farm", "chicken producer", "broiler operation", "poultry hatchery"],
     "chemical_products_manufacturer": ["detergent manufacturer", "soap manufacturer", "cleaning products company", "coatings manufacturer", "adhesives manufacturer"],
     "produce_wholesaler": ["produce wholesaler", "fresh produce distributor", "fruit and vegetable importer"],
@@ -1491,6 +1541,12 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "construction_contractor": "general contractor",
     "poultry_producer": "poultry farm",
     "chemical_products_manufacturer": "chemical products manufacturer",
+    "solar_installer": "solar contractor",
+    "solar_manufacturer": "solar panel manufacturer",
+    "lumber_wholesaler": "lumber wholesaler",
+    "lumber_producer": "sawmill",
+    "ev_charging_installer": "electrical contractor",
+    "rare_earth_importer": "rare earth importer",
     "produce_wholesaler": "produce distributor",
     "produce_retailer": "grocery",
     "liquor_distributor": "beverage distributor",
@@ -1739,6 +1795,32 @@ _COMMODITY_TRADE_SIDE: dict[str, str] = {
     # already covers -- same mirror-image logic, different rung of the
     # same ladder.
     "chemical_products_manufacturer": "consumer",
+    # Solar installers buy panels as their core input -- a China
+    # tariff on panels/cells is a cost squeeze for them.
+    "solar_installer": "consumer",
+    # Domestic solar manufacturers SELL panels -- the same China
+    # tariff that squeezes installers is a competitive windfall for
+    # them, real deal sizes here (confirmed up to $5M+) and a real,
+    # recurring capital need: tariff-driven input/price swings, A/R
+    # timing against large commercial/utility customers, and genuine
+    # expansion capital to scale capacity -- "large company" doesn't
+    # disqualify MCA fit the way it was first assumed to.
+    "solar_manufacturer": "producer",
+    # Lumber importers/wholesalers buy Canadian softwood as their
+    # core input -- the tariff (a real, decades-long US-Canada
+    # softwood lumber countervailing/anti-dumping dispute, distinct
+    # from the general steel/aluminum Section 232 action) is a direct
+    # cost squeeze.
+    "lumber_wholesaler": "consumer",
+    # US sawmills/domestic lumber producers are protected by that same
+    # tariff -- the real expansion side, same mirror-image logic as
+    # steel_coal's domestic-producer framing.
+    "lumber_producer": "producer",
+    # Rare earth importers/processors buy raw rare earth elements as
+    # input -- China's export controls are a direct scarcity/cost
+    # squeeze, same mechanism as every other consumer-side commodity
+    # facing a geopolitical supply-at-risk headline.
+    "rare_earth_importer": "consumer",
 }
 
 
@@ -2080,7 +2162,8 @@ def _highergov_contract_signals(db: Session, commodities: set[str] | None = None
 _GEOPOLITICAL_SUPPLY_DISRUPTION_QUERY = (
     '(war OR sanctions OR "export ban" OR "export controls" OR blockade OR conflict OR OPEC) AND '
     '(grain OR wheat OR fertilizer OR potash OR ammonia OR steel OR semiconductor OR chip OR '
-    '"neon gas" OR wafer OR container OR shipping OR oil OR "natural gas" OR LNG OR petrochemical) AND '
+    '"neon gas" OR wafer OR container OR shipping OR oil OR "natural gas" OR LNG OR petrochemical OR '
+    '"rare earth") AND '
     '(Russia OR Ukraine OR Belarus OR Iran OR Taiwan OR China OR "Red Sea" OR Suez OR "Panama Canal" OR "Middle East")'
 )
 
