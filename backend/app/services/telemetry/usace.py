@@ -8,10 +8,38 @@ the Gulf Intracoastal Waterway (petrochemicals, around the Houston/Lake
 Charles/Baton Rouge corridor), the Great Lakes/Soo Locks corridor (the
 iron-ore-to-steel-mill supply chain, plus Duluth-Superior grain exports),
 and four coastal port anchorage points (marine-traffic-at-port
-congestion, not river-lock congestion -- see below). Every entry carries a `commodity` tag so a disruption signal
-says what it actually means (a steel-corridor disruption is not a grain
-signal) -- callers filter `_usace_disruption_signals` by commodity
-instead of treating every USACE event as agriculture-specific. Real
+congestion, not river-lock congestion -- see below).
+
+**Commodity MIX, not a single tag.** Most of these corridors carry more
+than one commodity -- the Ohio River moves steel inputs and coal, but
+also real grain tonnage; the GIWW moves petrochemicals and a meaningful
+share of grain export traffic near New Orleans/Baton Rouge; Duluth-
+Superior is genuinely both a top grain port AND a major ore port. A
+single fixed tag per lock (the original design) would make the
+Agriculture & Grain Handling waterfall blind to real grain traffic
+moving through a lock tagged "steel_coal" for its dominant commodity.
+So each entry now carries `commodities: {tag: weight, ...}` (weights
+sum to ~1.0) instead of one string -- `_usace_disruption_signals` emits
+one weighted MacroSignal PER commodity above a floor share, so a single
+disrupted lock can legitimately feed multiple silos at once, proportional
+to how much of its real traffic each one represents.
+
+**These specific percentages are directional estimates, not sourced
+numbers.** USACE's own Waterborne Commerce Statistics Center publishes
+real tonnage-by-waterway-by-commodity data (required by the Rivers and
+Harbors Act) that would give exact figures -- I don't have a confirmed
+live, scriptable feed for it (it reads as a periodic table download, not
+an API), so I'm not fabricating lock-by-lock precision I can't source.
+The splits below reflect well-established general knowledge of what
+each corridor actually carries (e.g. "the Ohio River is coal/steel-
+dominant but not exclusively so"), not a specific measured number --
+replace them with the real WCSC figures once pulled, same posture as
+every other "confirm before treating as precise" caveat in this file.
+
+Every signal still carries its commodity tag (now plus weight) so a
+caller knows what it actually means (a steel-corridor disruption isn't
+automatically a grain signal just because it fires) -- callers filter
+`_usace_disruption_signals` by commodity, same as before. Real
 CWMS office/project_id and precise lock coordinates for the new Ohio
 River / GIWW entries are NOT yet confirmed against the live USACE
 catalog (same caveat as the original Mississippi/Illinois entries always
@@ -89,63 +117,74 @@ VESSELFINDER_BASE_URL = "https://api.vesselfinder.com"  # placeholder -- confirm
 # name, lat, lon (for the AIS channel -- always active if a key is set),
 # office, project_id (for the real CWMS gate-changes channel -- blank
 # until you've confirmed them per the module docstring's self-serve
-# lookup; this channel silently skips any entry left blank), commodity
-# (what this segment's disruption actually signals -- see module
-# docstring; callers filter _usace_disruption_signals by this tag).
+# lookup; this channel silently skips any entry left blank), commodities
+# (a {tag: weight} mix, weights sum to ~1.0 -- see module docstring on
+# why this is a mix, not one tag, and why these specific weights are
+# directional estimates pending real WCSC confirmation).
 MONITORED_LOCKS = [
-    # --- Mississippi / Illinois Waterway: grain corridor ---
-    {"name": "Lock and Dam 1 (Mississippi, Minneapolis)", "lat": 44.92, "lon": -93.20, "office": "", "project_id": "", "commodity": "grain"},
-    {"name": "Lock and Dam 19 (Mississippi, Keokuk)", "lat": 40.40, "lon": -91.38, "office": "", "project_id": "", "commodity": "grain"},
-    {"name": "Melvin Price Locks and Dam (Mississippi, Alton)", "lat": 38.87, "lon": -90.16, "office": "", "project_id": "", "commodity": "grain"},
-    {"name": "Lockport Lock (Illinois Waterway)", "lat": 41.59, "lon": -88.08, "office": "", "project_id": "", "commodity": "grain"},
-    {"name": "Marseilles Lock (Illinois Waterway)", "lat": 41.33, "lon": -88.71, "office": "", "project_id": "", "commodity": "grain"},
-    {"name": "Peoria Lock (Illinois Waterway)", "lat": 40.63, "lon": -89.61, "office": "", "project_id": "", "commodity": "grain"},
-    # --- Ohio River: coal + steel corridor (Pittsburgh/upper-Ohio steel
-    # region down through the coal-heavy middle Ohio) -- lock names and
+    # --- Mississippi / Illinois Waterway: grain corridor. Genuinely
+    # single-commodity -- this stretch's traffic really is overwhelmingly
+    # agricultural export tonnage, not a case of forcing false precision.
+    {"name": "Lock and Dam 1 (Mississippi, Minneapolis)", "lat": 44.92, "lon": -93.20, "office": "", "project_id": "", "commodities": {"grain": 1.0}},
+    {"name": "Lock and Dam 19 (Mississippi, Keokuk)", "lat": 40.40, "lon": -91.38, "office": "", "project_id": "", "commodities": {"grain": 1.0}},
+    {"name": "Melvin Price Locks and Dam (Mississippi, Alton)", "lat": 38.87, "lon": -90.16, "office": "", "project_id": "", "commodities": {"grain": 1.0}},
+    {"name": "Lockport Lock (Illinois Waterway)", "lat": 41.59, "lon": -88.08, "office": "", "project_id": "", "commodities": {"grain": 1.0}},
+    {"name": "Marseilles Lock (Illinois Waterway)", "lat": 41.33, "lon": -88.71, "office": "", "project_id": "", "commodities": {"grain": 1.0}},
+    {"name": "Peoria Lock (Illinois Waterway)", "lat": 40.63, "lon": -89.61, "office": "", "project_id": "", "commodities": {"grain": 1.0}},
+    # --- Ohio River: coal + steel dominant, but a real secondary grain
+    # share moves this corridor too (Midwest grain barged down to the
+    # Mississippi often transits the lower Ohio) -- lock names and
     # general geography are well-established public infrastructure;
     # office/project_id NOT yet confirmed against the live CWMS catalog,
-    # see module docstring.
-    {"name": "Emsworth Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.51, "lon": -80.09, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "Montgomery Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.64, "lon": -80.19, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "New Cumberland Locks and Dam (Ohio River, Steubenville/Weirton)", "lat": 40.50, "lon": -80.62, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "Greenup Locks and Dam (Ohio River, Huntington)", "lat": 38.65, "lon": -82.93, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "McAlpine Locks and Dam (Ohio River, Louisville)", "lat": 38.26, "lon": -85.78, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "Olmsted Locks and Dam (Ohio River, mouth)", "lat": 37.18, "lon": -89.07, "office": "", "project_id": "", "commodity": "steel_coal"},
-    # --- Gulf Intracoastal Waterway: petrochemical corridor (Houston /
-    # Lake Charles / Baton Rouge) -- same confirmation caveat as above.
-    {"name": "Algiers Lock (GIWW, New Orleans)", "lat": 29.93, "lon": -90.03, "office": "", "project_id": "", "commodity": "petrochemical"},
-    {"name": "Port Allen Lock (GIWW, Baton Rouge)", "lat": 30.45, "lon": -91.21, "office": "", "project_id": "", "commodity": "petrochemical"},
-    {"name": "Calcasieu Lock (GIWW, Lake Charles)", "lat": 30.12, "lon": -93.36, "office": "", "project_id": "", "commodity": "petrochemical"},
+    # see module docstring. Weights are directional, not WCSC-sourced.
+    {"name": "Emsworth Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.51, "lon": -80.09, "office": "", "project_id": "", "commodities": {"steel_coal": 0.65, "petrochemical": 0.15, "grain": 0.20}},
+    {"name": "Montgomery Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.64, "lon": -80.19, "office": "", "project_id": "", "commodities": {"steel_coal": 0.65, "petrochemical": 0.15, "grain": 0.20}},
+    {"name": "New Cumberland Locks and Dam (Ohio River, Steubenville/Weirton)", "lat": 40.50, "lon": -80.62, "office": "", "project_id": "", "commodities": {"steel_coal": 0.70, "petrochemical": 0.10, "grain": 0.20}},
+    {"name": "Greenup Locks and Dam (Ohio River, Huntington)", "lat": 38.65, "lon": -82.93, "office": "", "project_id": "", "commodities": {"steel_coal": 0.60, "petrochemical": 0.15, "grain": 0.25}},
+    {"name": "McAlpine Locks and Dam (Ohio River, Louisville)", "lat": 38.26, "lon": -85.78, "office": "", "project_id": "", "commodities": {"steel_coal": 0.55, "petrochemical": 0.15, "grain": 0.30}},
+    {"name": "Olmsted Locks and Dam (Ohio River, mouth)", "lat": 37.18, "lon": -89.07, "office": "", "project_id": "", "commodities": {"steel_coal": 0.50, "petrochemical": 0.15, "grain": 0.35}},
+    # --- Gulf Intracoastal Waterway: petrochemical-dominant, but
+    # significant grain export tonnage also transits near New Orleans/
+    # Baton Rouge (river grain elevators feed export vessels staged along
+    # this same waterway). Same confirmation caveat as above.
+    {"name": "Algiers Lock (GIWW, New Orleans)", "lat": 29.93, "lon": -90.03, "office": "", "project_id": "", "commodities": {"petrochemical": 0.65, "grain": 0.35}},
+    {"name": "Port Allen Lock (GIWW, Baton Rouge)", "lat": 30.45, "lon": -91.21, "office": "", "project_id": "", "commodities": {"petrochemical": 0.60, "grain": 0.40}},
+    {"name": "Calcasieu Lock (GIWW, Lake Charles)", "lat": 30.12, "lon": -93.36, "office": "", "project_id": "", "commodities": {"petrochemical": 0.85, "grain": 0.15}},
     # --- Coastal port anchorages: marine-traffic-at-port congestion,
     # AIS-only (no CWMS lock-gate data applies -- office/project_id left
     # blank on purpose, see module docstring). Picked to match your real
-    # book's top states (CA/TX/NY/FL/NJ import gateways).
-    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodity": "port_congestion"},
-    {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodity": "port_congestion"},
-    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodity": "port_congestion"},
-    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodity": "port_congestion"},
+    # book's top states (CA/TX/NY/FL/NJ import gateways). Genuinely
+    # single-category -- "any import-dependent business near this port"
+    # isn't a commodity mix the way a river corridor's traffic is.
+    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}},
+    {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}},
+    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}},
+    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}},
     # --- Great Lakes / Soo Locks corridor: the iron-ore-to-steel-mill
     # supply chain the Ohio River corridor doesn't cover. Nearly all US
     # iron ore (Minnesota/Wisconsin's Mesabi Range) moves down through
     # the Soo Locks at Sault Ste. Marie to lower-lake steel mills -- a
     # Soo Locks disruption is one of the single most consequential choke
     # points in the whole US steel supply chain, more direct than the
-    # Ohio River signal for this industry. Duluth-Superior is tagged
-    # "grain" instead -- it's a top US grain export gateway in its own
-    # right (Great Lakes/Seaway route), not just an ore port, so it also
-    # feeds the Agriculture & Grain Handling waterfall, not only the
-    # broader steel-focused CME Macro Funnel. Burns Harbor/Gary and
-    # Detroit are lakefront steel-mill locations, not generic ports --
-    # about as direct an operating-condition indicator as this system
-    # has for that industry. Soo Locks is a real USACE lock (Poe Lock /
-    # MacArthur Lock, Detroit District); the rest are open harbors,
-    # AIS-only, same confirmation caveat as every other new entry above.
-    {"name": "Soo Locks (Sault Ste. Marie, MI)", "lat": 46.50, "lon": -84.35, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "Duluth-Superior Harbor (Lake Superior)", "lat": 46.78, "lon": -92.10, "office": "", "project_id": "", "commodity": "grain"},
-    {"name": "Port of Cleveland (Lake Erie)", "lat": 41.54, "lon": -81.63, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "Port of Toledo (Lake Erie)", "lat": 41.69, "lon": -83.47, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "Burns Harbor / Gary anchorage (Lake Michigan)", "lat": 41.63, "lon": -87.15, "office": "", "project_id": "", "commodity": "steel_coal"},
-    {"name": "Detroit River anchorage (Detroit, MI)", "lat": 42.33, "lon": -83.05, "office": "", "project_id": "", "commodity": "steel_coal"},
+    # Ohio River signal for this industry, though real grain tonnage also
+    # moves this route. Duluth-Superior is genuinely close to an even
+    # split -- it's simultaneously a top US grain export gateway AND a
+    # major ore port, not dominantly one or the other -- so it feeds both
+    # the Agriculture & Grain Handling waterfall and the steel-focused CME
+    # Macro Funnel for real reasons, not an artifact of a forced tag.
+    # Burns Harbor/Gary and Detroit are lakefront steel-mill locations,
+    # about as direct an operating-condition indicator as this system has
+    # for that industry -- kept single-commodity since that's genuinely
+    # accurate, not a case of missing a real secondary signal. Soo Locks
+    # is a real USACE lock (Poe Lock / MacArthur Lock, Detroit District);
+    # the rest are open harbors, AIS-only, same confirmation caveat as
+    # every other new entry above.
+    {"name": "Soo Locks (Sault Ste. Marie, MI)", "lat": 46.50, "lon": -84.35, "office": "", "project_id": "", "commodities": {"steel_coal": 0.85, "grain": 0.15}},
+    {"name": "Duluth-Superior Harbor (Lake Superior)", "lat": 46.78, "lon": -92.10, "office": "", "project_id": "", "commodities": {"grain": 0.55, "steel_coal": 0.45}},
+    {"name": "Port of Cleveland (Lake Erie)", "lat": 41.54, "lon": -81.63, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}},
+    {"name": "Port of Toledo (Lake Erie)", "lat": 41.69, "lon": -83.47, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}},
+    {"name": "Burns Harbor / Gary anchorage (Lake Michigan)", "lat": 41.63, "lon": -87.15, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}},
+    {"name": "Detroit River anchorage (Detroit, MI)", "lat": 42.33, "lon": -83.05, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}},
 ]
 
 GATE_CHANGE_LOOKBACK_HOURS = 48
@@ -200,7 +239,7 @@ class USACEAdapter(TelemetryAdapter):
                             "lon": lock["lon"],
                             "office": office,
                             "project_id": project_id,
-                            "commodity": lock.get("commodity"),
+                            "commodities": lock.get("commodities"),
                             "gate_changes": changes,
                         },
                     )
@@ -252,7 +291,7 @@ class USACEAdapter(TelemetryAdapter):
                             "lock": lock["name"],
                             "lat": lock["lat"],
                             "lon": lock["lon"],
-                            "commodity": lock.get("commodity"),
+                            "commodities": lock.get("commodities"),
                             "idle_vessel_count": idle_count,
                             "vessels": vessels,
                         },

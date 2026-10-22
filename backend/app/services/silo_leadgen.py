@@ -160,6 +160,10 @@ class MacroSignal:
     # signal kind; _geo_targets_from_signals skips those.
     commodity: str | None = None
     coordinates: tuple[float, float] | None = None
+    # Share of this corridor's traffic this commodity represents (see
+    # usace.py's MONITORED_LOCKS commodities mix) -- 1.0 for every
+    # non-USACE signal kind, where the concept doesn't apply.
+    weight: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +357,13 @@ class GeoTarget:
     commodity: str
     label: str
     radius_mi: float
+    # Share of the originating corridor's traffic this commodity actually
+    # represents (see MacroSignal.weight) -- 1.0 for a dominant/
+    # single-commodity corridor, lower for a secondary share of a mixed
+    # one (e.g. grain's 20-35% share of an Ohio River lock). Surfaced in
+    # the match note so a candidate found via a secondary commodity reads
+    # as lower-confidence than one from a dominant signal, not identical.
+    weight: float = 1.0
 
 
 def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
@@ -369,7 +380,12 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
         if signal.commodity and signal.coordinates:
             lat, lon = signal.coordinates
             radius = _COMMODITY_SEARCH_RADIUS_MILES.get(signal.commodity, _DEFAULT_SEARCH_RADIUS_MILES)
-            targets.append(GeoTarget(lat=lat, lon=lon, commodity=signal.commodity, label=signal.description, radius_mi=radius))
+            targets.append(
+                GeoTarget(
+                    lat=lat, lon=lon, commodity=signal.commodity, label=signal.description,
+                    radius_mi=radius, weight=signal.weight,
+                )
+            )
     return targets
 
 
@@ -402,18 +418,19 @@ def _geo_match_note(properties: dict, coordinates: tuple[float, float] | None, t
     target, distance = match
     land_use = _extract_land_use(properties)
     keywords = _COMMODITY_LAND_USE_KEYWORDS.get(target.commodity, ())
+    weight_note = "" if target.weight >= 0.5 else f", secondary signal only ({target.weight:.0%} of this corridor's traffic)"
     if land_use and keywords and any(k in land_use for k in keywords):
         return (
-            f"TARGETED MATCH: {distance:.1f}mi from active {target.commodity} signal ({target.label}), "
+            f"TARGETED MATCH: {distance:.1f}mi from active {target.commodity} signal ({target.label}{weight_note}), "
             f"land-use '{land_use}' confirms {target.commodity} classification -- "
         )
     if land_use:
         return (
-            f"Near active {target.commodity} signal ({target.label}, {distance:.1f}mi) but land-use "
+            f"Near active {target.commodity} signal ({target.label}{weight_note}, {distance:.1f}mi) but land-use "
             f"'{land_use}' doesn't confirm {target.commodity} -- radius match only, not industry-confirmed -- "
         )
     return (
-        f"Near active {target.commodity} signal ({target.label}, {distance:.1f}mi); land-use classification "
+        f"Near active {target.commodity} signal ({target.label}{weight_note}, {distance:.1f}mi); land-use classification "
         f"unavailable to confirm -- radius match only, not industry-confirmed -- "
     )
 
@@ -551,36 +568,55 @@ def _gfw_anomaly_signals(db: Session) -> list[MacroSignal]:
     ]
 
 
+# Below this share of a corridor's traffic, a commodity isn't worth
+# emitting its own signal for -- a trace amount shouldn't gate open a
+# whole silo. Tunable policy, same posture as every other threshold
+# constant in this module.
+_MIN_COMMODITY_WEIGHT = 0.15
+
+
 def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
     """Every USACE event (see telemetry/usace.py) already crossed a real
     disruption threshold before it was recorded (GATE_CHANGE_THRESHOLD /
     QUEUE_THRESHOLD) -- any fresh event IS a disruption signal, not a raw
-    data point needing re-filtering. But MONITORED_LOCKS now spans
-    several corridors (grain, steel_coal, petrochemical, port_congestion
-    -- see that file), so a caller MUST say which commodity tag(s) it
-    actually wants: the Agriculture & Grain Handling waterfall passes
-    {"grain"} so a steel-corridor or port-congestion event can't gate it
-    open by mistake, while the CME Macro Funnel (broader, cross-industry)
-    passes None for every corridor. Each event's commodity tag was
-    written into its payload by usace.py's fetch() -- read back here
-    rather than re-deriving it from the lock name."""
+    data point needing re-filtering. But a single disrupted lock/port can
+    represent SEVERAL commodities at once (see usace.py's MONITORED_LOCKS
+    `commodities` mix) -- this emits one weighted MacroSignal PER
+    commodity above _MIN_COMMODITY_WEIGHT, not one signal per lock, so a
+    disruption on a mixed corridor (e.g. the Ohio River's steel/coal +
+    grain mix) legitimately feeds every silo it actually matters to, in
+    proportion to how much of that corridor's real traffic each one
+    represents, instead of forcing a single winner-take-all tag.
+
+    A caller MUST say which commodity tag(s) it actually wants: the
+    Agriculture & Grain Handling waterfall passes {"grain"} so a
+    steel-corridor or port-congestion event can't gate it open by
+    mistake, while the CME Macro Funnel (broader, cross-industry) passes
+    None for every corridor. Each event's commodity mix was written into
+    its payload by usace.py's fetch() -- read back here rather than
+    re-deriving it from the lock name."""
     signals = []
     for event in _fresh_events(db, TelemetrySource.USACE, limit=20):
-        commodity = event.payload.get("commodity")
-        if commodities is not None and commodity not in commodities:
-            continue
-        label = (commodity or "river_corridor").replace("_", " ")
+        commodity_mix = event.payload.get("commodities") or {}
         lat, lon = event.payload.get("lat"), event.payload.get("lon")
         coordinates = (float(lat), float(lon)) if lat is not None and lon is not None else None
-        signals.append(
-            MacroSignal(
-                kind="river_corridor_disruption",
-                description=f"USACE {label} disruption: {event.title}",
-                source_reference=f"telemetry_event:{event.id} [usace] {event.title}",
-                commodity=commodity,
-                coordinates=coordinates,
+
+        for commodity, weight in commodity_mix.items():
+            if weight < _MIN_COMMODITY_WEIGHT:
+                continue  # trace share of this corridor's traffic -- not worth its own signal
+            if commodities is not None and commodity not in commodities:
+                continue
+            label = commodity.replace("_", " ")
+            signals.append(
+                MacroSignal(
+                    kind="river_corridor_disruption",
+                    description=f"USACE {label} disruption ({weight:.0%} of this corridor's traffic): {event.title}",
+                    source_reference=f"telemetry_event:{event.id} [usace] {event.title}",
+                    commodity=commodity,
+                    coordinates=coordinates,
+                    weight=weight,
+                )
             )
-        )
     return signals
 
 
