@@ -3,11 +3,12 @@
 **Multi-corridor, multi-commodity.** MONITORED_LOCKS originally covered
 only the Mississippi/Illinois grain corridor (feeding the Agriculture &
 Grain Handling silo). It now also covers the Ohio River corridor (coal +
-steel -- the Pittsburgh/upper-Ohio steel region moves both by barge) and
+steel -- the Pittsburgh/upper-Ohio steel region moves both by barge),
 the Gulf Intracoastal Waterway (petrochemicals, around the Houston/Lake
-Charles/Baton Rouge corridor), plus four coastal port anchorage points
-(marine-traffic-at-port congestion, not river-lock congestion -- see
-below). Every entry carries a `commodity` tag so a disruption signal
+Charles/Baton Rouge corridor), the Great Lakes/Soo Locks corridor (the
+iron-ore-to-steel-mill supply chain, plus Duluth-Superior grain exports),
+and four coastal port anchorage points (marine-traffic-at-port
+congestion, not river-lock congestion -- see below). Every entry carries a `commodity` tag so a disruption signal
 says what it actually means (a steel-corridor disruption is not a grain
 signal) -- callers filter `_usace_disruption_signals` by commodity
 instead of treating every USACE event as agriculture-specific. Real
@@ -123,6 +124,28 @@ MONITORED_LOCKS = [
     {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodity": "port_congestion"},
     {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodity": "port_congestion"},
     {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodity": "port_congestion"},
+    # --- Great Lakes / Soo Locks corridor: the iron-ore-to-steel-mill
+    # supply chain the Ohio River corridor doesn't cover. Nearly all US
+    # iron ore (Minnesota/Wisconsin's Mesabi Range) moves down through
+    # the Soo Locks at Sault Ste. Marie to lower-lake steel mills -- a
+    # Soo Locks disruption is one of the single most consequential choke
+    # points in the whole US steel supply chain, more direct than the
+    # Ohio River signal for this industry. Duluth-Superior is tagged
+    # "grain" instead -- it's a top US grain export gateway in its own
+    # right (Great Lakes/Seaway route), not just an ore port, so it also
+    # feeds the Agriculture & Grain Handling waterfall, not only the
+    # broader steel-focused CME Macro Funnel. Burns Harbor/Gary and
+    # Detroit are lakefront steel-mill locations, not generic ports --
+    # about as direct an operating-condition indicator as this system
+    # has for that industry. Soo Locks is a real USACE lock (Poe Lock /
+    # MacArthur Lock, Detroit District); the rest are open harbors,
+    # AIS-only, same confirmation caveat as every other new entry above.
+    {"name": "Soo Locks (Sault Ste. Marie, MI)", "lat": 46.50, "lon": -84.35, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "Duluth-Superior Harbor (Lake Superior)", "lat": 46.78, "lon": -92.10, "office": "", "project_id": "", "commodity": "grain"},
+    {"name": "Port of Cleveland (Lake Erie)", "lat": 41.54, "lon": -81.63, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "Port of Toledo (Lake Erie)", "lat": 41.69, "lon": -83.47, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "Burns Harbor / Gary anchorage (Lake Michigan)", "lat": 41.63, "lon": -87.15, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "Detroit River anchorage (Detroit, MI)", "lat": 42.33, "lon": -83.05, "office": "", "project_id": "", "commodity": "steel_coal"},
 ]
 
 GATE_CHANGE_LOOKBACK_HOURS = 48
