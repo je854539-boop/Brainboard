@@ -70,6 +70,7 @@ import json
 import logging
 import math
 import re
+from datetime import date
 
 import httpx
 from dataclasses import dataclass
@@ -2216,6 +2217,71 @@ def _active_revenue_check(company_name: str) -> tuple[float, bool, str]:
     )
 
 
+# Bill-of-lading arrival/discharge date field name isn't confirmed
+# against Import Genius's live schema (same posture as every other
+# unconfirmed field in this module) -- check every plausible variant.
+_ARRIVAL_DATE_KEYS = ("arrival_date", "discharge_date", "vessel_arrival_date", "unlading_date", "actual_arrival_date", "eta")
+
+# Typical US port free-time window before demurrage/detention charges
+# start accruing -- the real range is roughly 3-7 days depending on
+# port/carrier/contract. A reasoned middle default, not a measured one,
+# same honesty posture as every other threshold in this module --
+# tune down if your actual deals skew toward tighter-free-time ports.
+_DEMURRAGE_FREE_TIME_DAYS = 5
+
+# A standalone bonus, not folded into cross_source/macro_corroboration
+# -- this signal doesn't need a second source to be real. A container
+# sitting past free time IS the capital need, confirmed by one source
+# (the manifest's own dates), same confidence tier as a confirmed
+# revenue-band match.
+_DEMURRAGE_SCORE_BONUS = 15.0
+
+
+def _extract_arrival_date(payload: dict) -> date | None:
+    for key in _ARRIVAL_DATE_KEYS:
+        value = payload.get(key)
+        if not value:
+            continue
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            continue
+    return None
+
+
+def _demurrage_risk_note(payload: dict) -> str:
+    """The sharpest trigger in this module, and the only one that needs
+    no industry-level story at all: a container sitting at port beyond
+    its carrier's free-time window accrues a running DAILY fee
+    regardless of how healthy the underlying business is. "Your
+    container's been sitting N days past free time, a bridge covers
+    the fee and gets your goods moving" is a complete, fundable pitch
+    on this one data point -- no corroboration from a second source
+    needed, unlike every other signal in this module.
+
+    Computed directly from the shipment's own arrival/discharge date,
+    not from SeaVantage/GFW -- neither of those is confirmed to carry
+    per-container dwell status (see their adapters' own docstrings:
+    SeaVantage is vessel/port-call/ETA data, GFW's default dataset is
+    fishing-vessel-specific), so this doesn't depend on either being
+    real. Returns "" when there's no arrival date to compute from, or
+    dwell time is still within the free-time window -- never a dismiss,
+    just no signal yet."""
+    arrival = _extract_arrival_date(payload)
+    if not arrival:
+        return ""
+    dwell_days = (date.today() - arrival).days
+    if dwell_days <= _DEMURRAGE_FREE_TIME_DAYS:
+        return ""
+    overage_days = dwell_days - _DEMURRAGE_FREE_TIME_DAYS
+    return (
+        f"DEMURRAGE RISK: shipment arrived {arrival.isoformat()} ({dwell_days} days ago), "
+        f"{overage_days} day(s) past the typical {_DEMURRAGE_FREE_TIME_DAYS}-day free-time window -- "
+        f"likely accruing daily demurrage/detention fees right now regardless of underlying financial "
+        f"health -- needs no other corroboration to be a real bridge-capital pitch"
+    )
+
+
 _PHONE_KEYS = ("phone", "phone_number", "primary_phone", "company_phone", "registered_agent_phone")
 _EMAIL_KEYS = ("email", "email_address", "company_email", "contact_email", "registered_agent_email")
 
@@ -2601,6 +2667,19 @@ def run_silo_leadgen(db: Session) -> dict:
                     cached_status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
                     revenue_check_cache[company_name] = (cached_score, cached_status, note)
                 score, status, notes = revenue_check_cache[company_name]
+
+            # Demurrage risk is per-SHIPMENT, not per-company (unlike
+            # the revenue check above) -- computed directly off this
+            # event's own payload, no cache needed, and independent of
+            # whether any macro signal is active this sweep (the CME
+            # Macro Funnel waterfall below gates shut with zero active
+            # signals; this never does, since a stuck container is a
+            # real capital need on its own).
+            if event.source == TelemetrySource.IMPORT_GENIUS:
+                demurrage_note = _demurrage_risk_note(event.payload)
+                if demurrage_note:
+                    score = (score if score is not None else 50.0) + _DEMURRAGE_SCORE_BONUS
+                    notes = f"{notes} | {demurrage_note}" if notes else demurrage_note
 
             db.add(
                 SiloCandidate(

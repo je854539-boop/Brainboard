@@ -185,6 +185,21 @@ MONITORED_LOCKS = [
     {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 0.8, "ecommerce_logistics": 0.2}, "apollo_location": "Houston, Texas, US", "state": "TX"},
     {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 0.6, "ecommerce_logistics": 0.4}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
     {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Miami, Florida, US", "state": "FL"},
+    # Smaller/mid-size ports -- added specifically to stop missing real
+    # import-dependent businesses outside the 4 biggest gateways above.
+    # Same AIS-only mechanism (Datalastic/VesselFinder's already-
+    # confirmed radius query), not GFW -- GFW's own adapter docstring
+    # says its wired-in dataset is fishing-vessel-specific, not a
+    # general port-traffic product, so it isn't the right tool for
+    # this. Savannah is genuinely one of the largest and fastest-
+    # growing US container ports now (comparable retail-import share
+    # to LA/NY-NJ, not actually "small") -- weighted accordingly.
+    # Charleston/Oakland/Tacoma are real but smaller-volume container
+    # gateways, weighted like Miami.
+    {"name": "Port of Savannah anchorage", "lat": 32.08, "lon": -81.09, "office": "", "project_id": "", "commodities": {"port_congestion": 0.6, "ecommerce_logistics": 0.4}, "apollo_location": "Savannah, Georgia, US", "state": "GA"},
+    {"name": "Port of Charleston anchorage", "lat": 32.80, "lon": -79.92, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Charleston, South Carolina, US", "state": "SC"},
+    {"name": "Port of Oakland anchorage", "lat": 37.80, "lon": -122.32, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Oakland, California, US", "state": "CA"},
+    {"name": "Port of Tacoma anchorage (Northwest Seaport Alliance)", "lat": 47.28, "lon": -122.40, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Tacoma, Washington, US", "state": "WA"},
     # --- Great Lakes / Soo Locks corridor: the iron-ore-to-steel-mill
     # supply chain the Ohio River corridor doesn't cover. Nearly all US
     # iron ore (Minnesota/Wisconsin's Mesabi Range) moves down through
