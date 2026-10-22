@@ -379,6 +379,12 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     "lumber_producer": ("lumber", "softwood lumber", "dimensional lumber", "sawn timber"),
     "rare_earth_importer": ("rare earth", "neodymium", "rare earth magnet", "rare earth element"),
     "ev_charging_installer": ("ev charger", "charging station", "evse", "electric vehicle charging"),
+    # The actual e-commerce BRAND/seller, not the fulfillment/3PL
+    # company that serves it (ecommerce_logistics above) -- same
+    # physical cargo content either way (a seller's own container of
+    # private-label goods looks identical to a 3PL's), the difference
+    # is entirely in which population Apollo/Cobalt searches for.
+    "ecommerce_seller": ("consumer goods", "apparel", "footwear", "toys", "electronics", "housewares", "general merchandise"),
     # "oil"/"natural gas"/"lng"/"petroleum" added so a crude/NG cargo
     # shipment -- or a geopolitical oil/gas headline -- classifies here
     # too, not just a finished-plastics shipment.
@@ -579,6 +585,13 @@ _TARIFF_AFFECTED_COUNTRIES: dict[str, tuple[str, ...]] = {
     "auto_parts": ("china",),
     "semiconductor_distributor": ("china",),
     "solar_manufacturer": ("china",),
+    # Most private-label/Amazon-FBA inventory is China-sourced -- the
+    # dominant real pattern for this population, not a guess. No
+    # diversion-beneficiary country forced here either, same honesty
+    # as apparel: sellers who've shifted to Vietnam/India are real,
+    # but not a clean single-country win at furniture-to-Vietnam's
+    # scale.
+    "ecommerce_seller": ("china",),
     "lumber_producer": ("canada",),
 }
 _TARIFF_DIVERSION_BENEFICIARY_COUNTRIES: dict[str, tuple[str, ...]] = {
@@ -974,6 +987,9 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     "lumber_producer": 50.0,
     "ev_charging_installer": 50.0,
     "rare_earth_importer": 50.0,
+    # Same wide-catchment logic -- e-commerce sellers aren't tied to
+    # one dock any more than their 3PLs are.
+    "ecommerce_seller": 60.0,
     # Same wide-catchment logic as the food-chain tiers -- wholesalers/
     # retailers in these categories are dispersed nationally, not
     # clustered at a dock or plant.
@@ -1061,6 +1077,7 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     # from_text, which needs the keyword to appear as written).
     "rare_earth_importer": ("rare earth", "rare earth processing", "rare earth refining", "magnet manufacturing"),
     "ev_charging_installer": ("ev charging installation", "electrical contractor", "charging infrastructure"),
+    "ecommerce_seller": ("e-commerce", "online retail", "direct-to-consumer", "private label brand"),
     "produce_wholesaler": ("produce distribution", "fruit and vegetable wholesale", "fresh produce", "cold storage"),
     "produce_retailer": ("produce market", "farmers market", "fruit stand", "grocery"),
     "liquor_distributor": ("liquor distribution", "beverage distributor", "spirits importer"),
@@ -1363,6 +1380,12 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "lumber_producer": ["sawmill operator", "lumber mill", "timber producer", "softwood lumber manufacturer"],
     "ev_charging_installer": ["ev charging installer", "evse contractor", "electrical contractor", "charging infrastructure company"],
     "rare_earth_importer": ["rare earth importer", "rare earth materials company", "magnet manufacturer", "rare earth processor"],
+    # The real "in" -- deliberately NOT reusing ecommerce_logistics'
+    # keywords (fulfillment center/3PL/parcel carrier), which only
+    # ever reach the service providers. This is the actual lucrative
+    # MCA population: the brand itself, found by its own identity, not
+    # its vendor's.
+    "ecommerce_seller": ["e-commerce brand", "direct-to-consumer brand", "online retailer", "private label brand", "Amazon seller", "Shopify brand"],
     "poultry_producer": ["poultry farm", "chicken producer", "broiler operation", "poultry hatchery"],
     "chemical_products_manufacturer": ["detergent manufacturer", "soap manufacturer", "cleaning products company", "coatings manufacturer", "adhesives manufacturer"],
     "produce_wholesaler": ["produce wholesaler", "fresh produce distributor", "fruit and vegetable importer"],
@@ -1547,6 +1570,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "lumber_producer": "sawmill",
     "ev_charging_installer": "electrical contractor",
     "rare_earth_importer": "rare earth importer",
+    "ecommerce_seller": "online retailer",
     "produce_wholesaler": "produce distributor",
     "produce_retailer": "grocery",
     "liquor_distributor": "beverage distributor",
@@ -2450,6 +2474,9 @@ _COMMODITY_DISTRESS_LANGUAGE: dict[str, str] = {
     # Apparel now carries real port weight too (see usace.py) -- same
     # fix, same reasoning.
     "apparel": '("apparel factory" OR garment OR textile OR tariff OR "supply chain" OR shutdown OR layoffs)',
+    # ecommerce_seller now carries real port weight too (see usace.py)
+    # -- added here at the same time, not after the fact, this time.
+    "ecommerce_seller": '("e-commerce" OR "online retailer" OR "direct-to-consumer" OR tariff OR "supply chain" OR container OR "inventory shortage")',
     # The actual trigger for e-commerce/import-retail capital need --
     # tariffs and container hold-ups, not a date on the calendar. Runs
     # at the SAME 4 coastal ports as port_congestion (see usace.py's

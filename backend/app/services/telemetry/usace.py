@@ -185,9 +185,13 @@ MONITORED_LOCKS = [
     # three dominant general-merchandise/consumer-goods gateways, and
     # apparel/textiles are arguably the single largest container-import
     # category at all three, same real-weight reasoning as furniture.
-    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 0.4, "ecommerce_logistics": 0.3, "furniture_wood": 0.1, "apparel": 0.2}, "apollo_location": "Los Angeles, California, US", "state": "CA"},
+    # ecommerce_seller added to LA/Long Beach, NY/NJ, and Savannah --
+    # the actual e-commerce BRANDS/sellers, distinct from
+    # ecommerce_logistics' fulfillment/3PL service providers, and
+    # their inventory physically moves through these exact same ports.
+    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 0.3, "ecommerce_logistics": 0.2, "furniture_wood": 0.1, "apparel": 0.2, "ecommerce_seller": 0.2}, "apollo_location": "Los Angeles, California, US", "state": "CA"},
     {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 0.8, "ecommerce_logistics": 0.2}, "apollo_location": "Houston, Texas, US", "state": "TX"},
-    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 0.45, "ecommerce_logistics": 0.35, "apparel": 0.2}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
+    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 0.3, "ecommerce_logistics": 0.25, "apparel": 0.2, "ecommerce_seller": 0.25}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
     {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Miami, Florida, US", "state": "FL"},
     # Smaller/mid-size ports -- added specifically to stop missing real
     # import-dependent businesses outside the 4 biggest gateways above.
@@ -204,7 +208,7 @@ MONITORED_LOCKS = [
     # than the other ports -- it's a dominant gateway for the Vietnam/
     # China furniture trade specifically (including serving the High
     # Point, NC furniture-industry corridor), not an arbitrary split.
-    {"name": "Port of Savannah anchorage", "lat": 32.08, "lon": -81.09, "office": "", "project_id": "", "commodities": {"port_congestion": 0.35, "ecommerce_logistics": 0.25, "furniture_wood": 0.2, "apparel": 0.2}, "apollo_location": "Savannah, Georgia, US", "state": "GA"},
+    {"name": "Port of Savannah anchorage", "lat": 32.08, "lon": -81.09, "office": "", "project_id": "", "commodities": {"port_congestion": 0.25, "ecommerce_logistics": 0.15, "furniture_wood": 0.2, "apparel": 0.2, "ecommerce_seller": 0.2}, "apollo_location": "Savannah, Georgia, US", "state": "GA"},
     {"name": "Port of Charleston anchorage", "lat": 32.80, "lon": -79.92, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Charleston, South Carolina, US", "state": "SC"},
     {"name": "Port of Oakland anchorage", "lat": 37.80, "lon": -122.32, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Oakland, California, US", "state": "CA"},
     {"name": "Port of Tacoma anchorage (Northwest Seaport Alliance)", "lat": 47.28, "lon": -122.40, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Tacoma, Washington, US", "state": "WA"},
