@@ -1115,6 +1115,57 @@ def _stage4_contact_enrichment(db: Session, company_name: str) -> tuple[str | No
     )
 
 
+def _merge_cross_source_duplicates(
+    identified: list[tuple[str, str, str, tuple[float, float] | None]],
+) -> list[tuple[str, str, str, tuple[float, float] | None, bool]]:
+    """Runs Interzoid fuzzy name-matching (same entity_matching utility
+    stage 3/4 already use) across everything Stage 2 found THIS sweep,
+    before any of it becomes a SiloCandidate.
+
+    With three independent discovery paths now able to fire on one
+    disruption -- Regrid/Import Genius (passive), the Apollo hunt, the
+    Cobalt hunt -- the same real business can get surfaced twice under
+    two different name spellings ("Three Rivers Steel Fab LLC" vs.
+    "THREE RIVERS STEEL FABRICATION, INC"). Without this, that becomes
+    two separate candidate rows for one real company instead of one
+    higher-confidence row.
+
+    The FIRST source's source_reference is kept as the merged row's
+    identity, so re-running this sweep later still recognizes it as the
+    same candidate; the second source's own reference and note are
+    folded into the merged note rather than discarded, so nothing about
+    the second discovery is lost, just not duplicated as its own row.
+
+    When two or more independent sources land on the same business,
+    that's genuine corroboration -- two unrelated databases agreeing a
+    real company exists there, not the same database returning the same
+    thing twice -- so the 5th element flags that `True`. This is what
+    actually makes "independent sources agree" useful instead of just
+    something you'd notice by eye in the notes: callers use it to score
+    a cross-source-confirmed candidate higher than a single-source one.
+    """
+    interzoid_key = get_settings().interzoid_api_key
+    merged: list[list] = []
+
+    for name, source_ref, note, coordinates in identified:
+        match = None
+        for entry in merged:
+            if entity_matching.names_match(interzoid_key, name, entry[0]):
+                match = entry
+                break
+        if match is None:
+            merged.append([name, source_ref, note, coordinates, False])
+            continue
+
+        other_source = _infer_origin_source(source_ref)
+        other_label = other_source.value if other_source else "another source"
+        match[2] = f"{match[2]} || CROSS-SOURCE CONFIRMED: also independently found via {other_label} -- {note}"
+        match[3] = match[3] or coordinates
+        match[4] = True
+
+    return [tuple(entry) for entry in merged]
+
+
 def run_cme_macro_funnel_waterfall(db: Session) -> dict:
     """The real 4-stage funnel. Assumes telemetry.all_adapters() has
     already been swept this run (see run_silo_leadgen below) so the
@@ -1131,10 +1182,11 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
 
     signal_summary = "; ".join(f"[{s.kind}] {s.description}" for s in signals[:5])
     identified = _stage2_identify_companies(db, targets=_geo_targets_from_signals(signals))
+    identified = _merge_cross_source_duplicates(identified)
 
     created = 0
     dismissed = 0
-    for company_name, trade_source_ref, corroboration_note, coordinates in identified:
+    for company_name, trade_source_ref, corroboration_note, coordinates, cross_source_confirmed in identified:
         already = (
             db.query(SiloCandidate)
             .filter(SiloCandidate.silo == CME_MACRO_SILO, SiloCandidate.source_reference == trade_source_ref)
@@ -1145,7 +1197,11 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
 
         standing_delta, standing_dismiss, lending_note = _stage3_lending_appetite(db, company_name)
         revenue_delta, revenue_dismiss, revenue_note = _stage3b_revenue_range_filter(db, company_name)
-        score_delta = standing_delta + revenue_delta
+        # +10 for two or more INDEPENDENT sources (e.g. Apollo + Cobalt)
+        # landing on the same business -- real corroboration, not the
+        # same source counted twice.
+        cross_source_bonus = 10.0 if cross_source_confirmed else 0.0
+        score_delta = standing_delta + revenue_delta + cross_source_bonus
         dismiss = standing_dismiss or revenue_dismiss
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
 
@@ -1162,6 +1218,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
                     lending_note,
                     revenue_note,
                     contact_note,
+                    "cross-source confirmed (+10 score)" if cross_source_confirmed else None,
                 ],
             )
         )
@@ -1236,12 +1293,12 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
 
     created = 0
     geo_targets = _geo_targets_from_signals(signals)
-    identify_results = (
+    identify_results = _merge_cross_source_duplicates(
         _identify_via_regrid(db, targets=geo_targets)
         + _stage2b_apollo_industry_hunt(db, geo_targets)
         + _stage2c_cobalt_industry_hunt(db, geo_targets)
     )
-    for company_name, source_reference, regrid_note, coordinates in identify_results:
+    for company_name, source_reference, regrid_note, coordinates, cross_source_confirmed in identify_results:
         already = (
             db.query(SiloCandidate)
             .filter(SiloCandidate.silo == GRAIN_SILO, SiloCandidate.source_reference == source_reference)
@@ -1250,12 +1307,16 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
         if already:
             continue
 
+        notes = f"Gated by: {signal_summary} | {regrid_note}"
+        if cross_source_confirmed:
+            notes += " | cross-source confirmed"
+
         db.add(
             SiloCandidate(
                 silo=GRAIN_SILO,
                 company_name=company_name,
                 source_reference=source_reference,
-                notes=f"Gated by: {signal_summary} | {regrid_note}",
+                notes=notes,
                 origin_source=_infer_origin_source(source_reference),
                 latitude=coordinates[0] if coordinates else None,
                 longitude=coordinates[1] if coordinates else None,
