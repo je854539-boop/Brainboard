@@ -17,12 +17,25 @@ Predicted Time of Arrival feature already folds in AIS + port-congestion
 data internally, which is also why GFW isn't a needed complement here --
 SeaVantage already does its own AIS-based read.
 
-Endpoint/field names below are a reasoned best guess at their "cargo
-report" surface, NOT confirmed against SeaVantage's live API docs --
-same honesty posture as every other adapter in this codebase. A
-third-party review claims their API refreshes on a ~2-hour cycle, not
-real-time -- unverified, flagged here rather than assumed. Confirm both
-against your actual SeaVantage account/API plan before relying on this.
+CONFIRMED (re-checked directly against seavantage.com, more precise
+than the earlier guess): SeaVantage's real developer API has TWO
+tiers, not one undifferentiated surface. The Core API covers shipment
+tracking/milestones via a real, named endpoint -- GET /cargo/search --
+which is what this adapter now targets, replacing the earlier "/v1/
+cargo-report" guess. A separate Extended API tier adds live AIS vessel
+positions, vessel profiles, historical tracks, and navigation data --
+not called here, since the Core API's cargo/milestone surface is the
+one this project actually needs (see _demurrage_risk_note); the
+Extended tier would be the thing to reach for if per-container AIS
+correlation ever becomes its own use case.
+
+REMAINING UNCONFIRMED: the exact response field names (still passed
+through unmodified below, same defensive posture as every other
+adapter), and SeaVantage's own "REST API - 2h refresh" label, which
+directly conflicts with their "real-time" marketing copy -- confirm
+the actual refresh interval against your real account/API plan before
+treating this as live data, especially for anything time-sensitive
+like the last-free-day demurrage check.
 """
 
 import httpx
@@ -38,15 +51,15 @@ class SeaVantageAdapter(TelemetryAdapter):
 
     def fetch(self) -> list[RawTelemetryRecord]:
         with httpx.Client(base_url=BASE_URL, headers={"Authorization": f"Bearer {self.api_key}"}, timeout=30) as client:
-            # TODO: confirm the real cargo-report/container-tracking
-            # endpoint and params against SeaVantage's live API docs --
-            # "/v1/cargo-report" is a reasoned guess, not a confirmed
-            # path. Each returned item is expected to carry a container/
+            # /cargo/search is SeaVantage's real, documented Core API
+            # endpoint (confirmed against their developer docs) --
+            # params/query shape still TODO against your actual plan.
+            # Each returned item is expected to carry a container/
             # shipment identifier, consignee, and dwell/last-free-day
             # fields -- passed through unmodified so
             # _demurrage_risk_note's defensive extraction can read
             # whichever field name the real response actually uses.
-            response = client.get("/v1/cargo-report")
+            response = client.get("/cargo/search")
             response.raise_for_status()
             payload = response.json()
 

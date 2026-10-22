@@ -192,7 +192,13 @@ MONITORED_LOCKS = [
     {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 0.3, "ecommerce_logistics": 0.2, "furniture_wood": 0.1, "apparel": 0.2, "ecommerce_seller": 0.2}, "apollo_location": "Los Angeles, California, US", "state": "CA"},
     {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 0.8, "ecommerce_logistics": 0.2}, "apollo_location": "Houston, Texas, US", "state": "TX"},
     {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 0.3, "ecommerce_logistics": 0.25, "apparel": 0.2, "ecommerce_seller": 0.25}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
-    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Miami, Florida, US", "state": "FL"},
+    # liquor_distributor/produce_wholesaler added -- Miami is THE
+    # dominant mainland US gateway for Latin America/Caribbean trade
+    # (tequila, rum, and produce from Mexico/Central/South America
+    # overwhelmingly transit here, far more volume than San Juan
+    # alone), and it had none of that weight despite already being a
+    # real anchor -- a gap, not a deliberate omission.
+    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 0.5, "ecommerce_logistics": 0.2, "liquor_distributor": 0.15, "produce_wholesaler": 0.15}, "apollo_location": "Miami, Florida, US", "state": "FL"},
     # Smaller/mid-size ports -- added specifically to stop missing real
     # import-dependent businesses outside the 4 biggest gateways above.
     # Same AIS-only mechanism (Datalastic/VesselFinder's already-

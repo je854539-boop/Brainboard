@@ -1158,6 +1158,26 @@ _NATIONWIDE_SWEEP_LOCATIONS: list[dict] = [
     {"apollo_location": "Chicago, Illinois, US", "state": "IL"},
 ]
 
+# Livestock_producer was sweeping the generic book-of-business cities
+# above -- CA/FL/NY/TX/NJ/IL -- which is a real mismatch: cattle
+# ranchers and dairy farms don't cluster in Los Angeles or Newark,
+# they cluster in cattle-feedlot country (Texas Panhandle, Kansas,
+# Nebraska) and real dairy regions (Wisconsin, Idaho, upstate New
+# York, California's Central Valley). "These make money the same" as
+# anyone else here -- a real, profitable population deserves a sweep
+# that reflects where it actually is, not a generic fallback built
+# for a different kind of business entirely.
+_COMMODITY_SPECIFIC_SWEEP_LOCATIONS: dict[str, list[dict]] = {
+    "livestock_producer": [
+        {"apollo_location": "Amarillo, Texas, US", "state": "TX"},
+        {"apollo_location": "Garden City, Kansas, US", "state": "KS"},
+        {"apollo_location": "Omaha, Nebraska, US", "state": "NE"},
+        {"apollo_location": "Madison, Wisconsin, US", "state": "WI"},
+        {"apollo_location": "Twin Falls, Idaho, US", "state": "ID"},
+        {"apollo_location": "Fresno, California, US", "state": "CA"},
+    ],
+}
+
 
 def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
     """One search target per active signal that carries a commodity.
@@ -1200,8 +1220,11 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
             continue
 
         # No single place -- sweep the nationwide locations instead of
-        # skipping this signal entirely.
-        for place in _NATIONWIDE_SWEEP_LOCATIONS:
+        # skipping this signal entirely. A commodity with its own real
+        # regional geography (see _COMMODITY_SPECIFIC_SWEEP_LOCATIONS)
+        # sweeps THAT instead of the generic book-of-business cities.
+        sweep_locations = _COMMODITY_SPECIFIC_SWEEP_LOCATIONS.get(signal.commodity, _NATIONWIDE_SWEEP_LOCATIONS)
+        for place in sweep_locations:
             targets.append(
                 GeoTarget(
                     lat=None, lon=None,  # no real geography behind a nationwide sweep -- see GeoTarget docstring
