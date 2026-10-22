@@ -70,6 +70,7 @@ import json
 import logging
 import math
 import re
+from datetime import date
 
 import httpx
 from dataclasses import dataclass
@@ -294,6 +295,12 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     "petrochemical": ("petrochemical", "resin", "plastic", "polymer", "chemical"),
     "food_cost": ("beef", "meat", "poultry", "dairy", "cheese", "pork"),
     "livestock_producer": ("beef", "cattle", "livestock", "meat", "pork", "dairy"),
+    "fertilizer": ("potash", "fertilizer", "urea", "ammonia", "phosphate", "muriate of potash"),
+    # General retail/consumer-goods cargo content -- what actually
+    # answers "who's importing the stuff that sells at Christmas",
+    # distinct from ecommerce_logistics' land-use/Apollo keywords below
+    # (which target the FULFILLMENT/3PL operators, not the importers).
+    "ecommerce_logistics": ("consumer goods", "apparel", "footwear", "toys", "electronics", "housewares", "general merchandise"),
 }
 
 # Standard bill-of-lading goods-description fields -- same defensive
@@ -473,6 +480,12 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # aerospace-hub sweep list would need to be a separate addition,
     # not reuse this one, if that geographic mismatch matters enough.
     "aerospace_defense": 50.0,
+    # Fertilizer terminals/distributors cluster at river import gateways
+    # and ag-retail hubs much like a grain elevator does -- same radius.
+    "fertilizer": 25.0,
+    # Fulfillment centers/3PLs serve a wide regional catchment, not one
+    # dock -- same wide-catchment logic as port_congestion/logistics_fuel.
+    "ecommerce_logistics": 60.0,
 }
 _DEFAULT_SEARCH_RADIUS_MILES = 25.0
 
@@ -498,6 +511,8 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "food_cost": ("restaurant", "food service", "meat processing", "dairy processing", "food distribution", "catering"),
     "livestock_producer": ("cattle ranch", "feedlot", "dairy farm", "livestock", "ranch", "slaughterhouse", "meat packing"),
     "aerospace_defense": ("aerospace", "defense contractor", "aircraft", "avionics", "missile", "satellite", "aviation"),
+    "fertilizer": ("fertilizer", "potash", "ammonia", "agricultural chemical", "crop input", "agribusiness"),
+    "ecommerce_logistics": ("fulfillment", "warehouse", "distribution", "logistics", "parcel", "last mile", "cold storage"),
 }
 
 
@@ -767,6 +782,8 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "food_cost": ["restaurant", "food service company", "meat processing", "dairy processing", "food distributor", "catering company"],
     "livestock_producer": ["cattle ranch", "feedlot operator", "dairy farm", "livestock producer", "meat packing plant", "slaughterhouse"],
     "aerospace_defense": ["aerospace manufacturer", "defense contractor", "aircraft parts supplier", "avionics company", "aerospace supplier"],
+    "fertilizer": ["fertilizer distributor", "agricultural chemical company", "crop input supplier", "farm supply", "agribusiness"],
+    "ecommerce_logistics": ["fulfillment center", "third-party logistics", "last-mile delivery", "e-commerce logistics", "parcel carrier", "warehousing and storage"],
 }
 
 # Who actually makes a financing decision at a small/mid-size business --
@@ -914,6 +931,8 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "food_cost": "restaurant",
     "livestock_producer": "livestock",
     "aerospace_defense": "aerospace",
+    "fertilizer": "fertilizer",
+    "ecommerce_logistics": "fulfillment",
 }
 
 
@@ -1372,6 +1391,122 @@ def _highergov_contract_signals(db: Session, commodities: set[str] | None = None
     return signals
 
 
+# Pre-holiday window a seasonal e-commerce/fulfillment capital need is
+# live -- retailers and their 3PLs/fulfillment centers have to fund
+# inventory and seasonal staffing weeks ahead of the Q4 revenue that
+# actually pays for it. Not a news- or price-driven trigger at all;
+# the calendar itself is the signal. Deliberately starts well before
+# the shopping season itself (Sept 1), since the capital need is the
+# pre-season inventory buy, not the sales days.
+_SEASONAL_ECOMMERCE_START = (9, 1)
+_SEASONAL_ECOMMERCE_END = (12, 15)
+
+
+def _seasonal_ecommerce_signals() -> list[MacroSignal]:
+    """A calendar trigger, not a news/price one -- "it's the holiday
+    season" IS the signal. Same capital-before-revenue timing gap every
+    other expansion signal in this module looks for, just driven by the
+    calendar instead of a price move or a headline.
+
+    No single location (there's no one "where" for a seasonal demand
+    ramp) -- flows through the nationwide sweep same as a CME price
+    shock or a HigherGov award, which is what lets Stage 2's Import
+    Genius pass pick up consumer-goods shipment volume against it (see
+    _COMMODITY_GOODS_KEYWORDS["ecommerce_logistics"]) and the Apollo/
+    Cobalt hunts target fulfillment/3PL operators near your own top-6
+    metros. No TelemetryEvent to write either -- there's no external
+    record backing this, it's pure date logic, so source_reference
+    names the calendar trigger itself rather than pointing at a stored
+    row."""
+    today = date.today()
+    start = date(today.year, *_SEASONAL_ECOMMERCE_START)
+    end = date(today.year, *_SEASONAL_ECOMMERCE_END)
+    if not (start <= today <= end):
+        return []
+    return [
+        MacroSignal(
+            kind="seasonal_demand",
+            description=f"Holiday season e-commerce/fulfillment demand ramp ({today.isoformat()}) -- calendar trigger, not news-driven",
+            source_reference="calendar_trigger:ecommerce_holiday_season",
+            commodity="ecommerce_logistics",
+            signal_type="expansion",
+        )
+    ]
+
+
+# Geopolitical supply-disruption language for a critical ag input with
+# no CME-listed futures contract to read a price direction from (potash/
+# fertilizer isn't one of SYMBOL_COMMODITIES' symbols). Russia/Belarus/
+# Ukraine together produce roughly 40% of world potash, and Iran is a
+# major urea/ammonia exporter -- a war, sanctions, or export-ban
+# headline touching any of them is read the same way
+# _highergov_contract_signals reads a contract award: no price proxy to
+# measure direction from, but the real-world direction is unambiguous
+# enough to hardcode. A war or export ban on a commodity this
+# concentrated is supply AT RISK, which is a cost squeeze for the US
+# buyers who need it (farms, ag retailers, fertilizer distributors),
+# never relief -- so this is always "distress", same confidence posture
+# as HigherGov's always-"expansion".
+_FERTILIZER_GEOPOLITICAL_QUERY = (
+    '(potash OR fertilizer OR urea OR ammonia OR phosphate) AND '
+    '(Russia OR Belarus OR Ukraine OR Iran OR war OR sanctions OR "export ban")'
+)
+
+
+def _gdelt_geopolitical_fertilizer_signals(db: Session) -> list[MacroSignal]:
+    """Nationwide, not per-place, same posture as _gdelt_shock_signals'
+    national sweep -- a Ukraine/Belarus/Iran supply disruption has no
+    single US location to anchor to. One free GDELT call for the whole
+    sweep.
+
+    Routes through the nationwide sweep downstream by default (no
+    coordinates/location_hint/state set here) -- UNLESS this sweep's
+    USACE read ALSO shows a disruption on a river corridor that
+    actually carries real fertilizer tonnage (see usace.py's
+    MONITORED_LOCKS: the Mississippi/Illinois grain corridor and the
+    New Orleans GIWW import gateway both now carry a fertilizer weight,
+    since fertilizer genuinely backhauls upriver on the same barges
+    that carry grain down). That corroboration is what
+    _hot_commodities_this_sweep + _stage1_detect_signals' macro_
+    corroborated flag turns a geopolitical headline into a river-scan-
+    confirmed hunt, not a global guess -- this is "narrow it down to
+    the river scan" in code: geopolitical news says fertilizer is hot,
+    USACE says whether that's ALSO showing up as real barge activity on
+    the actual corridor that moves it, before Apollo/Cobalt spend a
+    paid call on it.
+
+    Every hit is written as its own TelemetryEvent, same real-stored-
+    row invariant as every other active-hunt path in this module.
+    """
+    adapter = GDELTAdapter()
+    try:
+        records = adapter.search(_FERTILIZER_GEOPOLITICAL_QUERY, maxrecords=20)
+    except Exception:
+        return []  # a single failed call here just means no geopolitical fertilizer signal this sweep
+
+    signals: list[MacroSignal] = []
+    for record in records:
+        event = TelemetryEvent(
+            source=TelemetrySource.GDELT,
+            title=record.title,
+            payload={**record.payload, "geopolitical_commodity": "fertilizer"},
+        )
+        db.add(event)
+        db.flush()
+        signals.append(
+            MacroSignal(
+                kind="geopolitical_commodity_disruption",
+                description=f"GDELT geopolitical fertilizer/potash supply-disruption coverage: {record.title}",
+                source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                commodity="fertilizer",
+                signal_type="distress",
+            )
+        )
+
+    db.commit()
+    return signals
+
+
 def _gdelt_shock_signals(db: Session) -> list[MacroSignal]:
     # GDELT's query (see telemetry/gdelt.py::COMMODITY_SHOCK_QUERY) is
     # already scoped to shock-relevant language -- "commodities crash",
@@ -1726,11 +1861,19 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     classification pass over headlines the fixed keyword vocabulary
     couldn't place (_gdelt_llm_discovery_signals) -- a no-op with no
     ANTHROPIC_API_KEY configured, a real paid call (capped per sweep)
-    once one is."""
+    once one is.
+
+    ALSO includes a geopolitical macro-level channel
+    (_gdelt_geopolitical_fertilizer_signals -- a war/sanctions/export-
+    ban headline on potash/fertilizer, treated the same priority as a
+    CME price shock or a contract award) and a pure calendar trigger
+    (_seasonal_ecommerce_signals -- the holiday season itself, no
+    news or price event required)."""
     cme_signals = _cme_price_shock_signals(db)
     national_gdelt_signals = _gdelt_shock_signals(db)
     contract_signals = _highergov_contract_signals(db)
-    hot = _hot_commodities_this_sweep(cme_signals + national_gdelt_signals + contract_signals)
+    geopolitical_signals = _gdelt_geopolitical_fertilizer_signals(db)
+    hot = _hot_commodities_this_sweep(cme_signals + national_gdelt_signals + contract_signals + geopolitical_signals)
 
     local_signals = _gdelt_local_distress_signals(db)
     broad_signals = _gdelt_broad_disruption_signals(db)
@@ -1743,11 +1886,13 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         cme_signals
         + national_gdelt_signals
         + contract_signals
+        + geopolitical_signals
         + local_signals
         + broad_signals
         + _gdelt_llm_discovery_signals(db)
         + _gfw_anomaly_signals(db)
         + usace_signals
+        + _seasonal_ecommerce_signals()
     )
 
 

@@ -127,15 +127,19 @@ VESSELFINDER_BASE_URL = "https://api.vesselfinder.com"  # placeholder -- confirm
 # plain 2-letter code -- Cobalt Intelligence's SOS search takes a state,
 # not a city, see _stage2c_cobalt_industry_hunt).
 MONITORED_LOCKS = [
-    # --- Mississippi / Illinois Waterway: grain corridor. Genuinely
-    # single-commodity -- this stretch's traffic really is overwhelmingly
-    # agricultural export tonnage, not a case of forcing false precision.
-    {"name": "Lock and Dam 1 (Mississippi, Minneapolis)", "lat": 44.92, "lon": -93.20, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Minneapolis, Minnesota, US", "state": "MN"},
-    {"name": "Lock and Dam 19 (Mississippi, Keokuk)", "lat": 40.40, "lon": -91.38, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Keokuk, Iowa, US", "state": "IA"},
-    {"name": "Melvin Price Locks and Dam (Mississippi, Alton)", "lat": 38.87, "lon": -90.16, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Alton, Illinois, US", "state": "IL"},
-    {"name": "Lockport Lock (Illinois Waterway)", "lat": 41.59, "lon": -88.08, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Joliet, Illinois, US", "state": "IL"},
-    {"name": "Marseilles Lock (Illinois Waterway)", "lat": 41.33, "lon": -88.71, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Marseilles, Illinois, US", "state": "IL"},
-    {"name": "Peoria Lock (Illinois Waterway)", "lat": 40.63, "lon": -89.61, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Peoria, Illinois, US", "state": "IL"},
+    # --- Mississippi / Illinois Waterway: grain corridor, with a real
+    # fertilizer backhaul -- the same barges that carry grain DOWN to
+    # Gulf export terminals carry fertilizer/potash BACK UP to Midwest
+    # ag retailers (imported through the Gulf, see the GIWW/New Orleans
+    # entry below), not a separate fleet. Right at _MIN_COMMODITY_WEIGHT
+    # (0.15) so a disruption here still opens a fertilizer signal, just
+    # clearly secondary to this corridor's dominant grain traffic.
+    {"name": "Lock and Dam 1 (Mississippi, Minneapolis)", "lat": 44.92, "lon": -93.20, "office": "", "project_id": "", "commodities": {"grain": 0.85, "fertilizer": 0.15}, "apollo_location": "Minneapolis, Minnesota, US", "state": "MN"},
+    {"name": "Lock and Dam 19 (Mississippi, Keokuk)", "lat": 40.40, "lon": -91.38, "office": "", "project_id": "", "commodities": {"grain": 0.85, "fertilizer": 0.15}, "apollo_location": "Keokuk, Iowa, US", "state": "IA"},
+    {"name": "Melvin Price Locks and Dam (Mississippi, Alton)", "lat": 38.87, "lon": -90.16, "office": "", "project_id": "", "commodities": {"grain": 0.85, "fertilizer": 0.15}, "apollo_location": "Alton, Illinois, US", "state": "IL"},
+    {"name": "Lockport Lock (Illinois Waterway)", "lat": 41.59, "lon": -88.08, "office": "", "project_id": "", "commodities": {"grain": 0.85, "fertilizer": 0.15}, "apollo_location": "Joliet, Illinois, US", "state": "IL"},
+    {"name": "Marseilles Lock (Illinois Waterway)", "lat": 41.33, "lon": -88.71, "office": "", "project_id": "", "commodities": {"grain": 0.85, "fertilizer": 0.15}, "apollo_location": "Marseilles, Illinois, US", "state": "IL"},
+    {"name": "Peoria Lock (Illinois Waterway)", "lat": 40.63, "lon": -89.61, "office": "", "project_id": "", "commodities": {"grain": 0.85, "fertilizer": 0.15}, "apollo_location": "Peoria, Illinois, US", "state": "IL"},
     # --- Ohio River: coal + steel dominant, but a real secondary grain
     # share moves this corridor too (Midwest grain barged down to the
     # Mississippi often transits the lower Ohio) -- lock names and
@@ -152,7 +156,13 @@ MONITORED_LOCKS = [
     # significant grain export tonnage also transits near New Orleans/
     # Baton Rouge (river grain elevators feed export vessels staged along
     # this same waterway). Same confirmation caveat as above.
-    {"name": "Algiers Lock (GIWW, New Orleans)", "lat": 29.93, "lon": -90.03, "office": "", "project_id": "", "commodities": {"petrochemical": 0.65, "grain": 0.35}, "apollo_location": "New Orleans, Louisiana, US", "state": "LA"},
+    # New Orleans is THE real US fertilizer/potash import gateway
+    # (Canadian/Russian/Belarusian potash and ammonia come in here
+    # before moving upriver) -- this is where a geopolitical potash/
+    # fertilizer headline (see silo_leadgen.py's
+    # _gdelt_geopolitical_fertilizer_signals) actually gets a real
+    # river-corridor corroboration, not just a nationwide guess.
+    {"name": "Algiers Lock (GIWW, New Orleans)", "lat": 29.93, "lon": -90.03, "office": "", "project_id": "", "commodities": {"petrochemical": 0.55, "grain": 0.30, "fertilizer": 0.15}, "apollo_location": "New Orleans, Louisiana, US", "state": "LA"},
     {"name": "Port Allen Lock (GIWW, Baton Rouge)", "lat": 30.45, "lon": -91.21, "office": "", "project_id": "", "commodities": {"petrochemical": 0.60, "grain": 0.40}, "apollo_location": "Baton Rouge, Louisiana, US", "state": "LA"},
     {"name": "Calcasieu Lock (GIWW, Lake Charles)", "lat": 30.12, "lon": -93.36, "office": "", "project_id": "", "commodities": {"petrochemical": 0.85, "grain": 0.15}, "apollo_location": "Lake Charles, Louisiana, US", "state": "LA"},
     # --- Coastal port anchorages: marine-traffic-at-port congestion,
