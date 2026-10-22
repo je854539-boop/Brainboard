@@ -66,6 +66,8 @@ substring matching otherwise, same behavior as before Interzoid was
 wired in for this purpose.
 """
 
+import json
+import logging
 import math
 import re
 
@@ -82,6 +84,8 @@ from app.services.telemetry.apollo import ApolloAdapter
 from app.services.telemetry.cobalt_intelligence import CobaltIntelligenceAdapter
 from app.services.telemetry.gdelt import GDELTAdapter
 from app.services.telemetry.usace import MONITORED_LOCKS, vessels_near_datalastic, vessels_near_vesselfinder
+
+logger = logging.getLogger("brainboard.silo_leadgen")
 
 SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     TelemetrySource.CME_GLOBEX: [SiloName.TARIFF_SILO],
@@ -197,6 +201,15 @@ class MacroSignal:
     # collection, never by an individual detector itself -- a detector
     # has no visibility into what the OTHERS found this sweep.
     macro_corroborated: bool = False
+    # Set only by _llm_classify_news-backed signals (a genuinely novel
+    # industry, not one of the hand-wired commodities) -- the hunt
+    # keywords/term travel WITH the signal instead of being looked up
+    # from the static _COMMODITY_APOLLO_KEYWORDS/_COMMODITY_COBALT_
+    # SEARCH_TERMS dicts, since a newly-discovered industry isn't in
+    # them. None for every hand-wired commodity, which keeps using the
+    # static dicts as before.
+    dynamic_apollo_keywords: list[str] | None = None
+    dynamic_cobalt_term: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +546,11 @@ class GeoTarget:
     # DIFFERENT KINDS of signal (a macro price/news read vs. a local
     # disruption) agreeing, not two providers agreeing on one company.
     macro_corroborated: bool = False
+    # See MacroSignal.dynamic_apollo_keywords/dynamic_cobalt_term -- the
+    # Apollo/Cobalt hunts use these directly instead of looking up the
+    # static per-commodity dicts when a target carries them.
+    dynamic_apollo_keywords: list[str] | None = None
+    dynamic_cobalt_term: str | None = None
 
 
 # A nationwide commodity price shock (CME Globex, GDELT's national
@@ -592,6 +610,7 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
                     radius_mi=radius, weight=signal.weight, location_hint=signal.location_hint,
                     state=signal.state, signal_type=signal.signal_type,
                     macro_corroborated=signal.macro_corroborated,
+                    dynamic_apollo_keywords=signal.dynamic_apollo_keywords, dynamic_cobalt_term=signal.dynamic_cobalt_term,
                 )
             )
             continue
@@ -606,6 +625,7 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
                     radius_mi=radius, weight=signal.weight,
                     location_hint=place["apollo_location"], state=place["state"], signal_type=signal.signal_type,
                     macro_corroborated=signal.macro_corroborated,
+                    dynamic_apollo_keywords=signal.dynamic_apollo_keywords, dynamic_cobalt_term=signal.dynamic_cobalt_term,
                 )
             )
     return targets
@@ -821,7 +841,7 @@ def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
             continue
         seen_locations.add(target.location_hint)
 
-        keywords = _COMMODITY_APOLLO_KEYWORDS.get(target.commodity)
+        keywords = target.dynamic_apollo_keywords or _COMMODITY_APOLLO_KEYWORDS.get(target.commodity)
         if not keywords:
             continue
 
@@ -939,7 +959,7 @@ def _stage2c_cobalt_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
             continue
         seen_states.add(target.state)
 
-        search_term = _COMMODITY_COBALT_SEARCH_TERMS.get(target.commodity)
+        search_term = target.dynamic_cobalt_term or _COMMODITY_COBALT_SEARCH_TERMS.get(target.commodity)
         if not search_term:
             continue
 
@@ -1162,6 +1182,153 @@ def _classify_commodity_from_text(text: str) -> str | None:
         if any(k in text_lower for k in keywords):
             return commodity
     return None
+
+
+# Below this, an LLM classification is treated as "not confident
+# enough to spend a real paid Apollo/Cobalt hunt on" and discarded --
+# a bad/uncertain classification is worse than none here.
+_LLM_CLASSIFICATION_CONFIDENCE_FLOOR = 0.6
+# Real cost control: unlike GDELT (free), each of these is a paid
+# Anthropic API call -- cap how many unclassified headlines get sent
+# per sweep regardless of how many the broad query returns.
+_LLM_MAX_ARTICLES_PER_SWEEP = 10
+
+
+def _llm_classify_news(title: str) -> dict | None:
+    """The actual answer to "find a correlation, not just match against
+    a list I already coded." _classify_commodity_from_text can only
+    ever recognize the handful of industries already hand-wired into
+    this file. An LLM call can recognize a genuinely NOVEL industry a
+    headline implies -- "Widget Corp signs supply deal" as being about
+    semiconductor components, say -- and reason about financing
+    direction the same way the producer/consumer trade-side logic
+    does, without that industry ever having been pre-coded here.
+
+    This calls a real, confirmed API (api.anthropic.com/v1/messages) --
+    not a guessed endpoint the way several other adapters in this
+    project still are. Returns None (not a guess) when no key is
+    configured, the HTTP call fails, the response isn't parseable
+    JSON, or the model's own reported confidence is below
+    _LLM_CLASSIFICATION_CONFIDENCE_FLOOR.
+    """
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        return None
+
+    prompt = (
+        "Classify this news headline for a business lead-generation system. Respond with ONLY valid JSON, "
+        "no markdown formatting, no explanation.\n\n"
+        f'Headline: "{title}"\n\n'
+        "If this headline is clearly about a specific, real industry or business sector, respond with:\n"
+        '{"industry": "<short specific label, e.g. \\"lumber\\", \\"semiconductor manufacturing\\", '
+        '\\"coffee roasting\\">", '
+        '"signal_type": "expansion"|"distress"|"neutral", '
+        '"apollo_keywords": ["<3 to 5 B2B company-search keywords for that exact industry>"], '
+        '"cobalt_term": "<one search term for a Secretary of State business-name search>", '
+        '"confidence": <0.0 to 1.0>}\n\n'
+        'If the headline is generic financial/political news with no identifiable industry, respond with: '
+        '{"industry": null}'
+    )
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            response = client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": settings.anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": settings.anthropic_model,
+                    "max_tokens": 300,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            response.raise_for_status()
+            text = response.json()["content"][0]["text"].strip()
+    except Exception:
+        return None
+
+    text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    if not parsed.get("industry") or parsed.get("confidence", 0) < _LLM_CLASSIFICATION_CONFIDENCE_FLOOR:
+        return None
+    return parsed
+
+
+def _gdelt_llm_discovery_signals(db: Session) -> list[MacroSignal]:
+    """Real open-ended industry discovery: runs the same broad national
+    query as _gdelt_broad_disruption_signals, but for every headline
+    the FIXED keyword classifier (_classify_commodity_from_text)
+    couldn't place -- never re-spending an LLM call rediscovering an
+    industry already handled by the free keyword path. Capped at
+    _LLM_MAX_ARTICLES_PER_SWEEP since each check is a real paid
+    Anthropic API call, unlike everything else in this file.
+
+    Always routed through the nationwide sweep (no location set) --
+    see _geo_targets_from_signals -- since a newly-discovered industry
+    was never anchored to one of the known MONITORED_LOCKS places. The
+    hunt keywords/term travel WITH the signal (dynamic_apollo_keywords/
+    dynamic_cobalt_term) rather than being looked up from the static
+    per-commodity dicts, since a brand-new industry isn't in them.
+
+    No API key configured -> returns [] immediately, no GDELT call
+    even attempted, same "no key -> no-op" posture as every other
+    adapter in this project.
+    """
+    if not get_settings().anthropic_api_key:
+        return []
+
+    adapter = GDELTAdapter()
+    try:
+        records = adapter.search(_BROAD_DISRUPTION_QUERY, maxrecords=30)
+    except Exception:
+        return []
+
+    signals: list[MacroSignal] = []
+    checked = 0
+    for record in records:
+        if _classify_commodity_from_text(record.title):
+            continue  # already has a known match -- don't spend an LLM call rediscovering it
+        if checked >= _LLM_MAX_ARTICLES_PER_SWEEP:
+            break
+        checked += 1
+
+        result = _llm_classify_news(record.title)
+        if not result:
+            continue
+
+        event = TelemetryEvent(
+            source=TelemetrySource.GDELT,
+            title=record.title,
+            payload={**record.payload, "llm_discovered_industry": result["industry"], "llm_confidence": result["confidence"]},
+        )
+        db.add(event)
+        db.flush()
+
+        signal_type = result.get("signal_type")
+        signals.append(
+            MacroSignal(
+                kind="llm_discovered_industry",
+                description=(
+                    f"LLM-discovered industry '{result['industry']}' (confidence {result['confidence']:.0%}, "
+                    f"not a verified tag): {record.title}"
+                ),
+                source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                commodity=result["industry"],
+                signal_type=signal_type if signal_type != "neutral" else None,
+                dynamic_apollo_keywords=result.get("apollo_keywords"),
+                dynamic_cobalt_term=result.get("cobalt_term"),
+            )
+        )
+
+    db.commit()
+    return signals
 
 
 def _highergov_contract_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
@@ -1553,7 +1720,13 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     USACE is real disruption data, neither needs permission to run),
     just flagged as independently confirmed by a different kind of
     evidence, which Stage 2's hunts turn into a real confidence bonus
-    instead of treating every hit as equally uncertain."""
+    instead of treating every hit as equally uncertain.
+
+    ALSO includes real open-ended industry discovery via an LLM
+    classification pass over headlines the fixed keyword vocabulary
+    couldn't place (_gdelt_llm_discovery_signals) -- a no-op with no
+    ANTHROPIC_API_KEY configured, a real paid call (capped per sweep)
+    once one is."""
     cme_signals = _cme_price_shock_signals(db)
     national_gdelt_signals = _gdelt_shock_signals(db)
     contract_signals = _highergov_contract_signals(db)
@@ -1572,6 +1745,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + contract_signals
         + local_signals
         + broad_signals
+        + _gdelt_llm_discovery_signals(db)
         + _gfw_anomaly_signals(db)
         + usace_signals
     )
@@ -2161,3 +2335,58 @@ def run_silo_leadgen(db: Session) -> dict:
         "cme_macro_funnel_waterfall": cme_result,
         "agriculture_grain_handling_waterfall": grain_result,
     }
+
+
+# ---------------------------------------------------------------------------
+# Daily continuous sweep -- "a living lead-gen organism that sweeps
+# daily" means run_silo_leadgen can't only ever run when a human calls
+# POST /api/silo/leadgen/run. Same off-by-default-until-configured
+# pattern as sheets_sync.py/calendar_sync.py's background pulls: several
+# of the sources this sweep hits (Apollo, Cobalt, CME Globex) are real
+# paid external APIs, not free local computation, so this stays opt-in
+# rather than running the moment the server starts.
+# ---------------------------------------------------------------------------
+
+_sweep_task = None
+
+
+async def _sweep_loop():
+    import asyncio
+
+    from app.database import SessionLocal
+
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                result = await asyncio.to_thread(run_silo_leadgen, db)
+                logger.info("Silo lead-gen sweep: candidates_created=%s", result["candidates_created"])
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001 -- one bad cycle must not kill the loop
+            logger.exception("Silo lead-gen sweep failed -- will retry next cycle")
+        await asyncio.sleep(get_settings().silo_leadgen_sweep_interval_seconds)
+
+
+def start_background_sweep():
+    """Off by default (silo_leadgen_continuous_sweep_enabled) -- set
+    SILO_LEADGEN_CONTINUOUS_SWEEP_ENABLED=true once the real API keys
+    (Apollo, Cobalt, Databento, HigherGov, Datalastic/VesselFinder) are
+    actually configured, so the first automatic sweep isn't a no-op."""
+    import asyncio
+
+    global _sweep_task
+    if not get_settings().silo_leadgen_continuous_sweep_enabled:
+        logger.info("Silo lead-gen continuous sweep disabled (set SILO_LEADGEN_CONTINUOUS_SWEEP_ENABLED=true to activate)")
+        return None
+    if _sweep_task is None or _sweep_task.done():
+        _sweep_task = asyncio.create_task(_sweep_loop())
+        logger.info("Silo lead-gen background sweep started (interval=%ss)", get_settings().silo_leadgen_sweep_interval_seconds)
+    return _sweep_task
+
+
+def stop_background_sweep() -> None:
+    global _sweep_task
+    if _sweep_task is not None:
+        _sweep_task.cancel()
+        _sweep_task = None

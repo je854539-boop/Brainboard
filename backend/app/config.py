@@ -164,6 +164,30 @@ class Settings(BaseSettings):
     sheet_continuous_pull_enabled: bool = False
     sheet_pull_interval_seconds: int = 86400  # 24 hours
 
+    # Silo lead-gen sweep (services/silo_leadgen.py::run_silo_leadgen) --
+    # every signal/hunt mechanism built this session (USACE, CME, GDELT,
+    # HigherGov, Apollo/Cobalt hunts) only ever ran when someone called
+    # POST /api/silo/leadgen/run by hand. "A living lead-gen organism
+    # that sweeps daily" means this needs to run on its own schedule,
+    # same off-by-default-until-configured posture as the other real
+    # external-API continuous pulls above (several of the sources this
+    # sweep hits are paid APIs, not free local computation).
+    silo_leadgen_continuous_sweep_enabled: bool = False
+    silo_leadgen_sweep_interval_seconds: int = 86400  # 24 hours -- daily, per spec
+
+    # LLM-based open-ended news classification (services/silo_leadgen.py::
+    # _llm_classify_news) -- lets the broad GDELT sweep recognize an
+    # industry it was never given a keyword list for, instead of only
+    # ever matching against the fixed commodity vocabulary. Empty by
+    # default -- falls back to keyword-only classification with no key
+    # set, same "no key -> no-op" pattern as every other adapter.
+    anthropic_api_key: str = ""
+    # Cheap/fast tier is the right call here -- this runs as a
+    # classification step on news headlines, potentially many per
+    # sweep, not a reasoning task. Confirm this is still a live model
+    # id at deploy time; model ids get retired.
+    anthropic_model: str = "claude-haiku-4-5"
+
 
 @lru_cache
 def get_settings() -> Settings:
