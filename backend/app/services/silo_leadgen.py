@@ -369,6 +369,11 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # cattle/hog/dairy price shock has no single location), not a
     # specific lock radius.
     "food_cost": 50.0,
+    # Ranches, feedlots, and dairy farms are genuinely rural and
+    # dispersed -- even wider than food_cost's catchment, and mostly
+    # relevant via the nationwide sweep for the same reason (a price
+    # shock has no single location).
+    "livestock_producer": 60.0,
 }
 _DEFAULT_SEARCH_RADIUS_MILES = 25.0
 
@@ -392,6 +397,7 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "port_congestion": ("warehouse", "distribution", "logistics", "fulfillment", "freight", "terminal"),
     "logistics_fuel": ("trucking", "logistics", "freight", "warehouse", "distribution", "transportation", "fleet"),
     "food_cost": ("restaurant", "food service", "meat processing", "dairy processing", "food distribution", "catering"),
+    "livestock_producer": ("cattle ranch", "feedlot", "dairy farm", "livestock", "ranch", "slaughterhouse", "meat packing"),
 }
 
 
@@ -644,6 +650,7 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "port_congestion": ["import", "distribution center", "freight forwarding", "warehousing and storage", "wholesale trade"],
     "logistics_fuel": ["trucking company", "freight carrier", "logistics company", "transportation company", "trucking fleet"],
     "food_cost": ["restaurant", "food service company", "meat processing", "dairy processing", "food distributor", "catering company"],
+    "livestock_producer": ["cattle ranch", "feedlot operator", "dairy farm", "livestock producer", "meat packing plant", "slaughterhouse"],
 }
 
 # Who actually makes a financing decision at a small/mid-size business --
@@ -784,6 +791,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "port_congestion": "distribution",
     "logistics_fuel": "trucking",
     "food_cost": "restaurant",
+    "livestock_producer": "livestock",
 }
 
 
@@ -902,12 +910,27 @@ _GOOD_STANDING_KEYWORDS = ("active", "good standing", "in good standing", "curre
 # drive a targeted hunt or be commodity-filtered), not an error, but it
 # also means it would never wrongly contaminate a commodity-filtered
 # waterfall like Agriculture's.
-SYMBOL_COMMODITY: dict[str, str] = {
-    "ZC.c.0": "grain", "ZS.c.0": "grain", "ZW.c.0": "grain", "ZM.c.0": "grain", "ZL.c.0": "grain",
-    "HRC.c.0": "steel_coal",
-    "CL.c.0": "logistics_fuel", "HO.c.0": "logistics_fuel",
-    "NG.c.0": "petrochemical",
-    "LE.c.0": "food_cost", "GF.c.0": "food_cost", "HE.c.0": "food_cost", "DC.c.0": "food_cost",
+# A single price move can genuinely hit two different populations with
+# OPPOSITE financing stories at once -- a cattle/hog/dairy price crash
+# (e.g. a trade-policy move letting in a flood of cheap imports) is
+# DISTRESS for the ranchers/feedlots/dairy farms who sell it, and mild
+# RELIEF for the restaurants/food processors who buy it as an input.
+# One commodity tag per symbol can't represent that -- each livestock/
+# dairy symbol carries BOTH tags, each independently classified by its
+# own trade side (see _COMMODITY_TRADE_SIDE), so "Argentina beef floods
+# the market" correctly produces a distress signal for cattle producers
+# AND a separate, differently-framed signal for food-cost-side
+# consumers from the exact same price move, not one signal pretending
+# to speak for both sides.
+SYMBOL_COMMODITIES: dict[str, list[str]] = {
+    "ZC.c.0": ["grain"], "ZS.c.0": ["grain"], "ZW.c.0": ["grain"], "ZM.c.0": ["grain"], "ZL.c.0": ["grain"],
+    "HRC.c.0": ["steel_coal"],
+    "CL.c.0": ["logistics_fuel"], "HO.c.0": ["logistics_fuel"],
+    "NG.c.0": ["petrochemical"],
+    "LE.c.0": ["livestock_producer", "food_cost"],
+    "GF.c.0": ["livestock_producer", "food_cost"],
+    "HE.c.0": ["livestock_producer", "food_cost"],
+    "DC.c.0": ["livestock_producer", "food_cost"],
 }
 
 # Which side of the trade the businesses we actually target under each
@@ -935,6 +958,11 @@ _COMMODITY_TRADE_SIDE: dict[str, str] = {
     "petrochemical": "consumer",
     "logistics_fuel": "consumer",
     "food_cost": "consumer",
+    # The seller side of the livestock/dairy complex -- ranches,
+    # feedlots, dairy farms, slaughterhouses/meat packers. A price DOWN
+    # (e.g. cheap imports flooding the market) squeezes THEM even
+    # though it's relief for food_cost's restaurant/processor side.
+    "livestock_producer": "producer",
 }
 
 
@@ -943,13 +971,18 @@ def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -
     the original grain complex (see telemetry/cme_globex.py::SYMBOLS,
     which now also covers steel, crude/diesel, natural gas, and the
     livestock/dairy complex). Every shock is tagged with its commodity
-    via SYMBOL_COMMODITY so a caller can filter the same way
+    via SYMBOL_COMMODITIES so a caller can filter the same way
     _usace_disruption_signals already requires: the Agriculture & Grain
     Handling waterfall passes {"grain"} so a steel or diesel price
     shock can't gate it open by mistake, while the CME Macro Funnel
-    passes None for every commodity.
+    passes None for every commodity. A symbol can carry MULTIPLE
+    commodity tags -- a livestock/dairy price move genuinely creates
+    two different populations with OPPOSITE financing stories
+    (ranchers who sell it vs. restaurants who buy it as an input), so
+    one signal is emitted PER tag, each independently classified, not
+    one signal pretending to speak for both sides.
 
-    ALSO classifies the shock as "expansion" or "distress" via
+    ALSO classifies each shock as "expansion" or "distress" via
     _COMMODITY_TRADE_SIDE x direction -- a price move isn't
     direction-neutral "look here" information; a producer riding a
     windfall is a completely different financing story than a producer
@@ -973,35 +1006,36 @@ def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -
         if abs(pct) < PRICE_SHOCK_PCT:
             continue
         symbol = event.payload.get("symbol") or str(event.payload.get("instrument_id", "?"))
-        commodity = SYMBOL_COMMODITY.get(symbol)
-        if commodities is not None and commodity not in commodities:
-            continue
-
-        trade_side = _COMMODITY_TRADE_SIDE.get(commodity)
         price_up = pct > 0
-        if trade_side == "producer":
-            signal_type = "expansion" if price_up else "distress"
-        elif trade_side == "consumer":
-            signal_type = "distress" if price_up else "expansion"
-        else:
-            signal_type = None  # untagged/unclassified symbol -- don't guess
-
         direction = "up" if price_up else "down"
-        framing = (
-            f"{signal_type} signal ({trade_side} of this commodity)" if signal_type else "shock (unclassified)"
-        )
-        signals.append(
-            MacroSignal(
-                kind="price_shock",
-                description=(
-                    f"CME Globex {symbol} moved {abs(pct):.1%} {direction} intraday "
-                    f"(open {open_:.2f} -> close {close:.2f}) -- {framing}"
-                ),
-                source_reference=f"telemetry_event:{event.id} [cme_globex] {event.title}",
-                signal_type=signal_type,
-                commodity=commodity,
+
+        for commodity in SYMBOL_COMMODITIES.get(symbol, []):
+            if commodities is not None and commodity not in commodities:
+                continue
+
+            trade_side = _COMMODITY_TRADE_SIDE.get(commodity)
+            if trade_side == "producer":
+                signal_type = "expansion" if price_up else "distress"
+            elif trade_side == "consumer":
+                signal_type = "distress" if price_up else "expansion"
+            else:
+                signal_type = None  # untagged/unclassified commodity -- don't guess
+
+            framing = (
+                f"{signal_type} signal ({trade_side} of this commodity)" if signal_type else "shock (unclassified)"
             )
-        )
+            signals.append(
+                MacroSignal(
+                    kind="price_shock",
+                    description=(
+                        f"CME Globex {symbol} moved {abs(pct):.1%} {direction} intraday "
+                        f"(open {open_:.2f} -> close {close:.2f}) -- {commodity}: {framing}"
+                    ),
+                    source_reference=f"telemetry_event:{event.id} [cme_globex] {event.title}",
+                    signal_type=signal_type,
+                    commodity=commodity,
+                )
+            )
     return signals
 
 
@@ -1131,21 +1165,23 @@ def _build_place_commodity_index() -> dict[str, dict]:
     first, then _NATIONWIDE_SWEEP_LOCATIONS fills in any of your top-6
     metros not already covered by a lock (no real lat/lon for those --
     a metro isn't anchored to one specific industry the way a lock is,
-    so every commodity except food_cost is left plausible there;
-    food_cost is deliberately excluded from place-based classification
-    since restaurants aren't geographically concentrated the way a mill
-    or elevator is -- that one is better served by the nationwide
-    sweep already built, not a "mentioned near this city" guess)."""
+    so every OTHER commodity is left plausible there; food_cost and
+    livestock_producer are deliberately excluded from place-based
+    classification -- restaurants aren't geographically concentrated
+    the way a mill or elevator is, and ranches/feedlots are the
+    opposite, genuinely rural and specifically NOT in a major metro --
+    both are better served by the nationwide sweep already built, not
+    a "mentioned near this city" guess)."""
     index: dict[str, dict] = {}
     for lock in MONITORED_LOCKS:
         city = lock["apollo_location"].split(",")[0].strip().lower()
         if city not in index:
             index[city] = {"lat": lock["lat"], "lon": lock["lon"], "state": lock["state"], "commodities": set((lock.get("commodities") or {}).keys())}
-    non_food_commodities = set(_COMMODITY_LAND_USE_KEYWORDS.keys()) - {"food_cost"}
+    metro_plausible_commodities = set(_COMMODITY_LAND_USE_KEYWORDS.keys()) - {"food_cost", "livestock_producer"}
     for place in _NATIONWIDE_SWEEP_LOCATIONS:
         city = place["apollo_location"].split(",")[0].strip().lower()
         if city not in index:
-            index[city] = {"lat": None, "lon": None, "state": place["state"], "commodities": non_food_commodities}
+            index[city] = {"lat": None, "lon": None, "state": place["state"], "commodities": metro_plausible_commodities}
     return index
 
 
@@ -1314,7 +1350,7 @@ CME_MACRO_SILO = SiloName.CME_MACRO_FUNNEL
 def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     """The gate. Returns every active macro signal found across the five
     leading-indicator channels (CME Globex price shock -- now also
-    steel/crude/diesel/nat gas, not just grain, see SYMBOL_COMMODITY --
+    steel/crude/diesel/nat gas, not just grain, see SYMBOL_COMMODITIES --
     GDELT NATIONAL news, GDELT LOCAL distress news near every monitored
     place, GFW ocean anomaly, and USACE river/port disruption across
     EVERY monitored corridor, not just grain -- a steel-corridor or
