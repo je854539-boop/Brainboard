@@ -196,6 +196,8 @@ class USACEAdapter(TelemetryAdapter):
                         title=f"USACE gate-change activity: {lock['name']} -- {len(changes)} changes in {GATE_CHANGE_LOOKBACK_HOURS}h",
                         payload={
                             "lock": lock["name"],
+                            "lat": lock["lat"],
+                            "lon": lock["lon"],
                             "office": office,
                             "project_id": project_id,
                             "commodity": lock.get("commodity"),

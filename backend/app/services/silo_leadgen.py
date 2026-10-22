@@ -66,6 +66,7 @@ substring matching otherwise, same behavior as before Interzoid was
 wired in for this purpose.
 """
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -153,6 +154,12 @@ class MacroSignal:
     kind: str
     description: str
     source_reference: str
+    # Only USACE-origin signals carry these (see _usace_disruption_signals)
+    # -- a CME price shock or GDELT headline has no specific place to
+    # point Stage 2's identification search at. None for every other
+    # signal kind; _geo_targets_from_signals skips those.
+    commodity: str | None = None
+    coordinates: tuple[float, float] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +230,137 @@ def _regrid_geometry_centroid(payload: dict) -> tuple[float, float] | None:
         return None
 
 
-def _identify_via_regrid(db: Session) -> list[tuple[str, str, str, tuple[float, float] | None]]:
+def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance -- good enough for "is this parcel near this
+    lock/port" at the 10-60 mile scale these searches use; no need for a
+    geodesic library over that range."""
+    earth_radius_mi = 3958.8
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    return 2 * earth_radius_mi * math.asin(math.sqrt(a))
+
+
+# How far from an active disruption a parcel still counts as plausibly
+# affected by it. Waterside industrial facilities (grain elevators, ore
+# docks, petrochemical plants) are sited directly on the corridor, so a
+# tight radius is right for them. Port congestion is different -- the
+# businesses actually feeling a port delay are spread across its whole
+# trucking catchment area, not clustered at the dock -- so that radius
+# is deliberately much wider. Tunable policy, not a measured constant.
+_COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
+    "grain": 20.0,
+    "steel_coal": 20.0,
+    "petrochemical": 20.0,
+    "port_congestion": 60.0,
+}
+_DEFAULT_SEARCH_RADIUS_MILES = 25.0
+
+# Regrid's actual land-use/zoning field name isn't confirmed against
+# live docs (same posture as _ADDRESS_KEYS above) -- check every
+# plausible variant rather than guessing one and silently missing a real
+# classification.
+_LAND_USE_KEYS = ("land_use", "landuse", "usedesc", "use_description", "zoning_description", "zoning")
+
+# Keyword match against whatever land-use/zoning text is found, per
+# commodity -- confirms a parcel is actually the right KIND of facility,
+# not just physically near the disruption. port_congestion has no single
+# matching industry (any import-dependent business in the catchment area
+# is a fair candidate), so its keywords are a bonus-confidence signal,
+# never a requirement -- see _nearest_geo_target's caller, which never
+# dismisses a radius match for lack of a land-use field.
+_COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "grain": ("grain", "elevator", "agricultural", "farm", "silo"),
+    "steel_coal": ("steel", "iron", "ore", "coal", "metal", "foundry", "mill", "smelt"),
+    "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics"),
+    "port_congestion": ("warehouse", "distribution", "logistics", "fulfillment", "freight", "terminal"),
+}
+
+
+def _extract_land_use(properties: dict) -> str | None:
+    for key in _LAND_USE_KEYS:
+        value = properties.get(key)
+        if value:
+            return str(value).lower()
+    return None
+
+
+@dataclass
+class GeoTarget:
+    lat: float
+    lon: float
+    commodity: str
+    label: str
+    radius_mi: float
+
+
+def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
+    """One search target per active signal that actually carries a
+    location and a commodity (today, only USACE-origin ones do -- a CME
+    price shock or a GDELT tariff headline has no specific place to
+    point the search at, so those are simply skipped here, not an
+    error). This is the piece that turns "something disrupted
+    somewhere" into "go look specifically here, for this kind of
+    business."
+    """
+    targets = []
+    for signal in signals:
+        if signal.commodity and signal.coordinates:
+            lat, lon = signal.coordinates
+            radius = _COMMODITY_SEARCH_RADIUS_MILES.get(signal.commodity, _DEFAULT_SEARCH_RADIUS_MILES)
+            targets.append(GeoTarget(lat=lat, lon=lon, commodity=signal.commodity, label=signal.description, radius_mi=radius))
+    return targets
+
+
+def _nearest_geo_target(coordinates: tuple[float, float] | None, targets: list[GeoTarget]) -> tuple[GeoTarget, float] | None:
+    """The closest target a parcel falls within the radius of, or None if
+    it's outside every active target's radius (or there are no active
+    geo-tagged signals this sweep, or the parcel has no coordinates)."""
+    if not coordinates or not targets:
+        return None
+    lat, lon = coordinates
+    best: tuple[GeoTarget, float] | None = None
+    for target in targets:
+        distance = _haversine_miles(lat, lon, target.lat, target.lon)
+        if distance <= target.radius_mi and (best is None or distance < best[1]):
+            best = (target, distance)
+    return best
+
+
+def _geo_match_note(properties: dict, coordinates: tuple[float, float] | None, targets: list[GeoTarget]) -> str:
+    """Returns a note prefix describing whether this parcel sits inside
+    an active disruption's search radius, and whether its land-use/
+    zoning text (when available) actually confirms the matching
+    industry. Empty string when there's no active geo target this
+    sweep, or the parcel falls outside all of them -- NOT dismissed in
+    either case, since the existing address-match path may still be
+    right; this only ever adds confidence, never removes a candidate."""
+    match = _nearest_geo_target(coordinates, targets)
+    if not match:
+        return ""
+    target, distance = match
+    land_use = _extract_land_use(properties)
+    keywords = _COMMODITY_LAND_USE_KEYWORDS.get(target.commodity, ())
+    if land_use and keywords and any(k in land_use for k in keywords):
+        return (
+            f"TARGETED MATCH: {distance:.1f}mi from active {target.commodity} signal ({target.label}), "
+            f"land-use '{land_use}' confirms {target.commodity} classification -- "
+        )
+    if land_use:
+        return (
+            f"Near active {target.commodity} signal ({target.label}, {distance:.1f}mi) but land-use "
+            f"'{land_use}' doesn't confirm {target.commodity} -- radius match only, not industry-confirmed -- "
+        )
+    return (
+        f"Near active {target.commodity} signal ({target.label}, {distance:.1f}mi); land-use classification "
+        f"unavailable to confirm -- radius match only, not industry-confirmed -- "
+    )
+
+
+def _identify_via_regrid(
+    db: Session, targets: list[GeoTarget] | None = None
+) -> list[tuple[str, str, str, tuple[float, float] | None]]:
     """A Regrid parcel's owner-of-record is a land-ownership fact, not a
     confirmation that the owner is the business actually operating there
     -- an operator can lease land it doesn't own. So identification here
@@ -235,11 +372,22 @@ def _identify_via_regrid(db: Session) -> list[tuple[str, str, str, tuple[float, 
     silently dropped, since it may still be the right business, just not
     address-confirmed.
 
+    `targets` (see _geo_targets_from_signals) narrows WHERE and WHAT KIND
+    of business this search is actually looking for -- when an active
+    disruption signal carries both a location and a commodity, a parcel
+    inside that target's radius gets its note prefixed with how strong
+    the match is (land-use-confirmed vs. radius-only vs. unconfirmed --
+    see _geo_match_note). This never dismisses a candidate for falling
+    outside every target's radius, or for there being no active geo
+    target at all -- the existing address-match result stands either
+    way, just without the extra confidence prefix.
+
     Returns (company_name, source_reference, note, coordinates) tuples --
     coordinates is (lat, lon) from the parcel's own GeoJSON geometry when
     present, else None (see _regrid_geometry_centroid). Powers the
     globe's silo-funnel-lifecycle layer.
     """
+    targets = targets or []
     known_addresses: dict[str, str] = {}
     for event in _fresh_events(db, TelemetrySource.IMPORT_GENIUS, limit=25):
         name = event.payload.get("consignee_name") or event.payload.get("company_name")
@@ -258,19 +406,20 @@ def _identify_via_regrid(db: Session) -> list[tuple[str, str, str, tuple[float, 
         source_reference = f"telemetry_event:{event.id} [regrid] {event.title}"
         matched_company = known_addresses.get(_normalize_address(str(parcel_address))) if parcel_address else None
         coordinates = _regrid_geometry_centroid(event.payload)
+        geo_note = _geo_match_note(properties, coordinates, targets)
 
         if matched_company:
             identified.append((
                 matched_company,
                 source_reference,
-                f"Regrid parcel at '{parcel_address}' address-matches Import Genius's business address for '{matched_company}'",
+                f"{geo_note}Regrid parcel at '{parcel_address}' address-matches Import Genius's business address for '{matched_company}'",
                 coordinates,
             ))
         elif owner:
             identified.append((
                 str(owner),
                 source_reference,
-                f"Regrid parcel owner '{owner}' at '{parcel_address or 'unknown address'}' -- "
+                f"{geo_note}Regrid parcel owner '{owner}' at '{parcel_address or 'unknown address'}' -- "
                 "land ownership only, operating business at this address not independently confirmed",
                 coordinates,
             ))
@@ -361,11 +510,15 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
         if commodities is not None and commodity not in commodities:
             continue
         label = (commodity or "river_corridor").replace("_", " ")
+        lat, lon = event.payload.get("lat"), event.payload.get("lon")
+        coordinates = (float(lat), float(lon)) if lat is not None and lon is not None else None
         signals.append(
             MacroSignal(
                 kind="river_corridor_disruption",
                 description=f"USACE {label} disruption: {event.title}",
                 source_reference=f"telemetry_event:{event.id} [usace] {event.title}",
+                commodity=commodity,
+                coordinates=coordinates,
             )
         )
     return signals
@@ -396,15 +549,16 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     )
 
 
-def _stage2_identify_companies(db: Session) -> list[tuple[str, str, str]]:
+def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = None) -> list[tuple[str, str, str]]:
     """Turns an active macro signal into actual company names, via the
     trade/logistics-data sources that carry a real business identity
     (Import Genius customs manifests, Regrid parcel data -- address-
-    matched, see _identify_via_regrid). SeaVantage/Datalastic/
-    VesselFinder/USACE don't carry a company name (they're vessel- or
-    lock-level), so they can't identify a candidate on their own -- they
-    corroborate one, attached as supporting evidence in the notes field
-    of every candidate this stage produces.
+    matched AND, when `targets` carries active geo+commodity signals,
+    location/industry-matched too, see _identify_via_regrid).
+    SeaVantage/Datalastic/VesselFinder/USACE don't carry a company name
+    (they're vessel- or lock-level), so they can't identify a candidate
+    on their own -- they corroborate one, attached as supporting
+    evidence in the notes field of every candidate this stage produces.
 
     Returns (company_name, source_reference, corroboration_note,
     coordinates) tuples -- coordinates is None for Import Genius-sourced
@@ -434,7 +588,7 @@ def _stage2_identify_companies(db: Session) -> list[tuple[str, str, str]]:
         if name:
             identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", corroboration_note, None))
 
-    for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(db):
+    for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(db, targets=targets):
         identified.append((company_name, source_reference, f"{corroboration_note} | {regrid_note}", coordinates))
 
     return identified
@@ -615,7 +769,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
         }
 
     signal_summary = "; ".join(f"[{s.kind}] {s.description}" for s in signals[:5])
-    identified = _stage2_identify_companies(db)
+    identified = _stage2_identify_companies(db, targets=_geo_targets_from_signals(signals))
 
     created = 0
     dismissed = 0
@@ -720,7 +874,9 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
     signal_summary = "; ".join(f"[{s.kind}] {s.description}" for s in signals[:5])
 
     created = 0
-    for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(db):
+    for company_name, source_reference, regrid_note, coordinates in _identify_via_regrid(
+        db, targets=_geo_targets_from_signals(signals)
+    ):
         already = (
             db.query(SiloCandidate)
             .filter(SiloCandidate.silo == GRAIN_SILO, SiloCandidate.source_reference == source_reference)
