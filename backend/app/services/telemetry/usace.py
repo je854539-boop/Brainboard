@@ -168,13 +168,23 @@ MONITORED_LOCKS = [
     # --- Coastal port anchorages: marine-traffic-at-port congestion,
     # AIS-only (no CWMS lock-gate data applies -- office/project_id left
     # blank on purpose, see module docstring). Picked to match your real
-    # book's top states (CA/TX/NY/FL/NJ import gateways). Genuinely
-    # single-category -- "any import-dependent business near this port"
-    # isn't a commodity mix the way a river corridor's traffic is.
-    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Los Angeles, California, US", "state": "CA"},
-    {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Houston, Texas, US", "state": "TX"},
-    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
-    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Miami, Florida, US", "state": "FL"},
+    # book's top states (CA/TX/NY/FL/NJ import gateways).
+    #
+    # No longer single-category: LA/Long Beach and NY/NJ are the #1/#3
+    # US container ports and overwhelmingly retail/consumer-goods
+    # import gateways, so they now carry a real ecommerce_logistics
+    # weight alongside port_congestion -- a tariff/container headline
+    # or an AIS-confirmed queue here is a real, geo-anchored e-commerce
+    # capital-need signal, not a nationwide guess (see
+    # silo_leadgen.py's _COMMODITY_DISTRESS_LANGUAGE["ecommerce_
+    # logistics"]). Houston skews petrochemical/energy cargo (smaller
+    # container share); Miami/Port Everglades carries real retail
+    # container traffic too (Latin America/Caribbean trade), between
+    # the two.
+    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 0.6, "ecommerce_logistics": 0.4}, "apollo_location": "Los Angeles, California, US", "state": "CA"},
+    {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 0.8, "ecommerce_logistics": 0.2}, "apollo_location": "Houston, Texas, US", "state": "TX"},
+    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 0.6, "ecommerce_logistics": 0.4}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
+    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Miami, Florida, US", "state": "FL"},
     # --- Great Lakes / Soo Locks corridor: the iron-ore-to-steel-mill
     # supply chain the Ohio River corridor doesn't cover. Nearly all US
     # iron ore (Minnesota/Wisconsin's Mesabi Range) moves down through

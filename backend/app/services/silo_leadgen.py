@@ -70,7 +70,6 @@ import json
 import logging
 import math
 import re
-from datetime import date
 
 import httpx
 from dataclasses import dataclass
@@ -318,8 +317,9 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     "livestock_producer": ("beef", "cattle", "livestock", "meat", "pork", "dairy"),
     "fertilizer": ("potash", "fertilizer", "urea", "ammonia", "phosphate", "muriate of potash"),
     # General retail/consumer-goods cargo content -- what actually
-    # answers "who's importing the stuff that sells at Christmas",
-    # distinct from ecommerce_logistics' land-use/Apollo keywords below
+    # answers "who's importing the stuff that's stuck behind a tariff
+    # or a container backlog," distinct from ecommerce_logistics'
+    # land-use/Apollo keywords below
     # (which target the FULFILLMENT/3PL operators, not the importers).
     "ecommerce_logistics": ("consumer goods", "apparel", "footwear", "toys", "electronics", "housewares", "general merchandise"),
 }
@@ -1463,63 +1463,18 @@ def _highergov_contract_signals(db: Session, commodities: set[str] | None = None
     return signals
 
 
-# Pre-holiday window a seasonal e-commerce/fulfillment capital need is
-# live -- retailers and their 3PLs/fulfillment centers have to fund
-# inventory and seasonal staffing weeks ahead of the Q4 revenue that
-# actually pays for it. Not a news- or price-driven trigger at all;
-# the calendar itself is the signal. Deliberately starts well before
-# the shopping season itself (Sept 1), since the capital need is the
-# pre-season inventory buy, not the sales days.
-_SEASONAL_ECOMMERCE_START = (9, 1)
-_SEASONAL_ECOMMERCE_END = (12, 15)
-
-
-# Below this weight, a signal is framed "secondary signal only" in
-# every downstream note (see _geo_match_note/_stage2b/_stage2c) -- the
-# off-season e-commerce baseline deliberately sits below that line so
-# it's never confused with a full-strength signal, while the holiday
-# window itself gets full weight.
-_ECOMMERCE_OFF_SEASON_WEIGHT = 0.4
-_ECOMMERCE_HOLIDAY_WEIGHT = 1.0
-
-
-def _seasonal_ecommerce_signals() -> list[MacroSignal]:
-    """E-commerce/fulfillment demand isn't actually a once-a-year thing
-    -- Prime Day, back-to-school, Valentine's/Mother's Day restocking,
-    and ordinary year-round growth all create the same capital-before-
-    revenue timing gap a holiday ramp does, just at lower intensity.
-    This fires EVERY sweep, all year, at a reduced ("secondary signal
-    only") weight -- and steps up to full weight during the actual
-    pre-holiday window (Sept 1 - Dec 15), when the capital need is both
-    real AND urgent. A pure calendar trigger either way, not a news/
-    price one -- the date itself is the signal.
-
-    No single location (there's no one "where" for a seasonal demand
-    ramp) -- flows through the nationwide sweep same as a CME price
-    shock or a HigherGov award, which is what lets Stage 2's Import
-    Genius pass pick up consumer-goods shipment volume against it (see
-    _COMMODITY_GOODS_KEYWORDS["ecommerce_logistics"]) and the Apollo/
-    Cobalt hunts target fulfillment/3PL operators near your own top-6
-    metros. No TelemetryEvent to write either -- there's no external
-    record backing this, it's pure date logic, so source_reference
-    names the calendar trigger itself rather than pointing at a stored
-    row."""
-    today = date.today()
-    start = date(today.year, *_SEASONAL_ECOMMERCE_START)
-    end = date(today.year, *_SEASONAL_ECOMMERCE_END)
-    in_season = start <= today <= end
-    weight = _ECOMMERCE_HOLIDAY_WEIGHT if in_season else _ECOMMERCE_OFF_SEASON_WEIGHT
-    label = "Holiday season" if in_season else "Year-round baseline"
-    return [
-        MacroSignal(
-            kind="seasonal_demand",
-            description=f"{label} e-commerce/fulfillment demand ({today.isoformat()}) -- calendar trigger, not news-driven",
-            source_reference="calendar_trigger:ecommerce_holiday_season" if in_season else "calendar_trigger:ecommerce_baseline",
-            commodity="ecommerce_logistics",
-            signal_type="expansion",
-            weight=weight,
-        )
-    ]
+# REMOVED the calendar-based seasonal trigger -- e-commerce/fulfillment
+# capital need isn't actually driven by the date, it's driven by real
+# physical disruption at the ports these importers depend on: tariffs,
+# sea traffic, and container hold-ups. ecommerce_logistics is now a
+# weighted commodity directly on the 4 coastal port_congestion locks
+# in usace.py (same mechanism as fertilizer's river-corridor weight),
+# so a real AIS-confirmed queue at LA/Long Beach, Houston, NY/NJ, or
+# Miami emits an ecommerce_logistics signal anchored to that port's
+# REAL coordinates -- not a nationwide guess -- which is what actually
+# lets Import Genius/Apollo/Cobalt/GDELT/GFW all converge on the same
+# physical place, same invisible-thread logic as the Argentina-beef
+# chain, just triggered by a port instead of a price.
 
 
 # Geopolitical supply-disruption language for a critical ag input with
@@ -1629,6 +1584,13 @@ _COMMODITY_DISTRESS_LANGUAGE: dict[str, str] = {
     "petrochemical": '("petrochemical plant" OR refinery OR "chemical plant" OR explosion OR fire OR leak OR shutdown)',
     "port_congestion": '(port OR terminal OR "shipping delay" OR congestion OR backlog OR strike)',
     "logistics_fuel": '(trucking OR "freight carrier" OR "fuel surcharge" OR "diesel price" OR layoffs OR bankruptcy)',
+    # The actual trigger for e-commerce/import-retail capital need --
+    # tariffs and container hold-ups, not a date on the calendar. Runs
+    # at the SAME 4 coastal ports as port_congestion (see usace.py's
+    # commodity weight on those locks), so a tariff/container headline
+    # near LA/Houston/Newark/Miami corroborates an independent AIS-
+    # confirmed queue at that exact port, not a nationwide guess.
+    "ecommerce_logistics": '("container" OR tariff OR "import tax" OR "supply chain" OR "port congestion" OR backlog OR "shipping delay")',
 }
 
 
@@ -1958,9 +1920,11 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     ALSO includes a geopolitical macro-level channel
     (_gdelt_geopolitical_fertilizer_signals -- a war/sanctions/export-
     ban headline on potash/fertilizer, treated the same priority as a
-    CME price shock or a contract award) and a pure calendar trigger
-    (_seasonal_ecommerce_signals -- the holiday season itself, no
-    news or price event required)."""
+    CME price shock or a contract award). e-commerce/fulfillment has no
+    dedicated channel here anymore -- it's driven by real port
+    disruption instead of a calendar date, so it surfaces through
+    usace_signals itself (ecommerce_logistics is now a weighted
+    commodity on the 4 coastal port_congestion locks, see usace.py)."""
     cme_signals = _cme_price_shock_signals(db)
     national_gdelt_signals = _gdelt_shock_signals(db)
     contract_signals = _highergov_contract_signals(db)
@@ -1984,7 +1948,6 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + _gdelt_llm_discovery_signals(db)
         + _gfw_anomaly_signals(db)
         + usace_signals
-        + _seasonal_ecommerce_signals()
     )
 
 
