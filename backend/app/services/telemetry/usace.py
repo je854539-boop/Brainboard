@@ -1,4 +1,36 @@
-"""USACE lock-disruption signal, from two complementary channels.
+"""USACE lock/port-disruption signal, from two complementary channels.
+
+**Multi-corridor, multi-commodity.** MONITORED_LOCKS originally covered
+only the Mississippi/Illinois grain corridor (feeding the Agriculture &
+Grain Handling silo). It now also covers the Ohio River corridor (coal +
+steel -- the Pittsburgh/upper-Ohio steel region moves both by barge) and
+the Gulf Intracoastal Waterway (petrochemicals, around the Houston/Lake
+Charles/Baton Rouge corridor), plus four coastal port anchorage points
+(marine-traffic-at-port congestion, not river-lock congestion -- see
+below). Every entry carries a `commodity` tag so a disruption signal
+says what it actually means (a steel-corridor disruption is not a grain
+signal) -- callers filter `_usace_disruption_signals` by commodity
+instead of treating every USACE event as agriculture-specific. Real
+CWMS office/project_id and precise lock coordinates for the new Ohio
+River / GIWW entries are NOT yet confirmed against the live USACE
+catalog (same caveat as the original Mississippi/Illinois entries always
+carried) -- these are well-established public infrastructure (real lock
+names, approximate geography), but verify via this file's own self-serve
+CWMS lookup before relying on the gate-change channel for them. The AIS
+channel works immediately once a key is set, no CWMS confirmation
+needed, same as before.
+
+**Port anchorage entries.** A cluster of vessels anchored/idling outside
+a major port (not transiting through) is the coastal equivalent of barge
+queuing at a river lock -- a leading indicator that cargo bound for that
+port's catchment area is delayed, which stresses the cash flow of
+import-dependent businesses there before the delay shows up anywhere
+else. These reuse the exact same AIS-queue detection channel as the
+river locks; they deliberately carry no office/project_id (ports have no
+CWMS lock-gate data), so the gate-change channel silently skips them --
+exactly the existing "blank office/project_id = this channel doesn't
+apply" behavior, now doing useful work for a second purpose instead of
+only meaning "not yet confirmed."
 
 **Channel 1 -- real CWMS Data API (CDA).** Confirmed against the actual
 USACE/HEC source (https://github.com/USACE/cwms-data-api), not guessed:
@@ -56,14 +88,41 @@ VESSELFINDER_BASE_URL = "https://api.vesselfinder.com"  # placeholder -- confirm
 # name, lat, lon (for the AIS channel -- always active if a key is set),
 # office, project_id (for the real CWMS gate-changes channel -- blank
 # until you've confirmed them per the module docstring's self-serve
-# lookup; this channel silently skips any entry left blank).
+# lookup; this channel silently skips any entry left blank), commodity
+# (what this segment's disruption actually signals -- see module
+# docstring; callers filter _usace_disruption_signals by this tag).
 MONITORED_LOCKS = [
-    {"name": "Lock and Dam 1 (Mississippi, Minneapolis)", "lat": 44.92, "lon": -93.20, "office": "", "project_id": ""},
-    {"name": "Lock and Dam 19 (Mississippi, Keokuk)", "lat": 40.40, "lon": -91.38, "office": "", "project_id": ""},
-    {"name": "Melvin Price Locks and Dam (Mississippi, Alton)", "lat": 38.87, "lon": -90.16, "office": "", "project_id": ""},
-    {"name": "Lockport Lock (Illinois Waterway)", "lat": 41.59, "lon": -88.08, "office": "", "project_id": ""},
-    {"name": "Marseilles Lock (Illinois Waterway)", "lat": 41.33, "lon": -88.71, "office": "", "project_id": ""},
-    {"name": "Peoria Lock (Illinois Waterway)", "lat": 40.63, "lon": -89.61, "office": "", "project_id": ""},
+    # --- Mississippi / Illinois Waterway: grain corridor ---
+    {"name": "Lock and Dam 1 (Mississippi, Minneapolis)", "lat": 44.92, "lon": -93.20, "office": "", "project_id": "", "commodity": "grain"},
+    {"name": "Lock and Dam 19 (Mississippi, Keokuk)", "lat": 40.40, "lon": -91.38, "office": "", "project_id": "", "commodity": "grain"},
+    {"name": "Melvin Price Locks and Dam (Mississippi, Alton)", "lat": 38.87, "lon": -90.16, "office": "", "project_id": "", "commodity": "grain"},
+    {"name": "Lockport Lock (Illinois Waterway)", "lat": 41.59, "lon": -88.08, "office": "", "project_id": "", "commodity": "grain"},
+    {"name": "Marseilles Lock (Illinois Waterway)", "lat": 41.33, "lon": -88.71, "office": "", "project_id": "", "commodity": "grain"},
+    {"name": "Peoria Lock (Illinois Waterway)", "lat": 40.63, "lon": -89.61, "office": "", "project_id": "", "commodity": "grain"},
+    # --- Ohio River: coal + steel corridor (Pittsburgh/upper-Ohio steel
+    # region down through the coal-heavy middle Ohio) -- lock names and
+    # general geography are well-established public infrastructure;
+    # office/project_id NOT yet confirmed against the live CWMS catalog,
+    # see module docstring.
+    {"name": "Emsworth Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.51, "lon": -80.09, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "Montgomery Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.64, "lon": -80.19, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "New Cumberland Locks and Dam (Ohio River, Steubenville/Weirton)", "lat": 40.50, "lon": -80.62, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "Greenup Locks and Dam (Ohio River, Huntington)", "lat": 38.65, "lon": -82.93, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "McAlpine Locks and Dam (Ohio River, Louisville)", "lat": 38.26, "lon": -85.78, "office": "", "project_id": "", "commodity": "steel_coal"},
+    {"name": "Olmsted Locks and Dam (Ohio River, mouth)", "lat": 37.18, "lon": -89.07, "office": "", "project_id": "", "commodity": "steel_coal"},
+    # --- Gulf Intracoastal Waterway: petrochemical corridor (Houston /
+    # Lake Charles / Baton Rouge) -- same confirmation caveat as above.
+    {"name": "Algiers Lock (GIWW, New Orleans)", "lat": 29.93, "lon": -90.03, "office": "", "project_id": "", "commodity": "petrochemical"},
+    {"name": "Port Allen Lock (GIWW, Baton Rouge)", "lat": 30.45, "lon": -91.21, "office": "", "project_id": "", "commodity": "petrochemical"},
+    {"name": "Calcasieu Lock (GIWW, Lake Charles)", "lat": 30.12, "lon": -93.36, "office": "", "project_id": "", "commodity": "petrochemical"},
+    # --- Coastal port anchorages: marine-traffic-at-port congestion,
+    # AIS-only (no CWMS lock-gate data applies -- office/project_id left
+    # blank on purpose, see module docstring). Picked to match your real
+    # book's top states (CA/TX/NY/FL/NJ import gateways).
+    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodity": "port_congestion"},
+    {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodity": "port_congestion"},
+    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodity": "port_congestion"},
+    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodity": "port_congestion"},
 ]
 
 GATE_CHANGE_LOOKBACK_HOURS = 48
@@ -112,7 +171,13 @@ class USACEAdapter(TelemetryAdapter):
                 records.append(
                     RawTelemetryRecord(
                         title=f"USACE gate-change activity: {lock['name']} -- {len(changes)} changes in {GATE_CHANGE_LOOKBACK_HOURS}h",
-                        payload={"lock": lock["name"], "office": office, "project_id": project_id, "gate_changes": changes},
+                        payload={
+                            "lock": lock["name"],
+                            "office": office,
+                            "project_id": project_id,
+                            "commodity": lock.get("commodity"),
+                            "gate_changes": changes,
+                        },
                     )
                 )
         return records
@@ -157,8 +222,15 @@ class USACEAdapter(TelemetryAdapter):
             if idle_count >= QUEUE_THRESHOLD:
                 records.append(
                     RawTelemetryRecord(
-                        title=f"USACE lock congestion (AIS proxy): {lock['name']} -- {idle_count} idle vessels queued",
-                        payload={"lock": lock["name"], "lat": lock["lat"], "lon": lock["lon"], "idle_vessel_count": idle_count, "vessels": vessels},
+                        title=f"USACE congestion (AIS proxy): {lock['name']} -- {idle_count} idle vessels queued",
+                        payload={
+                            "lock": lock["name"],
+                            "lat": lock["lat"],
+                            "lon": lock["lon"],
+                            "commodity": lock.get("commodity"),
+                            "idle_vessel_count": idle_count,
+                            "vessels": vessels,
+                        },
                     )
                 )
         return records

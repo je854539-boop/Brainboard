@@ -14,8 +14,12 @@ price move alone isn't a lead:
 
   CME MACRO FUNNEL (run_cme_macro_funnel_waterfall) -- "Chicago
   commodities market swings and crashes":
-    1. SIGNAL   -- CME Globex (price) + GDELT (news) + GFW 4Wings (ocean).
-                   No active signal = the waterfall stops here.
+    1. SIGNAL   -- CME Globex (price) + GDELT (news, now also tariff/
+                   trade-policy coverage) + GFW 4Wings (ocean) + USACE
+                   (river/port disruption, every monitored corridor --
+                   grain, steel/coal, petrochemical, port congestion; see
+                   telemetry/usace.py). No active signal = the waterfall
+                   stops here.
     2. IDENTIFY -- Import Genius (customs manifests) + Regrid (parcel
                    data, address-matched -- see _identify_via_regrid),
                    corroborated by SeaVantage/Datalastic/VesselFinder/
@@ -308,12 +312,14 @@ def _cme_price_shock_signals(db: Session) -> list[MacroSignal]:
 def _gdelt_shock_signals(db: Session) -> list[MacroSignal]:
     # GDELT's query (see telemetry/gdelt.py::COMMODITY_SHOCK_QUERY) is
     # already scoped to shock-relevant language -- "commodities crash",
-    # "grain shortage", "export ban", theme:ECON_COMMODITY -- so any fresh
-    # match IS the signal; no extra magnitude filter needed on top of it.
+    # "grain shortage", "export ban", theme:ECON_COMMODITY -- AND
+    # tariff/trade-policy language ("tariff", "trade war", Section
+    # 301/232) -- so any fresh match IS the signal; no extra magnitude
+    # filter needed on top of it.
     return [
         MacroSignal(
             kind="news_shock",
-            description=f"GDELT commodity-shock coverage: {event.title}",
+            description=f"GDELT commodity/tariff-shock coverage: {event.title}",
             source_reference=f"telemetry_event:{event.id} [gdelt] {event.title}",
         )
         for event in _fresh_events(db, TelemetrySource.GDELT, limit=10)
@@ -336,22 +342,33 @@ def _gfw_anomaly_signals(db: Session) -> list[MacroSignal]:
     ]
 
 
-def _usace_disruption_signals(db: Session) -> list[MacroSignal]:
-    # Every USACE event (see telemetry/usace.py) is already grain-corridor
-    # specific by construction -- MONITORED_LOCKS defaults to the
-    # Mississippi/Illinois Waterway, and both its channels (CWMS
-    # gate-change activity, AIS barge queuing) only emit a record once
-    # they've crossed a real disruption threshold (GATE_CHANGE_THRESHOLD /
-    # QUEUE_THRESHOLD). So any fresh USACE event IS a grain-corridor
-    # congestion signal, not just a raw data point that needs re-filtering.
-    return [
-        MacroSignal(
-            kind="river_corridor_disruption",
-            description=f"USACE grain-corridor disruption: {event.title}",
-            source_reference=f"telemetry_event:{event.id} [usace] {event.title}",
+def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
+    """Every USACE event (see telemetry/usace.py) already crossed a real
+    disruption threshold before it was recorded (GATE_CHANGE_THRESHOLD /
+    QUEUE_THRESHOLD) -- any fresh event IS a disruption signal, not a raw
+    data point needing re-filtering. But MONITORED_LOCKS now spans
+    several corridors (grain, steel_coal, petrochemical, port_congestion
+    -- see that file), so a caller MUST say which commodity tag(s) it
+    actually wants: the Agriculture & Grain Handling waterfall passes
+    {"grain"} so a steel-corridor or port-congestion event can't gate it
+    open by mistake, while the CME Macro Funnel (broader, cross-industry)
+    passes None for every corridor. Each event's commodity tag was
+    written into its payload by usace.py's fetch() -- read back here
+    rather than re-deriving it from the lock name."""
+    signals = []
+    for event in _fresh_events(db, TelemetrySource.USACE, limit=20):
+        commodity = event.payload.get("commodity")
+        if commodities is not None and commodity not in commodities:
+            continue
+        label = (commodity or "river_corridor").replace("_", " ")
+        signals.append(
+            MacroSignal(
+                kind="river_corridor_disruption",
+                description=f"USACE {label} disruption: {event.title}",
+                source_reference=f"telemetry_event:{event.id} [usace] {event.title}",
+            )
         )
-        for event in _fresh_events(db, TelemetrySource.USACE, limit=20)
-    ]
+    return signals
 
 
 # ---------------------------------------------------------------------------
@@ -362,10 +379,21 @@ CME_MACRO_SILO = SiloName.CME_MACRO_FUNNEL
 
 
 def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
-    """The gate. Returns every active macro signal found across the three
-    leading-indicator channels. An empty return means the waterfall stops
-    here -- stages 2-4 never run and zero candidates get created."""
-    return _cme_price_shock_signals(db) + _gdelt_shock_signals(db) + _gfw_anomaly_signals(db)
+    """The gate. Returns every active macro signal found across the four
+    leading-indicator channels (CME Globex price shock, GDELT news --
+    now also tariff/trade-policy coverage, see telemetry/gdelt.py --, GFW
+    ocean anomaly, and USACE river/port disruption across EVERY monitored
+    corridor, not just grain -- a steel-corridor or port-congestion event
+    can open this funnel same as a grain one, since this waterfall's
+    filter/contact stages are generic, not grain-specific). An empty
+    return means the waterfall stops here -- stages 2-4 never run and
+    zero candidates get created."""
+    return (
+        _cme_price_shock_signals(db)
+        + _gdelt_shock_signals(db)
+        + _gfw_anomaly_signals(db)
+        + _usace_disruption_signals(db)
+    )
 
 
 def _stage2_identify_companies(db: Session) -> list[tuple[str, str, str]]:
@@ -663,18 +691,24 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
     """A narrower, more direct version of the CME Macro Funnel pattern.
     CME Globex's tracked symbols are already scoped to just the CBOT
     grain/oilseed complex (corn/soybeans/wheat/meal/oil -- see
-    telemetry/cme_globex.py::SYMBOLS) and USACE's monitored locks default
-    to the Mississippi/Illinois grain corridor, so for THIS silo both are
-    direct operating-condition indicators for grain handlers, not just
-    leading indicators of a broader macro trend the way they are for CME
-    Macro Funnel. No lending-appetite/contact stages here -- those still
-    run once a candidate converts to a lead via the normal Enrichment
-    flow; keeping this waterfall to signal+identify matches what it's
-    actually gating (grain-market/river-corridor conditions -> real
-    grain-handling businesses at the physical location), not a broader
-    creditworthiness funnel.
+    telemetry/cme_globex.py::SYMBOLS). USACE now monitors several
+    corridors, not just grain (steel/coal, petrochemical, and coastal
+    port congestion -- see telemetry/usace.py), so this waterfall calls
+    _usace_disruption_signals(db, commodities={"grain"}) specifically --
+    a steel-corridor or port-congestion disruption must NOT gate open a
+    silo named Agriculture & Grain Handling, even though the same USACE
+    adapter also feeds those other signals into the broader CME Macro
+    Funnel above. For the grain corridor specifically, both CME Globex
+    and USACE are direct operating-condition indicators for grain
+    handlers, not just leading indicators of a broader macro trend the
+    way they are for CME Macro Funnel. No lending-appetite/contact stages
+    here -- those still run once a candidate converts to a lead via the
+    normal Enrichment flow; keeping this waterfall to signal+identify
+    matches what it's actually gating (grain-market/river-corridor
+    conditions -> real grain-handling businesses at the physical
+    location), not a broader creditworthiness funnel.
     """
-    signals = _cme_price_shock_signals(db) + _usace_disruption_signals(db)
+    signals = _cme_price_shock_signals(db) + _usace_disruption_signals(db, commodities={"grain"})
     if not signals:
         return {
             "signals_detected": 0,
