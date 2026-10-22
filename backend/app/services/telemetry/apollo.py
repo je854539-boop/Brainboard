@@ -27,6 +27,15 @@ Apollo's People Search surface instead (`/mixed_people/search`,
 filtered by the organization's Apollo id + a list of titles, e.g.
 "Owner"/"CFO"), not the match endpoint. Same endpoint-name-may-have-
 moved caveat as search() above.
+
+`enrich_organization()` is the per-company revenue check: given just a
+name (no domain, no Apollo id -- all you ever get from a passive feed
+like Import Genius), calls the real `/organizations/enrich` endpoint
+(same one documented in services/enrichment/apollo.py, used here for a
+company-only lookup instead of a contact match) to get back a real
+revenue figure for THAT specific company, on demand -- not a passive
+scan of whatever Apollo data happened to already be lying around from
+an unrelated sweep.
 """
 
 import httpx
@@ -116,3 +125,25 @@ class ApolloAdapter(TelemetryAdapter):
                 )
             )
         return records
+
+    def enrich_organization(self, name: str) -> dict | None:
+        """Real-time, per-company lookup by name alone -- the active
+        check Import Genius's passive consignee-name feed needs to find
+        out whether a specific company is actually "big ticket" (in the
+        target revenue band) instead of waiting for a name match
+        against whatever Apollo data happens to already be sitting in
+        the database from an unrelated sweep. Returns the raw org
+        payload (expected to carry a revenue-ish field somewhere,
+        checked defensively downstream) or None on no match / HTTP
+        failure -- callers must not treat None as "confirmed small,"
+        only as "no data yet," same honesty posture as every other
+        revenue check in this project.
+        """
+        with httpx.Client(base_url=BASE_URL, headers={"X-Api-Key": self.api_key}, timeout=30) as client:
+            try:
+                response = client.post("/organizations/enrich", json={"organization_name": name})
+                response.raise_for_status()
+            except httpx.HTTPError:
+                return None
+            payload = response.json()
+        return payload.get("organization") or payload or None

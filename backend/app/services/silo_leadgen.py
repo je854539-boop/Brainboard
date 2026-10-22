@@ -1967,6 +1967,55 @@ def _stage3b_revenue_range_filter(db: Session, company_name: str) -> tuple[float
     return 0.0, False, "revenue-range check pending -- no Apollo.io match yet"
 
 
+def _active_revenue_check(company_name: str) -> tuple[float, bool, str]:
+    """The ACTIVE counterpart to _stage3b_revenue_range_filter above --
+    that one only ever scans fresh Apollo.io telemetry events already
+    sitting in the database from an unrelated sweep, which is nearly
+    useless for a passive Import Genius consignee with no reason to
+    have ever shown up in the fixed Chicago sweep or a disruption hunt.
+    This calls Apollo's per-company enrich endpoint directly, by name,
+    right now -- the real "scan Import Genius, then call Apollo and
+    cross-reference the revenue" check.
+
+    Same scoring and honesty posture as the passive version: never
+    dismisses for lack of data, only a CONFIRMED revenue figure outside
+    settings.mca_target_revenue_min_usd/max_usd disqualifies a
+    candidate. No API key configured, or no answer back from Apollo,
+    both mean "unconfirmed," not "small" -- same as the passive check's
+    "pending" branch. Returns (score_delta, dismiss, note)."""
+    if not company_name.strip():
+        return 0.0, False, "revenue check skipped -- no company name to match"
+
+    settings = get_settings()
+    if not settings.apollo_api_key:
+        return 0.0, False, "revenue check pending -- no Apollo.io API key configured"
+
+    adapter = ApolloAdapter(api_key=settings.apollo_api_key)
+    try:
+        org = adapter.enrich_organization(company_name)
+    except Exception:
+        return 0.0, False, "revenue check pending -- Apollo.io enrich call failed this sweep"
+
+    if not org:
+        return 0.0, False, f"revenue check pending -- Apollo.io has no record for '{company_name}' yet"
+
+    revenue = _extract_revenue(org)
+    if revenue is None:
+        return 0.0, False, f"Apollo.io matched '{company_name}' but no revenue figure in payload -- band unconfirmed"
+
+    if settings.mca_target_revenue_min_usd <= revenue <= settings.mca_target_revenue_max_usd:
+        return (
+            20.0,
+            False,
+            f"BIG-TICKET CONFIRMED: Apollo.io revenue ${revenue:,.0f} for '{company_name}' -- within target "
+            f"${settings.mca_target_revenue_min_usd:,.0f}-${settings.mca_target_revenue_max_usd:,.0f} band",
+        )
+    return -30.0, True, (
+        f"Apollo.io revenue ${revenue:,.0f} for '{company_name}' -- outside target "
+        f"${settings.mca_target_revenue_min_usd:,.0f}-${settings.mca_target_revenue_max_usd:,.0f} band, dismissed"
+    )
+
+
 _PHONE_KEYS = ("phone", "phone_number", "primary_phone", "company_phone", "registered_agent_phone")
 _EMAIL_KEYS = ("email", "email_address", "company_email", "contact_email", "registered_agent_email")
 
@@ -2300,6 +2349,24 @@ def run_silo_leadgen(db: Session) -> dict:
         .all()
     )
 
+    # Import Genius's passive consignee feed gets an ACTIVE per-company
+    # Apollo revenue check -- "scan Import Genius, then call Apollo and
+    # cross-reference the revenue" -- so a candidate actually confirmed
+    # in the $5M-$49M band is scored and labeled BIG-TICKET, and one
+    # confirmed well outside it is dismissed instead of landing as an
+    # unscored, unfiltered PENDING row same as everything else. Scoped
+    # to Import Genius only for now, not the other 6 flat-mapped
+    # sources -- this is one real Apollo call per NEW candidate, a
+    # real per-call cost, deliberately not extended everywhere without
+    # being asked. Deduped by name within this sweep so two Import
+    # Genius events for the same company don't double-charge.
+    # Caches the full (score, status, notes) result per company name,
+    # not just "was it checked" -- a company mapped to multiple silos,
+    # or appearing in multiple fresh events this sweep, must get the
+    # SAME result applied to every resulting row, not just whichever
+    # (event, silo) pair happened to trigger the one real Apollo call.
+    revenue_check_cache: dict[str, tuple[float | None, SiloCandidateStatus, str | None]] = {}
+
     for event in fresh_events:
         for silo in SOURCE_TO_SILOS.get(event.source, []):
             source_reference = f"telemetry_event:{event.id} [{event.source.value}] {event.title}"
@@ -2311,12 +2378,25 @@ def run_silo_leadgen(db: Session) -> dict:
             if already_derived:
                 continue
 
+            company_name = _company_name_from_event(event)
+            score, status, notes = None, SiloCandidateStatus.PENDING, None
+            if event.source == TelemetrySource.IMPORT_GENIUS:
+                if company_name not in revenue_check_cache:
+                    score_delta, dismiss, note = _active_revenue_check(company_name)
+                    cached_score = 50.0 + score_delta if (score_delta or dismiss) else None
+                    cached_status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
+                    revenue_check_cache[company_name] = (cached_score, cached_status, note)
+                score, status, notes = revenue_check_cache[company_name]
+
             db.add(
                 SiloCandidate(
                     silo=silo,
-                    company_name=_company_name_from_event(event),
+                    company_name=company_name,
                     source_reference=source_reference,
                     origin_source=event.source,
+                    score=score,
+                    status=status,
+                    notes=notes,
                 )
             )
             candidates_by_silo[silo.value] += 1
