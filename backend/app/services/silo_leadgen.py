@@ -143,7 +143,20 @@ def _infer_origin_source(source_reference: str | None) -> TelemetrySource | None
 
 
 def _company_name_from_event(event: TelemetryEvent) -> str:
-    for key in ("company_name", "consignee_name", "recalling_firm", "entity_name", "debtor_name", "symbol"):
+    """HONESTY NOTE on the HigherGov keys below: the HigherGov adapter
+    currently hits `/opportunity/` -- open solicitations, not a
+    confirmed awards/recipients endpoint (see telemetry/highergov.py's
+    own TODO) -- so most of these payloads won't carry a named winner
+    at all yet, and this falls back to event.title (the opportunity's
+    own title, not a company) same as always. These keys are defensive
+    best-effort for the plans/historical-opportunity records that DO
+    carry a named awardee, and for whenever that adapter is pointed at
+    a real awards endpoint -- not a claim that a named company is
+    reliably present today."""
+    for key in (
+        "company_name", "consignee_name", "recalling_firm", "entity_name", "debtor_name", "symbol",
+        "awardee_name", "recipient_name", "vendor_name", "contractor_name", "awardee",
+    ):
         value = event.payload.get(key)
         if value:
             return str(value)
@@ -293,7 +306,15 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     "grain": ("corn", "soybean", "wheat", "grain", "oilseed"),
     "steel_coal": ("steel", "coal", "iron ore", "coke"),
     "petrochemical": ("petrochemical", "resin", "plastic", "polymer", "chemical"),
-    "food_cost": ("beef", "meat", "poultry", "dairy", "cheese", "pork"),
+    # Same cargo-content keywords across all four downstream tiers --
+    # the physical commodity in a shipment doesn't change by which TIER
+    # of the chain happens to be moving it; see SYMBOL_COMMODITIES and
+    # _COMMODITY_APOLLO_KEYWORDS below for how these four get split
+    # into their own distinct hunts.
+    "meat_processor": ("beef", "meat", "poultry", "dairy", "cheese", "pork"),
+    "food_wholesaler": ("beef", "meat", "poultry", "dairy", "cheese", "pork"),
+    "food_retailer": ("beef", "meat", "poultry", "dairy", "cheese", "pork"),
+    "food_service": ("beef", "meat", "poultry", "dairy", "cheese", "pork"),
     "livestock_producer": ("beef", "cattle", "livestock", "meat", "pork", "dairy"),
     "fertilizer": ("potash", "fertilizer", "urea", "ammonia", "phosphate", "muriate of potash"),
     # General retail/consumer-goods cargo content -- what actually
@@ -458,16 +479,19 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # this needs the same wide radius as port congestion, not a tight
     # waterside-facility one.
     "logistics_fuel": 60.0,
-    # Restaurants and food processors are everywhere, not clustered at
-    # a dock or plant -- same wide-catchment logic as port_congestion/
-    # logistics_fuel. Mostly relevant via the nationwide sweep (a
-    # cattle/hog/dairy price shock has no single location), not a
-    # specific lock radius.
-    "food_cost": 50.0,
+    # Processors, wholesalers, retailers, and foodservice operators are
+    # all everywhere, not clustered at a dock or plant -- same wide-
+    # catchment logic as port_congestion/logistics_fuel. Mostly relevant
+    # via the nationwide sweep (a cattle/hog/dairy price shock has no
+    # single location), not a specific lock radius.
+    "meat_processor": 50.0,
+    "food_wholesaler": 50.0,
+    "food_retailer": 50.0,
+    "food_service": 50.0,
     # Ranches, feedlots, and dairy farms are genuinely rural and
-    # dispersed -- even wider than food_cost's catchment, and mostly
-    # relevant via the nationwide sweep for the same reason (a price
-    # shock has no single location).
+    # dispersed -- even wider than the downstream food-chain tiers'
+    # catchment, and mostly relevant via the nationwide sweep for the
+    # same reason (a price shock has no single location).
     "livestock_producer": 60.0,
     # Government-contract-driven industries (aerospace/defense) have no
     # single lock the way a river commodity does, and no CME price
@@ -508,7 +532,19 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics"),
     "port_congestion": ("warehouse", "distribution", "logistics", "fulfillment", "freight", "terminal"),
     "logistics_fuel": ("trucking", "logistics", "freight", "warehouse", "distribution", "transportation", "fleet"),
-    "food_cost": ("restaurant", "food service", "meat processing", "dairy processing", "food distribution", "catering"),
+    # Four distinct downstream tiers of the same livestock/dairy
+    # complex -- processor, wholesaler, retailer, foodservice -- split
+    # out of what used to be one undifferentiated "food_cost" bucket.
+    # This is the Argentina-beef chain made concrete: a price move
+    # doesn't just affect "restaurants," it cascades through meat
+    # processing plants, wholesalers, supermarkets, AND restaurants,
+    # each a distinct business type worth its own targeted search
+    # rather than one blended Apollo/Cobalt query that can't tell a
+    # distributor from a diner.
+    "meat_processor": ("meat processing", "poultry processing", "dairy processing", "food manufacturing", "meat packing"),
+    "food_wholesaler": ("food distribution", "wholesale grocery", "foodservice distribution", "cold storage warehouse"),
+    "food_retailer": ("supermarket", "grocery", "grocery store", "food retail"),
+    "food_service": ("restaurant", "food service", "catering"),
     "livestock_producer": ("cattle ranch", "feedlot", "dairy farm", "livestock", "ranch", "slaughterhouse", "meat packing"),
     "aerospace_defense": ("aerospace", "defense contractor", "aircraft", "avionics", "missile", "satellite", "aviation"),
     "fertilizer": ("fertilizer", "potash", "ammonia", "agricultural chemical", "crop input", "agribusiness"),
@@ -779,7 +815,10 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "petrochemical": ["petrochemical", "chemical manufacturing", "petroleum refining", "plastics manufacturing"],
     "port_congestion": ["import", "distribution center", "freight forwarding", "warehousing and storage", "wholesale trade"],
     "logistics_fuel": ["trucking company", "freight carrier", "logistics company", "transportation company", "trucking fleet"],
-    "food_cost": ["restaurant", "food service company", "meat processing", "dairy processing", "food distributor", "catering company"],
+    "meat_processor": ["meat processing company", "poultry processor", "dairy processor", "food manufacturer", "meat packing plant"],
+    "food_wholesaler": ["food distributor", "wholesale grocer", "foodservice distributor", "meat wholesaler"],
+    "food_retailer": ["supermarket chain", "grocery store", "grocery retailer"],
+    "food_service": ["restaurant", "food service company", "catering company", "restaurant chain"],
     "livestock_producer": ["cattle ranch", "feedlot operator", "dairy farm", "livestock producer", "meat packing plant", "slaughterhouse"],
     "aerospace_defense": ["aerospace manufacturer", "defense contractor", "aircraft parts supplier", "avionics company", "aerospace supplier"],
     "fertilizer": ["fertilizer distributor", "agricultural chemical company", "crop input supplier", "farm supply", "agribusiness"],
@@ -851,12 +890,23 @@ def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
 
     adapter = ApolloAdapter(api_key=api_key)
     identified: list[tuple[str, str, str, tuple[float, float] | None]] = []
-    seen_locations: set[str] = set()
+    # Keyed by (location, commodity), NOT location alone -- the
+    # food-chain tiering above means up to 5 distinct commodities can
+    # now share the same nationwide-sweep city in one sweep
+    # (meat_processor/food_wholesaler/food_retailer/food_service/
+    # livestock_producer all sweep the same 6 metros). A location-only
+    # key would silently search for the FIRST commodity at that city
+    # and drop the other 4 entirely -- that's one real paid call per
+    # distinct (place, industry) combination, not per place.
+    seen: set[tuple[str, str]] = set()
 
     for target in targets:
-        if not target.location_hint or target.location_hint in seen_locations:
+        if not target.location_hint:
             continue
-        seen_locations.add(target.location_hint)
+        key = (target.location_hint, target.commodity)
+        if key in seen:
+            continue
+        seen.add(key)
 
         keywords = target.dynamic_apollo_keywords or _COMMODITY_APOLLO_KEYWORDS.get(target.commodity)
         if not keywords:
@@ -928,7 +978,10 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "petrochemical": "petrochemical",
     "port_congestion": "distribution",
     "logistics_fuel": "trucking",
-    "food_cost": "restaurant",
+    "meat_processor": "meat processing",
+    "food_wholesaler": "food distributor",
+    "food_retailer": "grocery",
+    "food_service": "restaurant",
     "livestock_producer": "livestock",
     "aerospace_defense": "aerospace",
     "fertilizer": "fertilizer",
@@ -971,12 +1024,18 @@ def _stage2c_cobalt_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
 
     adapter = CobaltIntelligenceAdapter(api_key=api_key)
     identified: list[tuple[str, str, str, tuple[float, float] | None]] = []
-    seen_states: set[str] = set()
+    # Keyed by (state, commodity), same fix and same reason as the
+    # Apollo hunt's dedup above -- up to 5 food-chain commodities can
+    # now share one nationwide-sweep state in a single sweep.
+    seen: set[tuple[str, str]] = set()
 
     for target in targets:
-        if not target.state or target.state in seen_states:
+        if not target.state:
             continue
-        seen_states.add(target.state)
+        key = (target.state, target.commodity)
+        if key in seen:
+            continue
+        seen.add(key)
 
         search_term = target.dynamic_cobalt_term or _COMMODITY_COBALT_SEARCH_TERMS.get(target.commodity)
         if not search_term:
@@ -1074,10 +1133,18 @@ SYMBOL_COMMODITIES: dict[str, list[str]] = {
     "HRC.c.0": ["steel_coal"],
     "CL.c.0": ["logistics_fuel"], "HO.c.0": ["logistics_fuel"],
     "NG.c.0": ["petrochemical"],
-    "LE.c.0": ["livestock_producer", "food_cost"],
-    "GF.c.0": ["livestock_producer", "food_cost"],
-    "HE.c.0": ["livestock_producer", "food_cost"],
-    "DC.c.0": ["livestock_producer", "food_cost"],
+    # Each livestock/dairy symbol now tags FIVE populations off one
+    # price move, not two -- the producer side, plus all four
+    # downstream tiers of the Argentina-beef chain (processor,
+    # wholesaler, retailer, foodservice), each independently classified
+    # by _COMMODITY_TRADE_SIDE and each getting its own distinct
+    # Apollo/Cobalt hunt (see _COMMODITY_APOLLO_KEYWORDS) instead of one
+    # blended "food_cost" search that couldn't tell a distributor from
+    # a diner.
+    "LE.c.0": ["livestock_producer", "meat_processor", "food_wholesaler", "food_retailer", "food_service"],
+    "GF.c.0": ["livestock_producer", "meat_processor", "food_wholesaler", "food_retailer", "food_service"],
+    "HE.c.0": ["livestock_producer", "meat_processor", "food_wholesaler", "food_retailer", "food_service"],
+    "DC.c.0": ["livestock_producer", "meat_processor", "food_wholesaler", "food_retailer", "food_service"],
 }
 
 # Which side of the trade the businesses we actually target under each
@@ -1104,11 +1171,16 @@ _COMMODITY_TRADE_SIDE: dict[str, str] = {
     "steel_coal": "producer",
     "petrochemical": "consumer",
     "logistics_fuel": "consumer",
-    "food_cost": "consumer",
+    # All four downstream food-chain tiers buy this commodity as an
+    # input, same mirror-image logic as petrochemical/logistics_fuel.
+    "meat_processor": "consumer",
+    "food_wholesaler": "consumer",
+    "food_retailer": "consumer",
+    "food_service": "consumer",
     # The seller side of the livestock/dairy complex -- ranches,
     # feedlots, dairy farms, slaughterhouses/meat packers. A price DOWN
     # (e.g. cheap imports flooding the market) squeezes THEM even
-    # though it's relief for food_cost's restaurant/processor side.
+    # though it's relief for the four downstream tiers above.
     "livestock_producer": "producer",
 }
 
@@ -1402,11 +1474,25 @@ _SEASONAL_ECOMMERCE_START = (9, 1)
 _SEASONAL_ECOMMERCE_END = (12, 15)
 
 
+# Below this weight, a signal is framed "secondary signal only" in
+# every downstream note (see _geo_match_note/_stage2b/_stage2c) -- the
+# off-season e-commerce baseline deliberately sits below that line so
+# it's never confused with a full-strength signal, while the holiday
+# window itself gets full weight.
+_ECOMMERCE_OFF_SEASON_WEIGHT = 0.4
+_ECOMMERCE_HOLIDAY_WEIGHT = 1.0
+
+
 def _seasonal_ecommerce_signals() -> list[MacroSignal]:
-    """A calendar trigger, not a news/price one -- "it's the holiday
-    season" IS the signal. Same capital-before-revenue timing gap every
-    other expansion signal in this module looks for, just driven by the
-    calendar instead of a price move or a headline.
+    """E-commerce/fulfillment demand isn't actually a once-a-year thing
+    -- Prime Day, back-to-school, Valentine's/Mother's Day restocking,
+    and ordinary year-round growth all create the same capital-before-
+    revenue timing gap a holiday ramp does, just at lower intensity.
+    This fires EVERY sweep, all year, at a reduced ("secondary signal
+    only") weight -- and steps up to full weight during the actual
+    pre-holiday window (Sept 1 - Dec 15), when the capital need is both
+    real AND urgent. A pure calendar trigger either way, not a news/
+    price one -- the date itself is the signal.
 
     No single location (there's no one "where" for a seasonal demand
     ramp) -- flows through the nationwide sweep same as a CME price
@@ -1421,15 +1507,17 @@ def _seasonal_ecommerce_signals() -> list[MacroSignal]:
     today = date.today()
     start = date(today.year, *_SEASONAL_ECOMMERCE_START)
     end = date(today.year, *_SEASONAL_ECOMMERCE_END)
-    if not (start <= today <= end):
-        return []
+    in_season = start <= today <= end
+    weight = _ECOMMERCE_HOLIDAY_WEIGHT if in_season else _ECOMMERCE_OFF_SEASON_WEIGHT
+    label = "Holiday season" if in_season else "Year-round baseline"
     return [
         MacroSignal(
             kind="seasonal_demand",
-            description=f"Holiday season e-commerce/fulfillment demand ramp ({today.isoformat()}) -- calendar trigger, not news-driven",
-            source_reference="calendar_trigger:ecommerce_holiday_season",
+            description=f"{label} e-commerce/fulfillment demand ({today.isoformat()}) -- calendar trigger, not news-driven",
+            source_reference="calendar_trigger:ecommerce_holiday_season" if in_season else "calendar_trigger:ecommerce_baseline",
             commodity="ecommerce_logistics",
             signal_type="expansion",
+            weight=weight,
         )
     ]
 
@@ -1638,19 +1726,23 @@ def _build_place_commodity_index() -> dict[str, dict]:
     first, then _NATIONWIDE_SWEEP_LOCATIONS fills in any of your top-6
     metros not already covered by a lock (no real lat/lon for those --
     a metro isn't anchored to one specific industry the way a lock is,
-    so every OTHER commodity is left plausible there; food_cost and
-    livestock_producer are deliberately excluded from place-based
-    classification -- restaurants aren't geographically concentrated
-    the way a mill or elevator is, and ranches/feedlots are the
-    opposite, genuinely rural and specifically NOT in a major metro --
-    both are better served by the nationwide sweep already built, not
-    a "mentioned near this city" guess)."""
+    so every OTHER commodity is left plausible there; the four food-
+    chain tiers (meat_processor/food_wholesaler/food_retailer/
+    food_service) and livestock_producer are deliberately excluded
+    from place-based classification -- none of them are geographically
+    concentrated the way a mill or elevator is (restaurants/wholesalers/
+    retailers are everywhere; ranches/feedlots are the opposite,
+    genuinely rural and specifically NOT in a major metro) -- all are
+    better served by the nationwide sweep already built, not a
+    "mentioned near this city" guess)."""
     index: dict[str, dict] = {}
     for lock in MONITORED_LOCKS:
         city = lock["apollo_location"].split(",")[0].strip().lower()
         if city not in index:
             index[city] = {"lat": lock["lat"], "lon": lock["lon"], "state": lock["state"], "commodities": set((lock.get("commodities") or {}).keys())}
-    metro_plausible_commodities = set(_COMMODITY_LAND_USE_KEYWORDS.keys()) - {"food_cost", "livestock_producer"}
+    metro_plausible_commodities = set(_COMMODITY_LAND_USE_KEYWORDS.keys()) - {
+        "meat_processor", "food_wholesaler", "food_retailer", "food_service", "livestock_producer",
+    }
     for place in _NATIONWIDE_SWEEP_LOCATIONS:
         city = place["apollo_location"].split(",")[0].strip().lower()
         if city not in index:
@@ -2494,17 +2586,25 @@ def run_silo_leadgen(db: Session) -> dict:
         .all()
     )
 
-    # Import Genius's passive consignee feed gets an ACTIVE per-company
-    # Apollo revenue check -- "scan Import Genius, then call Apollo and
-    # cross-reference the revenue" -- so a candidate actually confirmed
-    # in the $5M-$49M band is scored and labeled BIG-TICKET, and one
-    # confirmed well outside it is dismissed instead of landing as an
-    # unscored, unfiltered PENDING row same as everything else. Scoped
-    # to Import Genius only for now, not the other 6 flat-mapped
-    # sources -- this is one real Apollo call per NEW candidate, a
-    # real per-call cost, deliberately not extended everywhere without
-    # being asked. Deduped by name within this sweep so two Import
-    # Genius events for the same company don't double-charge.
+    # Import Genius's passive consignee feed, AND HigherGov's named
+    # awardee/recipient feed (when one is actually present -- see
+    # _company_name_from_event's honesty note on HigherGov's unconfirmed
+    # awards schema), get an ACTIVE per-company Apollo revenue check --
+    # "scan the feed, then call Apollo and cross-reference the revenue"
+    # -- so a candidate actually confirmed in the $5M-$49M band is
+    # scored and labeled BIG-TICKET, and one confirmed well outside it
+    # is dismissed instead of landing as an unscored, unfiltered
+    # PENDING row same as everything else. This is the "highly
+    # targeted list" play: a HigherGov contract win with a real named
+    # company attached skips the broad industry sweep entirely and
+    # goes straight to the same real-time revenue+standing check a
+    # named Import Genius consignee gets.
+    #
+    # Scoped to these two named-entity sources only, not the other 5
+    # flat-mapped sources -- this is one real Apollo call per NEW
+    # candidate, a real per-call cost, deliberately not extended
+    # everywhere without being asked. Deduped by name within this
+    # sweep so two events for the same company don't double-charge.
     # Caches the full (score, status, notes) result per company name,
     # not just "was it checked" -- a company mapped to multiple silos,
     # or appearing in multiple fresh events this sweep, must get the
@@ -2525,7 +2625,13 @@ def run_silo_leadgen(db: Session) -> dict:
 
             company_name = _company_name_from_event(event)
             score, status, notes = None, SiloCandidateStatus.PENDING, None
-            if event.source == TelemetrySource.IMPORT_GENIUS:
+            # HigherGov with no real awardee name just falls back to
+            # event.title (the opportunity's own title) -- running that
+            # through Apollo's company-enrich endpoint would waste a
+            # call on a non-company string, so this only fires for
+            # HigherGov when a real name was actually extracted.
+            is_named_highergov = event.source == TelemetrySource.HIGHERGOV and company_name != event.title
+            if event.source == TelemetrySource.IMPORT_GENIUS or is_named_highergov:
                 if company_name not in revenue_check_cache:
                     score_delta, dismiss, note = _active_revenue_check(company_name)
                     cached_score = 50.0 + score_delta if (score_delta or dismiss) else None
