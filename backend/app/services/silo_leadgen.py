@@ -270,6 +270,29 @@ _PORT_TRADE_LINK_KEYWORDS: dict[str, tuple[str, ...]] = {
     "Houston Ship Channel anchorage": ("houston",),
     "Port of New York / New Jersey anchorage": ("new york", "new jersey", "newark", "elizabeth"),
     "Port Everglades / Miami anchorage": ("miami", "port everglades", "fort lauderdale", "ft lauderdale"),
+    # These 4 were added for smaller/mid-size port coverage but never
+    # got added here -- a real gap, this trade-link match only ever
+    # worked for the original 4 ports until now.
+    "Port of Savannah anchorage": ("savannah",),
+    "Port of Charleston anchorage": ("charleston",),
+    "Port of Oakland anchorage": ("oakland",),
+    "Port of Tacoma anchorage (Northwest Seaport Alliance)": ("tacoma", "seattle", "northwest seaport"),
+    # New port expansion (toward comprehensive US port coverage).
+    "Port of Virginia anchorage (Norfolk)": ("norfolk", "hampton roads", "port of virginia"),
+    "Port of Baltimore anchorage": ("baltimore",),
+    "Port of Jacksonville anchorage": ("jacksonville",),
+    "Port of Corpus Christi anchorage": ("corpus christi",),
+    "Port of Beaumont anchorage": ("beaumont",),
+    "Port of Mobile anchorage": ("mobile",),
+    "Port of Plaquemines anchorage": ("plaquemines",),
+    "Port of San Juan anchorage": ("san juan", "puerto rico"),
+    # Great Lakes AIS-only ports -- missed entirely until now, same
+    # gap as Savannah/Charleston/Oakland/Tacoma above.
+    "Duluth-Superior Harbor (Lake Superior)": ("duluth", "superior"),
+    "Port of Cleveland (Lake Erie)": ("cleveland",),
+    "Port of Toledo (Lake Erie)": ("toledo",),
+    "Burns Harbor / Gary anchorage (Lake Michigan)": ("burns harbor", "gary"),
+    "Detroit River anchorage (Detroit, MI)": ("detroit",),
 }
 
 
@@ -328,6 +351,16 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     # exempt, so forcing Mexico in as "affected" here would misstate
     # the real exemption, not just approximate it.
     "auto_parts": ("auto parts", "automotive parts", "vehicle components", "auto components"),
+    # Added specifically because HigherGov's own classifier
+    # (_classify_commodity_from_text) returned None for real
+    # construction/renovation contract headlines -- government
+    # construction/infrastructure/facility-renovation bids are one of
+    # the most common real contract-award categories there is, and
+    # nothing here was catching them. Shares real cargo-content overlap
+    # with steel_coal (steel) and furniture_wood (lumber) on purpose --
+    # a renovation contractor's own buying pattern genuinely crosses
+    # into both.
+    "construction_contractor": ("construction materials", "building materials", "lumber", "steel", "renovation supplies"),
     # "oil"/"natural gas"/"lng"/"petroleum" added so a crude/NG cargo
     # shipment -- or a geopolitical oil/gas headline -- classifies here
     # too, not just a finished-plastics shipment.
@@ -887,6 +920,10 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # commodity has -- same wide-catchment logic.
     "apparel": 50.0,
     "auto_parts": 50.0,
+    # Construction/renovation contractors are everywhere, driven almost
+    # entirely by the HigherGov standing channel -- nationwide sweep,
+    # same as aerospace_defense.
+    "construction_contractor": 50.0,
     # Same wide-catchment logic as the food-chain tiers -- wholesalers/
     # retailers in these categories are dispersed nationally, not
     # clustered at a dock or plant.
@@ -948,6 +985,7 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "furniture_wood": ("furniture", "woodworking", "cabinetry", "sawmill", "lumber", "wood products"),
     "apparel": ("apparel", "clothing", "garment", "footwear", "textile"),
     "auto_parts": ("auto parts", "automotive parts", "auto components", "vehicle parts distribution"),
+    "construction_contractor": ("construction", "general contractor", "renovation", "building contractor"),
     "produce_wholesaler": ("produce distribution", "fruit and vegetable wholesale", "fresh produce", "cold storage"),
     "produce_retailer": ("produce market", "farmers market", "fruit stand", "grocery"),
     "liquor_distributor": ("liquor distribution", "beverage distributor", "spirits importer"),
@@ -1238,6 +1276,7 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "furniture_wood": ["furniture manufacturer", "furniture importer", "furniture wholesaler", "wood products manufacturer", "cabinetry manufacturer"],
     "apparel": ["apparel importer", "clothing wholesaler", "footwear distributor", "garment manufacturer", "textile importer"],
     "auto_parts": ["auto parts distributor", "automotive parts supplier", "auto parts wholesaler", "automotive components importer"],
+    "construction_contractor": ["general contractor", "construction company", "renovation contractor", "building contractor"],
     "produce_wholesaler": ["produce wholesaler", "fresh produce distributor", "fruit and vegetable importer"],
     "produce_retailer": ["produce market", "grocery store", "specialty food market"],
     "liquor_distributor": ["liquor distributor", "beverage distributor", "spirits importer"],
@@ -1411,6 +1450,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "furniture_wood": "furniture manufacturer",
     "apparel": "clothing wholesaler",
     "auto_parts": "auto parts distributor",
+    "construction_contractor": "general contractor",
     "produce_wholesaler": "produce distributor",
     "produce_retailer": "grocery",
     "liquor_distributor": "beverage distributor",
@@ -2090,8 +2130,27 @@ _COMMODITY_DISTRESS_LANGUAGE: dict[str, str] = {
     "grain": '("grain elevator" OR "crop failure" OR drought OR flood OR "grain shortage" OR "export ban")',
     "steel_coal": '("steel mill" OR "steel plant" OR "coal mine" OR layoffs OR strike OR shutdown OR explosion OR fire)',
     "petrochemical": '("petrochemical plant" OR refinery OR "chemical plant" OR explosion OR fire OR leak OR shutdown)',
+    # Same physical event (explosion/fire/shutdown at the SAME Gulf
+    # Coast plant) matters to both sides of the petrochemical complex
+    # -- the buyer-side plant directly, the seller-side NGL/
+    # intermediate producer via the competitor-opportunity read (see
+    # _DUAL_SIDED_DISRUPTION_COMMODITIES) -- so this reuses the exact
+    # same query, not a separate one.
+    "petrochemical_producer": '("petrochemical plant" OR refinery OR "chemical plant" OR explosion OR fire OR leak OR shutdown)',
     "port_congestion": '(port OR terminal OR "shipping delay" OR congestion OR backlog OR strike)',
     "logistics_fuel": '(trucking OR "freight carrier" OR "fuel surcharge" OR "diesel price" OR layoffs OR bankruptcy)',
+    # Added -- fertilizer and furniture_wood both carry real weight on
+    # real locks/ports (Mississippi/Illinois + New Orleans for
+    # fertilizer; LA/Long Beach + Savannah for furniture) but were
+    # missing from this dict entirely, meaning the LOCAL per-place
+    # GDELT query never ran for them despite having a real place to
+    # anchor to -- a real gap, not a deliberate exclusion like
+    # livestock_producer/food_service's.
+    "fertilizer": '("fertilizer plant" OR "potash mine" OR "ammonia plant" OR shortage OR "export ban" OR shutdown)',
+    "furniture_wood": '("furniture factory" OR sawmill OR "wood products" OR shutdown OR layoffs OR tariff OR "supply chain")',
+    # Apparel now carries real port weight too (see usace.py) -- same
+    # fix, same reasoning.
+    "apparel": '("apparel factory" OR garment OR textile OR tariff OR "supply chain" OR shutdown OR layoffs)',
     # The actual trigger for e-commerce/import-retail capital need --
     # tariffs and container hold-ups, not a date on the calendar. Runs
     # at the SAME 4 coastal ports as port_congestion (see usace.py's

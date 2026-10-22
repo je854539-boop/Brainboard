@@ -181,9 +181,13 @@ MONITORED_LOCKS = [
     # container share); Miami/Port Everglades carries real retail
     # container traffic too (Latin America/Caribbean trade), between
     # the two.
-    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 0.5, "ecommerce_logistics": 0.35, "furniture_wood": 0.15}, "apollo_location": "Los Angeles, California, US", "state": "CA"},
+    # Apparel added to LA/Long Beach, NY/NJ, and Savannah below -- the
+    # three dominant general-merchandise/consumer-goods gateways, and
+    # apparel/textiles are arguably the single largest container-import
+    # category at all three, same real-weight reasoning as furniture.
+    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 0.4, "ecommerce_logistics": 0.3, "furniture_wood": 0.1, "apparel": 0.2}, "apollo_location": "Los Angeles, California, US", "state": "CA"},
     {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 0.8, "ecommerce_logistics": 0.2}, "apollo_location": "Houston, Texas, US", "state": "TX"},
-    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 0.6, "ecommerce_logistics": 0.4}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
+    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 0.45, "ecommerce_logistics": 0.35, "apparel": 0.2}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
     {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Miami, Florida, US", "state": "FL"},
     # Smaller/mid-size ports -- added specifically to stop missing real
     # import-dependent businesses outside the 4 biggest gateways above.
@@ -200,10 +204,44 @@ MONITORED_LOCKS = [
     # than the other ports -- it's a dominant gateway for the Vietnam/
     # China furniture trade specifically (including serving the High
     # Point, NC furniture-industry corridor), not an arbitrary split.
-    {"name": "Port of Savannah anchorage", "lat": 32.08, "lon": -81.09, "office": "", "project_id": "", "commodities": {"port_congestion": 0.45, "ecommerce_logistics": 0.30, "furniture_wood": 0.25}, "apollo_location": "Savannah, Georgia, US", "state": "GA"},
+    {"name": "Port of Savannah anchorage", "lat": 32.08, "lon": -81.09, "office": "", "project_id": "", "commodities": {"port_congestion": 0.35, "ecommerce_logistics": 0.25, "furniture_wood": 0.2, "apparel": 0.2}, "apollo_location": "Savannah, Georgia, US", "state": "GA"},
     {"name": "Port of Charleston anchorage", "lat": 32.80, "lon": -79.92, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Charleston, South Carolina, US", "state": "SC"},
     {"name": "Port of Oakland anchorage", "lat": 37.80, "lon": -122.32, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Oakland, California, US", "state": "CA"},
     {"name": "Port of Tacoma anchorage (Northwest Seaport Alliance)", "lat": 47.28, "lon": -122.40, "office": "", "project_id": "", "commodities": {"port_congestion": 0.7, "ecommerce_logistics": 0.3}, "apollo_location": "Tacoma, Washington, US", "state": "WA"},
+    # --- Further port expansion toward comprehensive US coverage.
+    # Each one picked for a REAL, differentiated cargo character, not
+    # arbitrary inclusion -- Honolulu/Anchorage deliberately left out
+    # despite being real ports, since their cargo mix isn't a distinct
+    # fit for anything tracked here and their volume is low enough that
+    # adding them would be coverage for its own sake, not signal.
+    #
+    # Norfolk/Hampton Roads: major East Coast container gateway AND a
+    # historically significant coal export port -- carries both.
+    {"name": "Port of Virginia anchorage (Norfolk)", "lat": 36.95, "lon": -76.33, "office": "", "project_id": "", "commodities": {"port_congestion": 0.5, "ecommerce_logistics": 0.3, "steel_coal": 0.2}, "apollo_location": "Norfolk, Virginia, US", "state": "VA"},
+    # Baltimore: one of the few major US ro-ro (roll-on/roll-off) auto
+    # ports -- this is auto_parts' FIRST real geo anchor, not just a
+    # nationwide-sweep commodity anymore. Also real coal export legacy.
+    {"name": "Port of Baltimore anchorage", "lat": 39.27, "lon": -76.58, "office": "", "project_id": "", "commodities": {"port_congestion": 0.4, "auto_parts": 0.35, "steel_coal": 0.25}, "apollo_location": "Baltimore, Maryland, US", "state": "MD"},
+    # Jacksonville: the other major US ro-ro auto gateway, plus real
+    # Caribbean/Latin America general-cargo trade.
+    {"name": "Port of Jacksonville anchorage", "lat": 30.40, "lon": -81.57, "office": "", "project_id": "", "commodities": {"port_congestion": 0.4, "auto_parts": 0.35, "ecommerce_logistics": 0.25}, "apollo_location": "Jacksonville, Florida, US", "state": "FL"},
+    # Corpus Christi: one of the largest US ports by TONNAGE, almost
+    # entirely crude oil/petrochemical export -- genuinely single-
+    # commodity, not a forced split.
+    {"name": "Port of Corpus Christi anchorage", "lat": 27.80, "lon": -97.40, "office": "", "project_id": "", "commodities": {"petrochemical": 0.7, "petrochemical_producer": 0.3}, "apollo_location": "Corpus Christi, Texas, US", "state": "TX"},
+    # Beaumont: major Gulf refining center, same single-commodity logic.
+    {"name": "Port of Beaumont anchorage", "lat": 30.08, "lon": -94.10, "office": "", "project_id": "", "commodities": {"petrochemical": 0.7, "petrochemical_producer": 0.3}, "apollo_location": "Beaumont, Texas, US", "state": "TX"},
+    # Mobile: real steel and forest-products (lumber/furniture-adjacent)
+    # export/import gateway.
+    {"name": "Port of Mobile anchorage", "lat": 30.70, "lon": -88.04, "office": "", "project_id": "", "commodities": {"port_congestion": 0.4, "steel_coal": 0.35, "furniture_wood": 0.25}, "apollo_location": "Mobile, Alabama, US", "state": "AL"},
+    # Plaquemines: a fast-growing, real high-tonnage export port just
+    # south of New Orleans -- grain and petrochemical, same corridor
+    # logic as the GIWW locks upriver.
+    {"name": "Port of Plaquemines anchorage", "lat": 29.45, "lon": -89.95, "office": "", "project_id": "", "commodities": {"grain": 0.55, "petrochemical": 0.45}, "apollo_location": "Belle Chasse, Louisiana, US", "state": "LA"},
+    # San Juan: the real Caribbean/Latin America gateway -- produce and
+    # liquor/spirits (rum) are genuine, well-known Caribbean imports,
+    # not a forced fit, plus general apparel/consumer-goods cargo.
+    {"name": "Port of San Juan anchorage", "lat": 18.46, "lon": -66.12, "office": "", "project_id": "", "commodities": {"port_congestion": 0.35, "produce_wholesaler": 0.25, "liquor_distributor": 0.2, "apparel": 0.2}, "apollo_location": "San Juan, Puerto Rico, US", "state": "PR"},
     # --- Great Lakes / Soo Locks corridor: the iron-ore-to-steel-mill
     # supply chain the Ohio River corridor doesn't cover. Nearly all US
     # iron ore (Minnesota/Wisconsin's Mesabi Range) moves down through
