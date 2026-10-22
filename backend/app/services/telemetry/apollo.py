@@ -18,6 +18,15 @@ Location filtering is a NAMED location string (city/state/country) in
 Apollo's real API, not an arbitrary lat/lon + radius -- callers pass a
 real place name (e.g. "Pittsburgh, Pennsylvania, US"), never raw
 coordinates, since Apollo's search doesn't support that.
+
+`search_people()` is the real gap the enrichment adapter's `/people/
+match` can't fill: match requires a name or email you ALREADY have, so
+it only enriches a contact you've already found. Finding WHO to ask for
+at a company you only know by name -- no contact name yet -- needs
+Apollo's People Search surface instead (`/mixed_people/search`,
+filtered by the organization's Apollo id + a list of titles, e.g.
+"Owner"/"CFO"), not the match endpoint. Same endpoint-name-may-have-
+moved caveat as search() above.
 """
 
 import httpx
@@ -64,3 +73,46 @@ class ApolloAdapter(TelemetryAdapter):
 
     def fetch(self) -> list[RawTelemetryRecord]:
         return self.search(SEARCH_KEYWORDS, SEARCH_LOCATIONS)
+
+    def search_people(self, organization_id: str, titles: list[str], per_page: int = 5) -> list[RawTelemetryRecord]:
+        """Finds named people at a KNOWN organization (by Apollo's own
+        org id, as returned on every record from search() above) holding
+        one of the given titles -- the actual decision-maker-discovery
+        call, distinct from the enrichment adapter's /people/match (which
+        needs a name/email you already have). Each returned record's
+        payload is normalized onto the generic contact-field names
+        _extract_contact_fields already checks (see silo_leadgen.py) --
+        phone/email -- plus contact_name/contact_title, so this slots
+        into the existing contact-enrichment path without that function
+        needing to know anything Apollo-specific changed upstream.
+
+        TODO: confirm the exact response field names (first_name/
+        last_name/title/email/phone_numbers) against your Apollo plan --
+        same unconfirmed-schema posture as search() above.
+        """
+        with httpx.Client(base_url=BASE_URL, headers={"X-Api-Key": self.api_key}, timeout=30) as client:
+            response = client.post(
+                "/mixed_people/search",
+                json={"organization_ids": [organization_id], "person_titles": titles, "per_page": per_page},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        records = []
+        for person in payload.get("people", []):
+            full_name = " ".join(filter(None, [person.get("first_name"), person.get("last_name")])) or person.get("name") or "unknown"
+            phone_numbers = person.get("phone_numbers") or []
+            phone = phone_numbers[0].get("raw_number") if phone_numbers and isinstance(phone_numbers[0], dict) else None
+            records.append(
+                RawTelemetryRecord(
+                    title=f"Apollo.io person match: {full_name} ({person.get('title', 'unknown title')})",
+                    payload={
+                        "contact_name": full_name,
+                        "contact_title": person.get("title"),
+                        "phone": phone,
+                        "email": person.get("email"),
+                        **person,
+                    },
+                )
+            )
+        return records

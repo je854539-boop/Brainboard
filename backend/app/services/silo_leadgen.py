@@ -526,6 +526,24 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "port_congestion": ["import", "distribution center", "freight forwarding", "warehousing and storage", "wholesale trade"],
 }
 
+# Who actually makes a financing decision at a small/mid-size business --
+# not every title Apollo could return, just the ones worth calling.
+_DECISION_MAKER_TITLES = ["Owner", "President", "CEO", "Founder", "CFO", "Controller", "VP Finance", "General Manager"]
+
+# Apollo org objects carry their internal id under one of these keys,
+# depending on API version -- same defensive multi-key posture as
+# _ADDRESS_KEYS/_PORT_OF_ENTRY_KEYS above, not asserting one confirmed
+# name.
+_ORG_ID_KEYS = ("id", "organization_id", "organization_id_str")
+
+
+def _extract_org_id(payload: dict) -> str | None:
+    for key in _ORG_ID_KEYS:
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return None
+
 
 def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list[tuple[str, str, str, tuple[float, float] | None]]:
     """The one identification path that actively HUNTS instead of only
@@ -555,6 +573,17 @@ def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
     must trace back to a real stored row via source_reference, same
     invariant as every other identification path in this module, not an
     in-memory API response that vanishes after this sweep.
+
+    For every company found, this ALSO tries Apollo's People Search
+    (adapter.search_people) for a named decision-maker (_DECISION_MAKER_
+    TITLES) at that specific organization -- turning "here's a company"
+    into "here's who to actually ask for," not just a company switchboard
+    number. A people-search failure never costs the company result
+    itself -- it just falls back to "no named decision-maker found yet."
+    Contact fields land in the SAME TelemetryEvent under the generic
+    phone/email keys _extract_contact_fields already checks, so the
+    existing _stage4_contact_enrichment picks them up with no changes of
+    its own needed.
     """
     api_key = get_settings().apollo_api_key
     if not api_key:
@@ -580,11 +609,25 @@ def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
 
         weight_note = "" if target.weight >= 0.5 else f", secondary signal only ({target.weight:.0%} of this corridor's traffic)"
         for record in records:
+            name = record.payload.get("name") or record.title
+            contact_fields: dict = {}
+            contact_note = "no named decision-maker found yet -- company-level result only"
+            org_id = _extract_org_id(record.payload)
+            if org_id:
+                try:
+                    people = adapter.search_people(org_id, _DECISION_MAKER_TITLES)
+                except Exception:
+                    people = []  # a people-search failure must not cost us the company result itself
+                if people:
+                    contact_fields = people[0].payload
+                    contact_note = f"decision-maker found: {contact_fields.get('contact_name')} ({contact_fields.get('contact_title')})"
+
             event = TelemetryEvent(
                 source=TelemetrySource.APOLLO,
                 title=record.title,
                 payload={
                     **record.payload,
+                    **contact_fields,  # contact_name/contact_title/phone/email, when found -- see search_people
                     "triggered_by_disruption": target.label,
                     "hunt_commodity": target.commodity,
                     "hunt_location": target.location_hint,
@@ -592,11 +635,11 @@ def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
             )
             db.add(event)
             db.flush()  # need event.id to build a real source_reference below
-            name = record.payload.get("name") or record.title
             note = (
                 f"APOLLO INDUSTRY HUNT: actively searched for {keywords} companies near {target.location_hint} "
                 f"because of an active {target.commodity} disruption ({target.label}{weight_note}) -- this company "
-                "was not already sitting in any other feed, found by live industry+location search, not cargo data"
+                f"was not already sitting in any other feed, found by live industry+location search, not cargo "
+                f"data | {contact_note}"
             )
             identified.append((str(name), f"telemetry_event:{event.id} [apollo] {record.title}", note, None))
 
