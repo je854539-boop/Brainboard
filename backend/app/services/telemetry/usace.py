@@ -123,46 +123,48 @@ VESSELFINDER_BASE_URL = "https://api.vesselfinder.com"  # placeholder -- confirm
 # directional estimates pending real WCSC confirmation), apollo_location
 # (a real named city/state Apollo.io's org-search location filter can
 # actually use -- Apollo's API takes a place name, not a lat/lon radius,
-# see services/silo_leadgen.py::_stage2b_apollo_industry_hunt).
+# see services/silo_leadgen.py::_stage2b_apollo_industry_hunt), state (a
+# plain 2-letter code -- Cobalt Intelligence's SOS search takes a state,
+# not a city, see _stage2c_cobalt_industry_hunt).
 MONITORED_LOCKS = [
     # --- Mississippi / Illinois Waterway: grain corridor. Genuinely
     # single-commodity -- this stretch's traffic really is overwhelmingly
     # agricultural export tonnage, not a case of forcing false precision.
-    {"name": "Lock and Dam 1 (Mississippi, Minneapolis)", "lat": 44.92, "lon": -93.20, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Minneapolis, Minnesota, US"},
-    {"name": "Lock and Dam 19 (Mississippi, Keokuk)", "lat": 40.40, "lon": -91.38, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Keokuk, Iowa, US"},
-    {"name": "Melvin Price Locks and Dam (Mississippi, Alton)", "lat": 38.87, "lon": -90.16, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Alton, Illinois, US"},
-    {"name": "Lockport Lock (Illinois Waterway)", "lat": 41.59, "lon": -88.08, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Joliet, Illinois, US"},
-    {"name": "Marseilles Lock (Illinois Waterway)", "lat": 41.33, "lon": -88.71, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Marseilles, Illinois, US"},
-    {"name": "Peoria Lock (Illinois Waterway)", "lat": 40.63, "lon": -89.61, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Peoria, Illinois, US"},
+    {"name": "Lock and Dam 1 (Mississippi, Minneapolis)", "lat": 44.92, "lon": -93.20, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Minneapolis, Minnesota, US", "state": "MN"},
+    {"name": "Lock and Dam 19 (Mississippi, Keokuk)", "lat": 40.40, "lon": -91.38, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Keokuk, Iowa, US", "state": "IA"},
+    {"name": "Melvin Price Locks and Dam (Mississippi, Alton)", "lat": 38.87, "lon": -90.16, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Alton, Illinois, US", "state": "IL"},
+    {"name": "Lockport Lock (Illinois Waterway)", "lat": 41.59, "lon": -88.08, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Joliet, Illinois, US", "state": "IL"},
+    {"name": "Marseilles Lock (Illinois Waterway)", "lat": 41.33, "lon": -88.71, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Marseilles, Illinois, US", "state": "IL"},
+    {"name": "Peoria Lock (Illinois Waterway)", "lat": 40.63, "lon": -89.61, "office": "", "project_id": "", "commodities": {"grain": 1.0}, "apollo_location": "Peoria, Illinois, US", "state": "IL"},
     # --- Ohio River: coal + steel dominant, but a real secondary grain
     # share moves this corridor too (Midwest grain barged down to the
     # Mississippi often transits the lower Ohio) -- lock names and
     # general geography are well-established public infrastructure;
     # office/project_id NOT yet confirmed against the live CWMS catalog,
     # see module docstring. Weights are directional, not WCSC-sourced.
-    {"name": "Emsworth Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.51, "lon": -80.09, "office": "", "project_id": "", "commodities": {"steel_coal": 0.65, "petrochemical": 0.15, "grain": 0.20}, "apollo_location": "Pittsburgh, Pennsylvania, US"},
-    {"name": "Montgomery Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.64, "lon": -80.19, "office": "", "project_id": "", "commodities": {"steel_coal": 0.65, "petrochemical": 0.15, "grain": 0.20}, "apollo_location": "Pittsburgh, Pennsylvania, US"},
-    {"name": "New Cumberland Locks and Dam (Ohio River, Steubenville/Weirton)", "lat": 40.50, "lon": -80.62, "office": "", "project_id": "", "commodities": {"steel_coal": 0.70, "petrochemical": 0.10, "grain": 0.20}, "apollo_location": "Steubenville, Ohio, US"},
-    {"name": "Greenup Locks and Dam (Ohio River, Huntington)", "lat": 38.65, "lon": -82.93, "office": "", "project_id": "", "commodities": {"steel_coal": 0.60, "petrochemical": 0.15, "grain": 0.25}, "apollo_location": "Huntington, West Virginia, US"},
-    {"name": "McAlpine Locks and Dam (Ohio River, Louisville)", "lat": 38.26, "lon": -85.78, "office": "", "project_id": "", "commodities": {"steel_coal": 0.55, "petrochemical": 0.15, "grain": 0.30}, "apollo_location": "Louisville, Kentucky, US"},
-    {"name": "Olmsted Locks and Dam (Ohio River, mouth)", "lat": 37.18, "lon": -89.07, "office": "", "project_id": "", "commodities": {"steel_coal": 0.50, "petrochemical": 0.15, "grain": 0.35}, "apollo_location": "Paducah, Kentucky, US"},
+    {"name": "Emsworth Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.51, "lon": -80.09, "office": "", "project_id": "", "commodities": {"steel_coal": 0.65, "petrochemical": 0.15, "grain": 0.20}, "apollo_location": "Pittsburgh, Pennsylvania, US", "state": "PA"},
+    {"name": "Montgomery Locks and Dam (Ohio River, Pittsburgh)", "lat": 40.64, "lon": -80.19, "office": "", "project_id": "", "commodities": {"steel_coal": 0.65, "petrochemical": 0.15, "grain": 0.20}, "apollo_location": "Pittsburgh, Pennsylvania, US", "state": "PA"},
+    {"name": "New Cumberland Locks and Dam (Ohio River, Steubenville/Weirton)", "lat": 40.50, "lon": -80.62, "office": "", "project_id": "", "commodities": {"steel_coal": 0.70, "petrochemical": 0.10, "grain": 0.20}, "apollo_location": "Steubenville, Ohio, US", "state": "OH"},
+    {"name": "Greenup Locks and Dam (Ohio River, Huntington)", "lat": 38.65, "lon": -82.93, "office": "", "project_id": "", "commodities": {"steel_coal": 0.60, "petrochemical": 0.15, "grain": 0.25}, "apollo_location": "Huntington, West Virginia, US", "state": "WV"},
+    {"name": "McAlpine Locks and Dam (Ohio River, Louisville)", "lat": 38.26, "lon": -85.78, "office": "", "project_id": "", "commodities": {"steel_coal": 0.55, "petrochemical": 0.15, "grain": 0.30}, "apollo_location": "Louisville, Kentucky, US", "state": "KY"},
+    {"name": "Olmsted Locks and Dam (Ohio River, mouth)", "lat": 37.18, "lon": -89.07, "office": "", "project_id": "", "commodities": {"steel_coal": 0.50, "petrochemical": 0.15, "grain": 0.35}, "apollo_location": "Paducah, Kentucky, US", "state": "KY"},
     # --- Gulf Intracoastal Waterway: petrochemical-dominant, but
     # significant grain export tonnage also transits near New Orleans/
     # Baton Rouge (river grain elevators feed export vessels staged along
     # this same waterway). Same confirmation caveat as above.
-    {"name": "Algiers Lock (GIWW, New Orleans)", "lat": 29.93, "lon": -90.03, "office": "", "project_id": "", "commodities": {"petrochemical": 0.65, "grain": 0.35}, "apollo_location": "New Orleans, Louisiana, US"},
-    {"name": "Port Allen Lock (GIWW, Baton Rouge)", "lat": 30.45, "lon": -91.21, "office": "", "project_id": "", "commodities": {"petrochemical": 0.60, "grain": 0.40}, "apollo_location": "Baton Rouge, Louisiana, US"},
-    {"name": "Calcasieu Lock (GIWW, Lake Charles)", "lat": 30.12, "lon": -93.36, "office": "", "project_id": "", "commodities": {"petrochemical": 0.85, "grain": 0.15}, "apollo_location": "Lake Charles, Louisiana, US"},
+    {"name": "Algiers Lock (GIWW, New Orleans)", "lat": 29.93, "lon": -90.03, "office": "", "project_id": "", "commodities": {"petrochemical": 0.65, "grain": 0.35}, "apollo_location": "New Orleans, Louisiana, US", "state": "LA"},
+    {"name": "Port Allen Lock (GIWW, Baton Rouge)", "lat": 30.45, "lon": -91.21, "office": "", "project_id": "", "commodities": {"petrochemical": 0.60, "grain": 0.40}, "apollo_location": "Baton Rouge, Louisiana, US", "state": "LA"},
+    {"name": "Calcasieu Lock (GIWW, Lake Charles)", "lat": 30.12, "lon": -93.36, "office": "", "project_id": "", "commodities": {"petrochemical": 0.85, "grain": 0.15}, "apollo_location": "Lake Charles, Louisiana, US", "state": "LA"},
     # --- Coastal port anchorages: marine-traffic-at-port congestion,
     # AIS-only (no CWMS lock-gate data applies -- office/project_id left
     # blank on purpose, see module docstring). Picked to match your real
     # book's top states (CA/TX/NY/FL/NJ import gateways). Genuinely
     # single-category -- "any import-dependent business near this port"
     # isn't a commodity mix the way a river corridor's traffic is.
-    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Los Angeles, California, US"},
-    {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Houston, Texas, US"},
-    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Newark, New Jersey, US"},
-    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Miami, Florida, US"},
+    {"name": "Port of Los Angeles / Long Beach anchorage", "lat": 33.72, "lon": -118.25, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Los Angeles, California, US", "state": "CA"},
+    {"name": "Houston Ship Channel anchorage", "lat": 29.42, "lon": -94.90, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Houston, Texas, US", "state": "TX"},
+    {"name": "Port of New York / New Jersey anchorage", "lat": 40.47, "lon": -73.95, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Newark, New Jersey, US", "state": "NJ"},
+    {"name": "Port Everglades / Miami anchorage", "lat": 26.09, "lon": -80.10, "office": "", "project_id": "", "commodities": {"port_congestion": 1.0}, "apollo_location": "Miami, Florida, US", "state": "FL"},
     # --- Great Lakes / Soo Locks corridor: the iron-ore-to-steel-mill
     # supply chain the Ohio River corridor doesn't cover. Nearly all US
     # iron ore (Minnesota/Wisconsin's Mesabi Range) moves down through
@@ -182,12 +184,12 @@ MONITORED_LOCKS = [
     # is a real USACE lock (Poe Lock / MacArthur Lock, Detroit District);
     # the rest are open harbors, AIS-only, same confirmation caveat as
     # every other new entry above.
-    {"name": "Soo Locks (Sault Ste. Marie, MI)", "lat": 46.50, "lon": -84.35, "office": "", "project_id": "", "commodities": {"steel_coal": 0.85, "grain": 0.15}, "apollo_location": "Sault Ste. Marie, Michigan, US"},
-    {"name": "Duluth-Superior Harbor (Lake Superior)", "lat": 46.78, "lon": -92.10, "office": "", "project_id": "", "commodities": {"grain": 0.55, "steel_coal": 0.45}, "apollo_location": "Duluth, Minnesota, US"},
-    {"name": "Port of Cleveland (Lake Erie)", "lat": 41.54, "lon": -81.63, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}, "apollo_location": "Cleveland, Ohio, US"},
-    {"name": "Port of Toledo (Lake Erie)", "lat": 41.69, "lon": -83.47, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}, "apollo_location": "Toledo, Ohio, US"},
-    {"name": "Burns Harbor / Gary anchorage (Lake Michigan)", "lat": 41.63, "lon": -87.15, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}, "apollo_location": "Gary, Indiana, US"},
-    {"name": "Detroit River anchorage (Detroit, MI)", "lat": 42.33, "lon": -83.05, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}, "apollo_location": "Detroit, Michigan, US"},
+    {"name": "Soo Locks (Sault Ste. Marie, MI)", "lat": 46.50, "lon": -84.35, "office": "", "project_id": "", "commodities": {"steel_coal": 0.85, "grain": 0.15}, "apollo_location": "Sault Ste. Marie, Michigan, US", "state": "MI"},
+    {"name": "Duluth-Superior Harbor (Lake Superior)", "lat": 46.78, "lon": -92.10, "office": "", "project_id": "", "commodities": {"grain": 0.55, "steel_coal": 0.45}, "apollo_location": "Duluth, Minnesota, US", "state": "MN"},
+    {"name": "Port of Cleveland (Lake Erie)", "lat": 41.54, "lon": -81.63, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}, "apollo_location": "Cleveland, Ohio, US", "state": "OH"},
+    {"name": "Port of Toledo (Lake Erie)", "lat": 41.69, "lon": -83.47, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}, "apollo_location": "Toledo, Ohio, US", "state": "OH"},
+    {"name": "Burns Harbor / Gary anchorage (Lake Michigan)", "lat": 41.63, "lon": -87.15, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}, "apollo_location": "Gary, Indiana, US", "state": "IN"},
+    {"name": "Detroit River anchorage (Detroit, MI)", "lat": 42.33, "lon": -83.05, "office": "", "project_id": "", "commodities": {"steel_coal": 1.0}, "apollo_location": "Detroit, Michigan, US", "state": "MI"},
 ]
 
 GATE_CHANGE_LOOKBACK_HOURS = 48
@@ -244,6 +246,7 @@ class USACEAdapter(TelemetryAdapter):
                             "project_id": project_id,
                             "commodities": lock.get("commodities"),
                             "apollo_location": lock.get("apollo_location"),
+                            "state": lock.get("state"),
                             "gate_changes": changes,
                         },
                     )
@@ -297,6 +300,7 @@ class USACEAdapter(TelemetryAdapter):
                             "lon": lock["lon"],
                             "commodities": lock.get("commodities"),
                             "apollo_location": lock.get("apollo_location"),
+                            "state": lock.get("state"),
                             "idle_vessel_count": idle_count,
                             "vessels": vessels,
                         },

@@ -77,6 +77,7 @@ from app.models.enums import SiloCandidateStatus, SiloName, TelemetrySource
 from app.models.orm import SiloCandidate, TelemetryEvent
 from app.services import entity_matching, telemetry
 from app.services.telemetry.apollo import ApolloAdapter
+from app.services.telemetry.cobalt_intelligence import CobaltIntelligenceAdapter
 
 SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     TelemetrySource.CME_GLOBEX: [SiloName.TARIFF_SILO],
@@ -171,6 +172,10 @@ class MacroSignal:
     # triggered Apollo hunt (see _stage2b_apollo_industry_hunt). None for
     # any signal kind without a specific place attached.
     location_hint: str | None = None
+    # Plain 2-letter state code (usace.py's `state`) -- Cobalt
+    # Intelligence's SOS search takes a state, not a city/place string.
+    # See _stage2c_cobalt_industry_hunt.
+    state: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +379,8 @@ class GeoTarget:
     # Real named city/state for this target, straight from the
     # originating MacroSignal -- see _stage2b_apollo_industry_hunt.
     location_hint: str | None = None
+    # Plain 2-letter state code -- see _stage2c_cobalt_industry_hunt.
+    state: str | None = None
 
 
 def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
@@ -394,6 +401,7 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
                 GeoTarget(
                     lat=lat, lon=lon, commodity=signal.commodity, label=signal.description,
                     radius_mi=radius, weight=signal.weight, location_hint=signal.location_hint,
+                    state=signal.state,
                 )
             )
     return targets
@@ -647,6 +655,104 @@ def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
     return identified
 
 
+# One representative search term per commodity -- Cobalt's SOS search
+# takes a single term, not a keyword list the way Apollo's does.
+_COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
+    "grain": "grain elevator",
+    "steel_coal": "steel",
+    "petrochemical": "petrochemical",
+    "port_congestion": "distribution",
+}
+
+
+def _stage2c_cobalt_industry_hunt(db: Session, targets: list[GeoTarget]) -> list[tuple[str, str, str, tuple[float, float] | None]]:
+    """The Cobalt Intelligence sibling of _stage2b_apollo_industry_hunt --
+    same idea (actively search by industry near an active disruption,
+    instead of only checking whatever already flowed in), different API
+    shape: Cobalt's SOS search takes a STATE, not a city, and ONE search
+    term, not a keyword list (see telemetry/cobalt_intelligence.py). One
+    call per distinct state per sweep, not per target, same reasoning as
+    Apollo's per-location dedup -- several commodities/targets sharing
+    one lock's state must not trigger duplicate paid calls.
+
+    A genuine extra on top of discovery: every result IS a live SOS
+    standing check, so this reads the same distress/good-standing
+    keywords _stage3_lending_appetite uses and surfaces that read
+    directly in the note -- a Cobalt-sourced candidate already carries a
+    standing signal before stage 3 even runs (stage 3 still re-checks it
+    by name independently; that's redundant, not wrong, since neither
+    check is allowed to assume what the other already found).
+
+    Also requests UCC filing data on the same call (see
+    telemetry/cobalt_intelligence.py's uccData=true) -- when a state
+    Cobalt covers for UCC returns one, it's surfaced in the note too,
+    answering the much earlier "can we get UCC data" question for
+    whichever of the real 11 covered states this happens to land in,
+    through a vendor already configured here rather than a new one.
+
+    Same fault-isolation and real-stored-row invariants as the Apollo
+    hunt: one bad call doesn't drop other states' results, and every
+    candidate traces back to a real TelemetryEvent via source_reference.
+    """
+    api_key = get_settings().cobalt_intelligence_api_key
+    if not api_key:
+        return []
+
+    adapter = CobaltIntelligenceAdapter(api_key=api_key)
+    identified: list[tuple[str, str, str, tuple[float, float] | None]] = []
+    seen_states: set[str] = set()
+
+    for target in targets:
+        if not target.state or target.state in seen_states:
+            continue
+        seen_states.add(target.state)
+
+        search_term = _COMMODITY_COBALT_SEARCH_TERMS.get(target.commodity)
+        if not search_term:
+            continue
+
+        try:
+            records = adapter.search(target.state, search_term)
+        except Exception:
+            continue  # one bad call must not drop every other state's results this sweep
+
+        weight_note = "" if target.weight >= 0.5 else f", secondary signal only ({target.weight:.0%} of this corridor's traffic)"
+        for record in records:
+            name = record.payload.get("name") or record.title
+            status = str(record.payload.get("status") or record.payload.get("standing") or "").lower()
+            if any(k in status for k in _DISTRESS_STATUS_KEYWORDS):
+                standing_note = f"standing: '{status}' -- NOT in good standing, verify before pursuing"
+            elif any(k in status for k in _GOOD_STANDING_KEYWORDS):
+                standing_note = f"standing: '{status}' -- confirmed good standing"
+            else:
+                standing_note = "standing: unconfirmed from this record"
+            ucc_note = ""
+            if record.payload.get("uccFilings") or record.payload.get("ucc_filings") or record.payload.get("uccData"):
+                ucc_note = " | UCC filing data present on this record"
+
+            event = TelemetryEvent(
+                source=TelemetrySource.COBALT_INTELLIGENCE,
+                title=record.title,
+                payload={
+                    **record.payload,
+                    "triggered_by_disruption": target.label,
+                    "hunt_commodity": target.commodity,
+                    "hunt_state": target.state,
+                },
+            )
+            db.add(event)
+            db.flush()
+            note = (
+                f"COBALT INTELLIGENCE INDUSTRY HUNT: actively searched SOS registry for '{search_term}' businesses "
+                f"in {target.state} because of an active {target.commodity} disruption ({target.label}{weight_note}) "
+                f"-- this company was not already sitting in any other feed | {standing_note}{ucc_note}"
+            )
+            identified.append((str(name), f"telemetry_event:{event.id} [cobalt_intelligence] {record.title}", note, None))
+
+    db.commit()
+    return identified
+
+
 # ---------------------------------------------------------------------------
 # Shared signal detectors
 # ---------------------------------------------------------------------------
@@ -744,6 +850,7 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
         lat, lon = event.payload.get("lat"), event.payload.get("lon")
         coordinates = (float(lat), float(lon)) if lat is not None and lon is not None else None
         location_hint = event.payload.get("apollo_location")
+        state = event.payload.get("state")
 
         for commodity, weight in commodity_mix.items():
             if weight < _MIN_COMMODITY_WEIGHT:
@@ -760,6 +867,7 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
                     coordinates=coordinates,
                     weight=weight,
                     location_hint=location_hint,
+                    state=state,
                 )
             )
     return signals
@@ -842,6 +950,7 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
         identified.append((company_name, source_reference, f"{corroboration_note} | {regrid_note}", coordinates))
 
     identified += _stage2b_apollo_industry_hunt(db, targets)
+    identified += _stage2c_cobalt_industry_hunt(db, targets)
 
     return identified
 
@@ -1127,7 +1236,11 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
 
     created = 0
     geo_targets = _geo_targets_from_signals(signals)
-    identify_results = _identify_via_regrid(db, targets=geo_targets) + _stage2b_apollo_industry_hunt(db, geo_targets)
+    identify_results = (
+        _identify_via_regrid(db, targets=geo_targets)
+        + _stage2b_apollo_industry_hunt(db, geo_targets)
+        + _stage2c_cobalt_industry_hunt(db, geo_targets)
+    )
     for company_name, source_reference, regrid_note, coordinates in identify_results:
         already = (
             db.query(SiloCandidate)
