@@ -200,6 +200,32 @@ IDLE_SPEED_KNOTS = 1.5  # at/below this speed counts as "queuing", not "underway
 QUEUE_THRESHOLD = 3  # this many idle vessels clustered at one lock = a disruption signal, not routine traffic
 
 
+# Module-level (not USACEAdapter methods) so silo_leadgen.py's active
+# corroboration hunt can reuse the same CONFIRMED radius/bbox query this
+# file already proved out for lock congestion, instead of inventing a
+# second, unconfirmed way to ask Datalastic/VesselFinder "what's near
+# this point" -- one real, working query, two callers.
+def vessels_near_datalastic(client: httpx.Client, api_key: str, lat: float, lon: float, radius_nm: float = QUEUE_RADIUS_NM) -> list[dict]:
+    response = client.get(
+        f"{DATALASTIC_BASE_URL}/vessel_inradius",
+        params={"api-key": api_key, "lat": lat, "lon": lon, "radius": radius_nm},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    vessels = payload.get("data", {}).get("vessels") if isinstance(payload.get("data"), dict) else payload.get("vessels", [])
+    return vessels or []
+
+
+def vessels_near_vesselfinder(client: httpx.Client, api_key: str, lat: float, lon: float, radius_nm: float = QUEUE_RADIUS_NM) -> list[dict]:
+    delta = radius_nm * 0.015  # roughly radius_nm at mid-latitudes (QUEUE_RADIUS_NM=2 -> ~0.03 deg, as before)
+    bbox = f"{lon - delta},{lat - delta},{lon + delta},{lat + delta}"
+    response = client.get(f"{VESSELFINDER_BASE_URL}/vessels", params={"userkey": api_key, "bbox": bbox})
+    response.raise_for_status()
+    payload = response.json()
+    vessels = payload if isinstance(payload, list) else payload.get("vessels", payload.get("data", []))
+    return vessels or []
+
+
 class USACEAdapter(TelemetryAdapter):
     source = TelemetrySource.USACE
 
@@ -255,25 +281,6 @@ class USACEAdapter(TelemetryAdapter):
 
     # --- Channel 2: AIS-proxy vessel queuing ---
 
-    def _vessels_near_datalastic(self, client: httpx.Client, lat: float, lon: float) -> list[dict]:
-        response = client.get(
-            f"{DATALASTIC_BASE_URL}/vessel_inradius",
-            params={"api-key": self.datalastic_api_key, "lat": lat, "lon": lon, "radius": QUEUE_RADIUS_NM},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        vessels = payload.get("data", {}).get("vessels") if isinstance(payload.get("data"), dict) else payload.get("vessels", [])
-        return vessels or []
-
-    def _vessels_near_vesselfinder(self, client: httpx.Client, lat: float, lon: float) -> list[dict]:
-        delta = 0.03  # roughly QUEUE_RADIUS_NM at mid-latitudes
-        bbox = f"{lon - delta},{lat - delta},{lon + delta},{lat + delta}"
-        response = client.get(f"{VESSELFINDER_BASE_URL}/vessels", params={"userkey": self.vesselfinder_api_key, "bbox": bbox})
-        response.raise_for_status()
-        payload = response.json()
-        vessels = payload if isinstance(payload, list) else payload.get("vessels", payload.get("data", []))
-        return vessels or []
-
     def _ais_queue_records(self, client: httpx.Client) -> list[RawTelemetryRecord]:
         if not (self.datalastic_api_key or self.vesselfinder_api_key):
             return []
@@ -281,9 +288,9 @@ class USACEAdapter(TelemetryAdapter):
         records = []
         for lock in MONITORED_LOCKS:
             if self.datalastic_api_key:
-                vessels = self._vessels_near_datalastic(client, lock["lat"], lock["lon"])
+                vessels = vessels_near_datalastic(client, self.datalastic_api_key, lock["lat"], lock["lon"])
             else:
-                vessels = self._vessels_near_vesselfinder(client, lock["lat"], lock["lon"])
+                vessels = vessels_near_vesselfinder(client, self.vesselfinder_api_key, lock["lat"], lock["lon"])
 
             idle_count = 0
             for vessel in vessels:

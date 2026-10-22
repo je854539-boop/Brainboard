@@ -68,6 +68,8 @@ wired in for this purpose.
 
 import math
 import re
+
+import httpx
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
@@ -79,7 +81,7 @@ from app.services import entity_matching, telemetry
 from app.services.telemetry.apollo import ApolloAdapter
 from app.services.telemetry.cobalt_intelligence import CobaltIntelligenceAdapter
 from app.services.telemetry.gdelt import GDELTAdapter
-from app.services.telemetry.usace import MONITORED_LOCKS
+from app.services.telemetry.usace import MONITORED_LOCKS, vessels_near_datalastic, vessels_near_vesselfinder
 
 SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     TelemetrySource.CME_GLOBEX: [SiloName.TARIFF_SILO],
@@ -1452,6 +1454,60 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     )
 
 
+def _active_vessel_corroboration(targets: list[GeoTarget]) -> str:
+    """Actively checks for REAL, current vessel activity near every
+    target that carries real coordinates (nationwide-sweep targets
+    don't have any -- see GeoTarget), using the exact same confirmed
+    Datalastic `/vessel_inradius` / VesselFinder bbox query
+    telemetry/usace.py's AIS-queue channel already proved out -- not a
+    second, unconfirmed way to ask "what's near this point."
+
+    This replaces relying on SeaVantage/Datalastic/VesselFinder's own
+    passive fetch() sweep for corroboration here: those adapters'
+    fetch() methods are still unparameterized TODO stubs (see those
+    files -- Import Genius and SeaVantage's own endpoints have no real
+    filter wired in yet), so whatever they'd return isn't meaningfully
+    tied to a specific disruption's location at all. Querying
+    Datalastic/VesselFinder's CONFIRMED radius endpoint directly,
+    centered on the actual GeoTarget, is a real, location-specific
+    check instead.
+
+    SeaVantage has no confirmed radius-search endpoint of its own (its
+    file is still a TODO stub) -- not included here, only Datalastic/
+    VesselFinder's already-proven query is reused, never a guessed one.
+
+    Returns an empty string if no key is configured, there are no
+    targets with real coordinates to check, or the live call fails --
+    a failed/skipped check just means no corroboration this sweep, not
+    an error, same posture as every other active-hunt path.
+    """
+    settings = get_settings()
+    datalastic_key, vesselfinder_key = settings.datalastic_api_key, settings.vesselfinder_api_key
+    if not (datalastic_key or vesselfinder_key):
+        return ""
+
+    real_targets = [t for t in targets if t.lat is not None and t.lon is not None]
+    if not real_targets:
+        return ""
+
+    total_vessels = 0
+    try:
+        with httpx.Client(timeout=30) as client:
+            for target in real_targets:
+                if datalastic_key:
+                    vessels = vessels_near_datalastic(client, datalastic_key, target.lat, target.lon)
+                else:
+                    vessels = vessels_near_vesselfinder(client, vesselfinder_key, target.lat, target.lon)
+                total_vessels += len(vessels)
+    except Exception:
+        return ""
+
+    return (
+        f"active AIS check near {len(real_targets)} target location(s): {total_vessels} real vessel(s) "
+        f"currently present -- live Datalastic/VesselFinder radius query, not passive history"
+    )
+
+
 def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = None) -> list[tuple[str, str, str]]:
     """Turns an active macro signal into actual company names, via the
     trade/logistics-data sources that carry a real business identity
@@ -1497,6 +1553,10 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
         corroboration_note = f"{len(corroboration_events)} corroborating signals this sweep ({', '.join(sources_seen)})"
     else:
         corroboration_note = "no corroborating vessel/barge logistics signal this sweep"
+
+    active_ais_note = _active_vessel_corroboration(targets)
+    if active_ais_note:
+        corroboration_note = f"{corroboration_note} | {active_ais_note}"
 
     identified: list[tuple[str, str, str, tuple[float, float] | None]] = []
 
