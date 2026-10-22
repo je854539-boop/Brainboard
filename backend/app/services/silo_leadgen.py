@@ -90,7 +90,13 @@ logger = logging.getLogger("brainboard.silo_leadgen")
 
 SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     TelemetrySource.CME_GLOBEX: [SiloName.TARIFF_SILO],
-    TelemetrySource.SEAVANTAGE: [SiloName.OIL_GAS_REFINING_SILO],
+    # Widened from Oil & Gas Refining alone -- SeaVantage's real
+    # product (confirmed against seavantage.com) is general container/
+    # cargo dwell-time tracking, not an oil-and-gas-specific feed, and
+    # its demurrage signal (see _demurrage_risk_note) is just as
+    # relevant to a stuck e-commerce container or a tariff-silo import
+    # as an oil/gas shipment.
+    TelemetrySource.SEAVANTAGE: [SiloName.OIL_GAS_REFINING_SILO, SiloName.ECOMMERCE_FULFILLMENT_SILO, SiloName.TARIFF_SILO],
     TelemetrySource.IMPORT_GENIUS: [
         SiloName.HEAVY_MACHINERY_INDUSTRIAL_EQUIPMENT_SILO,
         SiloName.FOOD_PROCESSING_FABRICATION_SILO,
@@ -2222,19 +2228,32 @@ def _active_revenue_check(company_name: str) -> tuple[float, bool, str]:
 # unconfirmed field in this module) -- check every plausible variant.
 _ARRIVAL_DATE_KEYS = ("arrival_date", "discharge_date", "vessel_arrival_date", "unlading_date", "actual_arrival_date", "eta")
 
+# SeaVantage's real Cargo Report product (confirmed against
+# seavantage.com, NOT just their own adapter's earlier placeholder
+# docstring) tracks a per-shipment "last free day" directly -- the
+# actual contractual demurrage deadline for THAT container, not a
+# guessed default. When present, this is strictly more precise than
+# computing dwell against _DEMURRAGE_FREE_TIME_DAYS below, so it's
+# checked FIRST.
+_LAST_FREE_DAY_KEYS = ("last_free_day", "lfd", "free_time_expiry", "demurrage_start_date")
+
 # Typical US port free-time window before demurrage/detention charges
 # start accruing -- the real range is roughly 3-7 days depending on
 # port/carrier/contract. A reasoned middle default, not a measured one,
 # same honesty posture as every other threshold in this module --
 # tune down if your actual deals skew toward tighter-free-time ports.
+# Only used as a FALLBACK when no confirmed last-free-day field is
+# present (see _LAST_FREE_DAY_KEYS above).
 _DEMURRAGE_FREE_TIME_DAYS = 5
 
 # A standalone bonus, not folded into cross_source/macro_corroboration
 # -- this signal doesn't need a second source to be real. A container
 # sitting past free time IS the capital need, confirmed by one source
 # (the manifest's own dates), same confidence tier as a confirmed
-# revenue-band match.
+# revenue-band match. A CONFIRMED last-free-day hit (not an estimate)
+# scores higher -- it's a measured fact, not a 5-day guess.
 _DEMURRAGE_SCORE_BONUS = 15.0
+_DEMURRAGE_CONFIRMED_SCORE_BONUS = 22.0
 
 
 def _extract_arrival_date(payload: dict) -> date | None:
@@ -2249,7 +2268,19 @@ def _extract_arrival_date(payload: dict) -> date | None:
     return None
 
 
-def _demurrage_risk_note(payload: dict) -> str:
+def _extract_last_free_day(payload: dict) -> date | None:
+    for key in _LAST_FREE_DAY_KEYS:
+        value = payload.get(key)
+        if not value:
+            continue
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            continue
+    return None
+
+
+def _demurrage_risk_note(payload: dict) -> tuple[str, bool]:
     """The sharpest trigger in this module, and the only one that needs
     no industry-level story at all: a container sitting at port beyond
     its carrier's free-time window accrues a running DAILY fee
@@ -2259,26 +2290,54 @@ def _demurrage_risk_note(payload: dict) -> str:
     on this one data point -- no corroboration from a second source
     needed, unlike every other signal in this module.
 
-    Computed directly from the shipment's own arrival/discharge date,
-    not from SeaVantage/GFW -- neither of those is confirmed to carry
-    per-container dwell status (see their adapters' own docstrings:
-    SeaVantage is vessel/port-call/ETA data, GFW's default dataset is
-    fishing-vessel-specific), so this doesn't depend on either being
-    real. Returns "" when there's no arrival date to compute from, or
-    dwell time is still within the free-time window -- never a dismiss,
-    just no signal yet."""
+    Two tiers, checked in order of confidence:
+    1. CONFIRMED -- a real last-free-day field is present (SeaVantage's
+       Cargo Report product carries this; see its adapter's docstring)
+       and has already passed. This is a measured fact about THIS
+       specific shipment's actual contract terms, not a guess.
+    2. ESTIMATED -- no confirmed field, so dwell time is computed from
+       the shipment's own arrival/discharge date against the reasoned
+       _DEMURRAGE_FREE_TIME_DAYS default (this is what an Import
+       Genius-only record falls back to, since customs manifests don't
+       carry a carrier's actual free-time terms).
+
+    Returns (note, confirmed) -- confirmed=True only for tier 1, which
+    callers use to apply the higher score bonus. ("", False) when
+    there's no date to compute from, or dwell time is still within the
+    free-time window -- never a dismiss, just no signal yet."""
+    last_free_day = _extract_last_free_day(payload)
+    if last_free_day:
+        # A confirmed field is strictly better information than the
+        # arrival-date estimate below, whichever way it reads -- if
+        # it's already past, that's the CONFIRMED signal; if it
+        # hasn't passed yet, that's a confirmed "not yet", which must
+        # short-circuit here rather than falling through to a cruder
+        # guess that might fire anyway on a stale arrival_date in the
+        # same payload.
+        if date.today() > last_free_day:
+            overage_days = (date.today() - last_free_day).days
+            return (
+                f"DEMURRAGE RISK (CONFIRMED): last free day was {last_free_day.isoformat()}, "
+                f"{overage_days} day(s) ago -- this specific shipment's own contract terms, not an estimate -- "
+                f"actively accruing demurrage/detention fees right now regardless of underlying financial "
+                f"health -- needs no other corroboration to be a real bridge-capital pitch",
+                True,
+            )
+        return "", False
+
     arrival = _extract_arrival_date(payload)
     if not arrival:
-        return ""
+        return "", False
     dwell_days = (date.today() - arrival).days
     if dwell_days <= _DEMURRAGE_FREE_TIME_DAYS:
-        return ""
+        return "", False
     overage_days = dwell_days - _DEMURRAGE_FREE_TIME_DAYS
     return (
-        f"DEMURRAGE RISK: shipment arrived {arrival.isoformat()} ({dwell_days} days ago), "
+        f"DEMURRAGE RISK (ESTIMATED): shipment arrived {arrival.isoformat()} ({dwell_days} days ago), "
         f"{overage_days} day(s) past the typical {_DEMURRAGE_FREE_TIME_DAYS}-day free-time window -- "
         f"likely accruing daily demurrage/detention fees right now regardless of underlying financial "
-        f"health -- needs no other corroboration to be a real bridge-capital pitch"
+        f"health -- needs no other corroboration to be a real bridge-capital pitch",
+        False,
     )
 
 
@@ -2674,11 +2733,15 @@ def run_silo_leadgen(db: Session) -> dict:
             # whether any macro signal is active this sweep (the CME
             # Macro Funnel waterfall below gates shut with zero active
             # signals; this never does, since a stuck container is a
-            # real capital need on its own).
-            if event.source == TelemetrySource.IMPORT_GENIUS:
-                demurrage_note = _demurrage_risk_note(event.payload)
+            # real capital need on its own). Checked for BOTH Import
+            # Genius (customs manifest dates, estimated tier) and
+            # SeaVantage (real last-free-day field, confirmed tier --
+            # see _demurrage_risk_note).
+            if event.source in (TelemetrySource.IMPORT_GENIUS, TelemetrySource.SEAVANTAGE):
+                demurrage_note, demurrage_confirmed = _demurrage_risk_note(event.payload)
                 if demurrage_note:
-                    score = (score if score is not None else 50.0) + _DEMURRAGE_SCORE_BONUS
+                    bonus = _DEMURRAGE_CONFIRMED_SCORE_BONUS if demurrage_confirmed else _DEMURRAGE_SCORE_BONUS
+                    score = (score if score is not None else 50.0) + bonus
                     notes = f"{notes} | {demurrage_note}" if notes else demurrage_note
 
             db.add(
