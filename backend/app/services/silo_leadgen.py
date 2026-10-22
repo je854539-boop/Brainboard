@@ -368,6 +368,23 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     # a renovation contractor's own buying pattern genuinely crosses
     # into both.
     "construction_contractor": ("construction materials", "building materials", "lumber", "steel", "renovation supplies"),
+    # Commercial/industrial construction is a genuinely distinct
+    # population from residential/general renovation above -- bigger
+    # jobs, bigger steel/concrete volume, and a real, well-documented
+    # MCA story of its own (progress-billing/retainage cash-flow gaps
+    # between a draw request and actual payment). Deliberately
+    # multi-word, specific goods phrases, not bare "steel"/"concrete" --
+    # those would just collide with construction_contractor's own
+    # generic goods keywords above with no way to tell which commodity
+    # a shipment actually belongs to.
+    "commercial_construction": ("structural steel", "rebar", "ready-mix concrete", "commercial building materials"),
+    # Crane rental/operator companies and heavy-equipment dealers --
+    # real import cargo content in its own right (tower cranes,
+    # excavators, and heavy construction machinery are commonly
+    # imported, notably from Japan/South Korea/China -- see
+    # _ASIA_RELEVANT_COMMODITIES below), distinct from the construction
+    # MATERIALS a contractor buys.
+    "crane_heavy_equipment": ("crane", "tower crane", "excavator", "bulldozer", "heavy equipment", "construction machinery"),
     "poultry_producer": ("poultry", "chicken", "broiler", "live poultry"),
     # One tier downstream of petrochemical_producer -- finished
     # specialty-chemical goods, not raw resin/feedstock, which is
@@ -838,6 +855,10 @@ _ASIA_COUNTRIES = (
 )
 _ASIA_RELEVANT_COMMODITIES = (
     "apparel", "auto_parts", "semiconductor_distributor", "ecommerce_seller", "electronics_manufacturer",
+    # Tower cranes, excavators, and heavy construction machinery are
+    # commonly imported from Japan/South Korea/China -- a real,
+    # documented pattern for this population, not a guess.
+    "crane_heavy_equipment",
 )
 
 
@@ -1075,6 +1096,11 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # entirely by the HigherGov standing channel -- nationwide sweep,
     # same as aerospace_defense.
     "construction_contractor": 50.0,
+    # Same nationwide-sweep-only logic -- commercial GCs and crane/
+    # heavy-equipment companies are dispersed nationwide, no single
+    # corridor to anchor to.
+    "commercial_construction": 50.0,
+    "crane_heavy_equipment": 50.0,
     # Poultry farms are rural/dispersed like livestock_producer -- same
     # nationwide-sweep-only, wide-catchment logic.
     "poultry_producer": 60.0,
@@ -1165,7 +1191,22 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "furniture_wood": ("furniture", "woodworking", "cabinetry", "sawmill", "lumber", "wood products"),
     "apparel": ("apparel", "clothing", "garment", "footwear", "textile"),
     "auto_parts": ("auto parts", "automotive parts", "auto components", "vehicle parts distribution"),
-    "construction_contractor": ("construction", "general contractor", "renovation", "building contractor"),
+    # Checked BEFORE construction_contractor's bare "construction"
+    # keyword below -- _classify_commodity_from_text returns the FIRST
+    # matching commodity in this dict's iteration order, and
+    # "commercial construction"/"industrial construction" text would
+    # always also contain the word "construction," so the specific
+    # commercial keywords have to come first or they'd never be
+    # reached; a residential/general headline with no "commercial"/
+    # "industrial"/"design-build" language still correctly falls
+    # through to construction_contractor below.
+    "commercial_construction": ("commercial construction", "commercial general contractor", "industrial construction", "design-build", "construction management"),
+    "crane_heavy_equipment": ("crane rental", "crane service", "heavy equipment rental", "construction equipment rental", "equipment leasing"),
+    # Added "excavating"/"excavation"/"earthwork"/"site work"/
+    # "demolition" -- a real, previously-missing population (grading/
+    # earthwork/demolition contractors) that construction_contractor's
+    # vocabulary never reached at all.
+    "construction_contractor": ("construction", "general contractor", "renovation", "building contractor", "excavating", "excavation", "earthwork", "site work", "demolition"),
     "poultry_producer": ("poultry", "chicken", "broiler", "live poultry"),
     "chemical_products_manufacturer": ("detergent", "soap", "cleaning product", "coating", "adhesive"),
     "solar_installer": ("solar installation", "solar contractor", "photovoltaic installer"),
@@ -1497,7 +1538,9 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     # fixed there below).
     "apparel": ["apparel importer", "clothing wholesaler", "footwear distributor", "garment manufacturer", "textile importer", "clothing store", "footwear retailer"],
     "auto_parts": ["auto parts distributor", "automotive parts supplier", "auto parts wholesaler", "automotive components importer"],
-    "construction_contractor": ["general contractor", "construction company", "renovation contractor", "building contractor"],
+    "construction_contractor": ["general contractor", "construction company", "renovation contractor", "building contractor", "excavating contractor", "excavation company", "earthwork contractor", "demolition contractor"],
+    "commercial_construction": ["commercial general contractor", "commercial construction company", "industrial construction firm", "design-build contractor", "construction management firm"],
+    "crane_heavy_equipment": ["crane rental company", "crane service provider", "heavy equipment rental company", "construction equipment dealer", "equipment leasing company"],
     "solar_installer": ["solar installation company", "solar contractor", "photovoltaic installer", "solar energy contractor"],
     "solar_manufacturer": ["solar panel manufacturer", "photovoltaic manufacturer", "solar cell manufacturer", "solar module producer"],
     "lumber_wholesaler": ["lumber wholesaler", "lumber importer", "building materials distributor", "lumber yard"],
@@ -1686,6 +1729,8 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "apparel": "clothing wholesaler",
     "auto_parts": "auto parts distributor",
     "construction_contractor": "general contractor",
+    "commercial_construction": "commercial general contractor",
+    "crane_heavy_equipment": "heavy equipment rental",
     "poultry_producer": "poultry farm",
     "chemical_products_manufacturer": "chemical products manufacturer",
     "solar_installer": "solar contractor",
@@ -1855,7 +1900,16 @@ SYMBOL_COMMODITIES: dict[str, list[str]] = {
     # cattle/hog/dairy comment below for that contrast).
     "ZC.c.0": ["grain", "poultry_producer"], "ZS.c.0": ["grain"], "ZW.c.0": ["grain"],
     "ZM.c.0": ["grain", "poultry_producer"], "ZL.c.0": ["grain"],
-    "HRC.c.0": ["steel_coal"],
+    # "commercial_construction" added as a second tag -- commercial/
+    # industrial GCs buy structural steel directly and in real volume
+    # (high-rises, industrial buildings), a direct cost-input link, not
+    # the more indirect one crane_heavy_equipment has (see
+    # _COMMODITY_TRADE_SIDE's comment on why that one is deliberately
+    # NOT tagged here). Residential/general construction_contractor is
+    # mostly lumber-framed, not steel-framed, so it's deliberately left
+    # off this symbol too -- the real link there is lumber, which has
+    # no CME-listed futures symbol wired into this project.
+    "HRC.c.0": ["steel_coal", "commercial_construction"],
     "CL.c.0": ["logistics_fuel"], "HO.c.0": ["logistics_fuel"],
     # US petrochemical cracking overwhelmingly runs on natural-gas-
     # liquids feedstock (ethane), not crude -- so NG, not CL/HO, is the
@@ -1969,6 +2023,22 @@ _COMMODITY_TRADE_SIDE: dict[str, str] = {
     # squeeze, same mechanism as every other consumer-side commodity
     # facing a geopolitical supply-at-risk headline.
     "rare_earth_importer": "consumer",
+    # Construction/commercial-construction contractors buy steel/
+    # lumber/concrete as direct cost inputs -- a price-up headline (a
+    # steel-price shock, a geopolitical supply-at-risk story) is a cost
+    # squeeze for them, the mirror image of steel_coal/lumber_producer's
+    # own producer-side framing.
+    "construction_contractor": "consumer",
+    "commercial_construction": "consumer",
+    # Crane/heavy-equipment companies' machinery is steel-intensive, so
+    # the same mirror-image logic applies, even though (deliberately)
+    # NOT tagged to the HRC steel-futures symbol in SYMBOL_COMMODITIES
+    # below -- that link (equipment replacement cost rising with steel
+    # prices) is real but more indirect than a contractor buying
+    # structural steel directly, so it's left to fire only off an
+    # actual crane/heavy-equipment-specific headline, not a generic
+    # steel price tick.
+    "crane_heavy_equipment": "consumer",
 }
 
 
