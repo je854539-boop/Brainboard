@@ -269,6 +269,70 @@ def _trade_linked_port_note(payload: dict, targets: list["GeoTarget"]) -> str:
             return f"TRADE-LINKED MATCH: shipment's port of entry '{port_of_entry}' is the actively congested port ({target.label}) -- "
     return ""
 
+
+# What a shipment's own GOODS actually are, not what kind of facility
+# is nearby -- distinct from _COMMODITY_LAND_USE_KEYWORDS (which
+# matches a parcel's zoning/land-use text). "Argentina floods the US
+# with cheap beef" is a question about WHO is actually importing beef,
+# which means matching cargo content, not a company's industry tag.
+_COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "grain": ("corn", "soybean", "wheat", "grain", "oilseed"),
+    "steel_coal": ("steel", "coal", "iron ore", "coke"),
+    "petrochemical": ("petrochemical", "resin", "plastic", "polymer", "chemical"),
+    "food_cost": ("beef", "meat", "poultry", "dairy", "cheese", "pork"),
+    "livestock_producer": ("beef", "cattle", "livestock", "meat", "pork", "dairy"),
+}
+
+# Standard bill-of-lading goods-description fields -- same defensive
+# multi-key posture as _extract_address/_extract_port_of_entry; field
+# name isn't confirmed against Import Genius's live schema.
+_GOODS_DESCRIPTION_KEYS = ("commodity_description", "goods_description", "cargo_description", "product_description", "description")
+
+
+def _extract_goods_description(payload: dict) -> str | None:
+    for key in _GOODS_DESCRIPTION_KEYS:
+        value = payload.get(key)
+        if value:
+            return str(value).lower()
+    return None
+
+
+def _commodity_trade_linked_note(payload: dict, targets: list["GeoTarget"]) -> str:
+    """Answers "who is actually moving this commodity" directly, the
+    same transactional logic as _trade_linked_port_note but keyed on
+    the shipment's own GOODS content instead of its port of entry --
+    works for any commodity with an active signal, not just
+    port_congestion. A supermarket chain or beef wholesaler whose own
+    manifest is literally FOR Argentine beef is linked to an active
+    food_cost/livestock_producer signal by that shipment itself,
+    regardless of which port it cleared through or how far its
+    warehouse is from any lock -- this is the actual answer to
+    "someone is importing that beef, who is it."
+
+    Distance-free, same reasoning as the port version: many importers
+    are headquartered far from both the disruption AND the port. Field
+    name isn't confirmed against Import Genius's live schema -- see
+    _extract_goods_description.
+    """
+    description = _extract_goods_description(payload)
+    if not description:
+        return ""
+    checked: set[str] = set()
+    for target in targets:
+        if target.commodity in checked:
+            continue
+        checked.add(target.commodity)
+        keywords = _COMMODITY_GOODS_KEYWORDS.get(target.commodity, ())
+        if keywords and any(k in description for k in keywords):
+            weight_note = "" if target.weight >= 0.5 else f", secondary signal only ({target.weight:.0%})"
+            return (
+                f"COMMODITY TRADE-LINKED MATCH: shipment's own goods description '{description}' matches "
+                f"the active {target.commodity} signal ({target.label}{weight_note}) -- this is who's actually "
+                f"moving that commodity, not just a business near a disruption -- "
+            )
+    return ""
+
+
 _STREET_SUFFIXES = {
     "street": "st", "avenue": "ave", "boulevard": "blvd", "drive": "dr", "road": "rd",
     "lane": "ln", "suite": "ste", "court": "ct", "highway": "hwy", "parkway": "pkwy",
@@ -385,6 +449,17 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     # relevant via the nationwide sweep for the same reason (a price
     # shock has no single location).
     "livestock_producer": 60.0,
+    # Government-contract-driven industries (aerospace/defense) have no
+    # single lock the way a river commodity does, and no CME price
+    # proxy to tag a specific place with -- these flow through the
+    # nationwide sweep almost exclusively, same wide-catchment logic.
+    # Honest limitation: the nationwide sweep's 6 cities are chosen for
+    # YOUR book's real state concentration, not for where aerospace
+    # actually clusters in the real world (Wichita, Seattle, Fort
+    # Worth) -- CA and TX overlap, Wichita/Seattle do not. A dedicated
+    # aerospace-hub sweep list would need to be a separate addition,
+    # not reuse this one, if that geographic mismatch matters enough.
+    "aerospace_defense": 50.0,
 }
 _DEFAULT_SEARCH_RADIUS_MILES = 25.0
 
@@ -409,6 +484,7 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "logistics_fuel": ("trucking", "logistics", "freight", "warehouse", "distribution", "transportation", "fleet"),
     "food_cost": ("restaurant", "food service", "meat processing", "dairy processing", "food distribution", "catering"),
     "livestock_producer": ("cattle ranch", "feedlot", "dairy farm", "livestock", "ranch", "slaughterhouse", "meat packing"),
+    "aerospace_defense": ("aerospace", "defense contractor", "aircraft", "avionics", "missile", "satellite", "aviation"),
 }
 
 
@@ -670,6 +746,7 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "logistics_fuel": ["trucking company", "freight carrier", "logistics company", "transportation company", "trucking fleet"],
     "food_cost": ["restaurant", "food service company", "meat processing", "dairy processing", "food distributor", "catering company"],
     "livestock_producer": ["cattle ranch", "feedlot operator", "dairy farm", "livestock producer", "meat packing plant", "slaughterhouse"],
+    "aerospace_defense": ["aerospace manufacturer", "defense contractor", "aircraft parts supplier", "avionics company", "aerospace supplier"],
 }
 
 # Who actually makes a financing decision at a small/mid-size business --
@@ -816,6 +893,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "logistics_fuel": "trucking",
     "food_cost": "restaurant",
     "livestock_producer": "livestock",
+    "aerospace_defense": "aerospace",
 }
 
 
@@ -1084,6 +1162,47 @@ def _classify_commodity_from_text(text: str) -> str | None:
         if any(k in text_lower for k in keywords):
             return commodity
     return None
+
+
+def _highergov_contract_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
+    """A government contract AWARD is a real, confirmed demand event --
+    not just for the awardee, but one step removed, for every supplier
+    in that industry's supply chain (an aerospace prime winning a
+    contract means its subcontractor network needs to scale too).
+    Classified by the same keyword-text technique as GDELT's national
+    sweep (_classify_commodity_from_text), since most government-
+    contract-driven industries (aerospace/defense being the clearest
+    example) have no CME-listed futures contract the way steel or
+    grain does -- there's no price proxy to tag a place with.
+
+    Always "expansion" -- winning a contract is a growth event, never
+    read as distress the way a price crash or plant fire is.
+
+    HigherGov's place-of-performance field name isn't confirmed against
+    its live API (see telemetry/highergov.py's own TODO), and even if
+    it were, its format (state abbreviation? full city? agency region?)
+    isn't something to guess at and silently mis-feed into Apollo's
+    location filter. Coordinates/location_hint/state are deliberately
+    left unset -- this flows through the nationwide sweep instead, same
+    as a CME price shock with no single place."""
+    signals: list[MacroSignal] = []
+    for event in _fresh_events(db, TelemetrySource.HIGHERGOV, limit=20):
+        text = f"{event.title} {event.payload.get('description', '')}"
+        commodity = _classify_commodity_from_text(text)
+        if not commodity:
+            continue
+        if commodities is not None and commodity not in commodities:
+            continue
+        signals.append(
+            MacroSignal(
+                kind="contract_award",
+                description=f"HigherGov contract award classified {commodity}: {event.title}",
+                source_reference=f"telemetry_event:{event.id} [highergov] {event.title}",
+                commodity=commodity,
+                signal_type="expansion",
+            )
+        )
+    return signals
 
 
 def _gdelt_shock_signals(db: Session) -> list[MacroSignal]:
@@ -1424,18 +1543,21 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     generic, not grain-specific). An empty return means the waterfall
     stops here -- stages 2-4 never run and zero candidates get created.
 
-    PRIORITIZATION: CME price shocks and the national GDELT sweep are
-    computed FIRST, since they're the macro-level read -- see
-    _hot_commodities_this_sweep. Every local/regional signal (GDELT
-    local, GDELT broad, USACE) whose commodity is ALSO in that hot set
-    gets macro_corroborated=True -- not gated or skipped (GDELT is
-    free and USACE is real disruption data, neither needs permission
-    to run), just flagged as independently confirmed by a different
-    kind of evidence, which Stage 2's hunts turn into a real confidence
-    bonus instead of treating every hit as equally uncertain."""
+    PRIORITIZATION: CME price shocks, the national GDELT sweep, and
+    HigherGov contract awards are computed FIRST, since they're all
+    macro-level reads -- see _hot_commodities_this_sweep. A contract
+    award is treated as real, confirmed evidence here, same standing
+    as a price move. Every local/regional signal (GDELT local, GDELT
+    broad, USACE) whose commodity is ALSO in that hot set gets
+    macro_corroborated=True -- not gated or skipped (GDELT is free and
+    USACE is real disruption data, neither needs permission to run),
+    just flagged as independently confirmed by a different kind of
+    evidence, which Stage 2's hunts turn into a real confidence bonus
+    instead of treating every hit as equally uncertain."""
     cme_signals = _cme_price_shock_signals(db)
     national_gdelt_signals = _gdelt_shock_signals(db)
-    hot = _hot_commodities_this_sweep(cme_signals + national_gdelt_signals)
+    contract_signals = _highergov_contract_signals(db)
+    hot = _hot_commodities_this_sweep(cme_signals + national_gdelt_signals + contract_signals)
 
     local_signals = _gdelt_local_distress_signals(db)
     broad_signals = _gdelt_broad_disruption_signals(db)
@@ -1447,6 +1569,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     return (
         cme_signals
         + national_gdelt_signals
+        + contract_signals
         + local_signals
         + broad_signals
         + _gfw_anomaly_signals(db)
@@ -1563,7 +1686,15 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
     for event in _fresh_events(db, TelemetrySource.IMPORT_GENIUS, limit=25):
         name = event.payload.get("consignee_name") or event.payload.get("company_name")
         if name:
-            trade_link_note = _trade_linked_port_note(event.payload, targets)
+            # Two independent trade-link checks -- port of entry (which
+            # port a shipment cleared through) and goods content (what
+            # the shipment actually IS). A supermarket/wholesaler
+            # importing Argentine beef gets caught by the second one
+            # even if it clears through a port with no congestion at
+            # all -- the link is the cargo itself, not the dock.
+            port_link_note = _trade_linked_port_note(event.payload, targets)
+            goods_link_note = _commodity_trade_linked_note(event.payload, targets)
+            trade_link_note = f"{port_link_note}{goods_link_note}"
             note = f"{trade_link_note}{corroboration_note}" if trade_link_note else corroboration_note
             identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", note, None))
 
@@ -1913,7 +2044,7 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
     # any local/regional grain signal it agrees with gets flagged
     # macro_corroborated for Stage 2's hunts to score with confidence.
     cme_grain_signals = _cme_price_shock_signals(db, commodities={"grain"})
-    hot = _hot_commodities_this_sweep(cme_grain_signals + _gdelt_shock_signals(db))
+    hot = _hot_commodities_this_sweep(cme_grain_signals + _gdelt_shock_signals(db) + _highergov_contract_signals(db, commodities={"grain"}))
 
     local_signals = _gdelt_local_distress_signals(db, commodities={"grain"})
     broad_signals = _gdelt_broad_disruption_signals(db, commodities={"grain"})
