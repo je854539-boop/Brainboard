@@ -186,6 +186,15 @@ class MacroSignal:
     # (USACE, GDELT distress/broad sweeps) is definitionally bad news,
     # so those default to "distress" rather than leaving this unset.
     signal_type: str | None = None
+    # True when this signal's commodity ALSO has an active CME price
+    # shock or a classified national GDELT headline THIS sweep -- an
+    # independent, different-KIND signal (macro price/news) agreeing
+    # with a local/regional one (a lock disruption, a local headline),
+    # not the same detector firing twice. Set after the fact by
+    # _stage1_detect_signals / the Agriculture waterfall's signal
+    # collection, never by an individual detector itself -- a detector
+    # has no visibility into what the OTHERS found this sweep.
+    macro_corroborated: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +449,12 @@ class GeoTarget:
     # windfall reads as a growth/stacking opportunity, not identical
     # framing to one found off a plant fire.
     signal_type: str | None = None
+    # See MacroSignal.macro_corroborated -- surfaced in the hunt notes
+    # and scored as a confidence bonus, same idea as Interzoid's
+    # cross-source confirmation but one level up: here it's two
+    # DIFFERENT KINDS of signal (a macro price/news read vs. a local
+    # disruption) agreeing, not two providers agreeing on one company.
+    macro_corroborated: bool = False
 
 
 # A nationwide commodity price shock (CME Globex, GDELT's national
@@ -498,6 +513,7 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
                     lat=lat, lon=lon, commodity=signal.commodity, label=signal.description,
                     radius_mi=radius, weight=signal.weight, location_hint=signal.location_hint,
                     state=signal.state, signal_type=signal.signal_type,
+                    macro_corroborated=signal.macro_corroborated,
                 )
             )
             continue
@@ -511,6 +527,7 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
                     commodity=signal.commodity, label=f"{signal.description} (nationwide sweep: {place['apollo_location']})",
                     radius_mi=radius, weight=signal.weight,
                     location_hint=place["apollo_location"], state=place["state"], signal_type=signal.signal_type,
+                    macro_corroborated=signal.macro_corroborated,
                 )
             )
     return targets
@@ -770,11 +787,16 @@ def _stage2b_apollo_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
                 if target.signal_type == "distress"
                 else "unclassified commodity move"
             )
+            corroboration_note = (
+                " | MACRO-CORROBORATED: a CME price shock or national GDELT headline independently "
+                "confirms this commodity is active right now, not just one local read"
+                if target.macro_corroborated else ""
+            )
             note = (
                 f"APOLLO INDUSTRY HUNT: actively searched for {keywords} companies near {target.location_hint} "
                 f"because of an active {target.commodity} signal ({target.label}{weight_note}) -- {situation} -- "
                 f"this company was not already sitting in any other feed, found by live industry+location search, "
-                f"not cargo data | {contact_note}"
+                f"not cargo data | {contact_note}{corroboration_note}"
             )
             identified.append((str(name), f"telemetry_event:{event.id} [apollo] {record.title}", note, None))
 
@@ -879,10 +901,16 @@ def _stage2c_cobalt_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
                 if target.signal_type == "distress"
                 else "unclassified commodity move"
             )
+            corroboration_note = (
+                " | MACRO-CORROBORATED: a CME price shock or national GDELT headline independently "
+                "confirms this commodity is active right now, not just one local read"
+                if target.macro_corroborated else ""
+            )
             note = (
                 f"COBALT INTELLIGENCE INDUSTRY HUNT: actively searched SOS registry for '{search_term}' businesses "
                 f"in {target.state} because of an active {target.commodity} signal ({target.label}{weight_note}) "
-                f"-- {situation} -- this company was not already sitting in any other feed | {standing_note}{ucc_note}"
+                f"-- {situation} -- this company was not already sitting in any other feed | "
+                f"{standing_note}{ucc_note}{corroboration_note}"
             )
             identified.append((str(name), f"telemetry_event:{event.id} [cobalt_intelligence] {record.title}", note, None))
 
@@ -1039,18 +1067,40 @@ def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -
     return signals
 
 
+def _classify_commodity_from_text(text: str) -> str | None:
+    """Best-guess commodity classification from keyword text alone, no
+    place required -- lets a NATIONAL headline (no location to anchor
+    to at all) still contribute to "which commodities are hot right
+    now" (see _hot_commodities_this_sweep), the same crude keyword
+    match _gdelt_broad_disruption_signals already uses, just without
+    requiring a place match alongside it. Not a verified tag -- a
+    headline can legitimately mention more than one industry; this
+    returns whichever matches first, good enough for a priority signal,
+    not for identifying a specific business."""
+    text_lower = text.lower()
+    for commodity, keywords in _COMMODITY_LAND_USE_KEYWORDS.items():
+        if any(k in text_lower for k in keywords):
+            return commodity
+    return None
+
+
 def _gdelt_shock_signals(db: Session) -> list[MacroSignal]:
     # GDELT's query (see telemetry/gdelt.py::COMMODITY_SHOCK_QUERY) is
     # already scoped to shock-relevant language -- "commodities crash",
     # "grain shortage", "export ban", theme:ECON_COMMODITY -- AND
     # tariff/trade-policy language ("tariff", "trade war", Section
     # 301/232) -- so any fresh match IS the signal; no extra magnitude
-    # filter needed on top of it.
+    # filter needed on top of it. Deliberately leaves signal_type unset
+    # (not forced to "distress") -- this query mixes genuinely
+    # direction-ambiguous news (a new tariff can be good news for a
+    # protected domestic producer, bad for an importer), so guessing a
+    # direction here would be worse than leaving it unclassified.
     return [
         MacroSignal(
             kind="news_shock",
             description=f"GDELT commodity/tariff-shock coverage: {event.title}",
             source_reference=f"telemetry_event:{event.id} [gdelt] {event.title}",
+            commodity=_classify_commodity_from_text(event.title),
         )
         for event in _fresh_events(db, TelemetrySource.GDELT, limit=10)
     ]
@@ -1347,24 +1397,58 @@ def _usace_disruption_signals(db: Session, commodities: set[str] | None = None) 
 CME_MACRO_SILO = SiloName.CME_MACRO_FUNNEL
 
 
+def _hot_commodities_this_sweep(macro_level_signals: list[MacroSignal]) -> set[str]:
+    """Commodities with an active MACRO-level read this sweep -- a real
+    CME price shock, or a national GDELT headline classified by
+    keyword to a commodity. This is the prioritization layer: it tells
+    the rest of Stage 1 which corridors the broader financial/news
+    picture says are actually "hot" right now, so a local disruption
+    or headline in that same commodity isn't just one isolated local
+    read -- it's confirmed by an independent, different KIND of
+    evidence (price action or national coverage, not another local
+    sweep). See _stage1_detect_signals for how this is used."""
+    return {s.commodity for s in macro_level_signals if s.commodity}
+
+
 def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     """The gate. Returns every active macro signal found across the five
     leading-indicator channels (CME Globex price shock -- now also
-    steel/crude/diesel/nat gas, not just grain, see SYMBOL_COMMODITIES --
-    GDELT NATIONAL news, GDELT LOCAL distress news near every monitored
-    place, GFW ocean anomaly, and USACE river/port disruption across
-    EVERY monitored corridor, not just grain -- a steel-corridor or
-    port-congestion event can open this funnel same as a grain one,
-    since this waterfall's filter/contact stages are generic, not
-    grain-specific). An empty return means the waterfall stops here --
-    stages 2-4 never run and zero candidates get created."""
+    steel/crude/diesel/nat gas/livestock/dairy, not just grain, see
+    SYMBOL_COMMODITIES -- GDELT NATIONAL news, GDELT LOCAL distress news
+    near every monitored place, GFW ocean anomaly, and USACE river/port
+    disruption across EVERY monitored corridor, not just grain -- a
+    steel-corridor or port-congestion event can open this funnel same
+    as a grain one, since this waterfall's filter/contact stages are
+    generic, not grain-specific). An empty return means the waterfall
+    stops here -- stages 2-4 never run and zero candidates get created.
+
+    PRIORITIZATION: CME price shocks and the national GDELT sweep are
+    computed FIRST, since they're the macro-level read -- see
+    _hot_commodities_this_sweep. Every local/regional signal (GDELT
+    local, GDELT broad, USACE) whose commodity is ALSO in that hot set
+    gets macro_corroborated=True -- not gated or skipped (GDELT is
+    free and USACE is real disruption data, neither needs permission
+    to run), just flagged as independently confirmed by a different
+    kind of evidence, which Stage 2's hunts turn into a real confidence
+    bonus instead of treating every hit as equally uncertain."""
+    cme_signals = _cme_price_shock_signals(db)
+    national_gdelt_signals = _gdelt_shock_signals(db)
+    hot = _hot_commodities_this_sweep(cme_signals + national_gdelt_signals)
+
+    local_signals = _gdelt_local_distress_signals(db)
+    broad_signals = _gdelt_broad_disruption_signals(db)
+    usace_signals = _usace_disruption_signals(db)
+    for s in local_signals + broad_signals + usace_signals:
+        if s.commodity in hot:
+            s.macro_corroborated = True
+
     return (
-        _cme_price_shock_signals(db)
-        + _gdelt_shock_signals(db)
-        + _gdelt_local_distress_signals(db)
-        + _gdelt_broad_disruption_signals(db)
+        cme_signals
+        + national_gdelt_signals
+        + local_signals
+        + broad_signals
         + _gfw_anomaly_signals(db)
-        + _usace_disruption_signals(db)
+        + usace_signals
     )
 
 
@@ -1676,9 +1760,15 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
         revenue_delta, revenue_dismiss, revenue_note = _stage3b_revenue_range_filter(db, company_name)
         # +10 for two or more INDEPENDENT sources (e.g. Apollo + Cobalt)
         # landing on the same business -- real corroboration, not the
-        # same source counted twice.
+        # same source counted twice. +5 when the hunt that found it was
+        # itself macro-corroborated (a CME shock or national GDELT
+        # headline independently agreeing with the local/regional
+        # signal that triggered the hunt -- see _hot_commodities_this_
+        # sweep) -- smaller than the cross-source bonus since it
+        # confirms the COMMODITY is active, not this specific company.
         cross_source_bonus = 10.0 if cross_source_confirmed else 0.0
-        score_delta = standing_delta + revenue_delta + cross_source_bonus
+        macro_corroboration_bonus = 5.0 if "MACRO-CORROBORATED" in corroboration_note else 0.0
+        score_delta = standing_delta + revenue_delta + cross_source_bonus + macro_corroboration_bonus
         dismiss = standing_dismiss or revenue_dismiss
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
 
@@ -1757,12 +1847,22 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
     conditions -> real grain-handling businesses at the physical
     location), not a broader creditworthiness funnel.
     """
-    signals = (
-        _cme_price_shock_signals(db, commodities={"grain"})
-        + _gdelt_local_distress_signals(db, commodities={"grain"})
-        + _gdelt_broad_disruption_signals(db, commodities={"grain"})
-        + _usace_disruption_signals(db, commodities={"grain"})
-    )
+    # Same prioritization pattern as _stage1_detect_signals: the
+    # macro-level read (grain-filtered CME shocks, plus the national
+    # GDELT sweep if it happens to classify as grain) comes first, and
+    # any local/regional grain signal it agrees with gets flagged
+    # macro_corroborated for Stage 2's hunts to score with confidence.
+    cme_grain_signals = _cme_price_shock_signals(db, commodities={"grain"})
+    hot = _hot_commodities_this_sweep(cme_grain_signals + _gdelt_shock_signals(db))
+
+    local_signals = _gdelt_local_distress_signals(db, commodities={"grain"})
+    broad_signals = _gdelt_broad_disruption_signals(db, commodities={"grain"})
+    usace_signals = _usace_disruption_signals(db, commodities={"grain"})
+    for s in local_signals + broad_signals + usace_signals:
+        if s.commodity in hot:
+            s.macro_corroborated = True
+
+    signals = cme_grain_signals + local_signals + broad_signals + usace_signals
     if not signals:
         return {
             "signals_detected": 0,
