@@ -343,6 +343,13 @@ _COMMODITY_GOODS_KEYWORDS: dict[str, tuple[str, ...]] = {
     # retailer tiers like food -- the financing stories across that
     # chain aren't differentiated enough here to justify the extra
     # tiers, same reasoning furniture_wood already uses.
+    # Previously MISSING entirely -- aerospace_defense had no goods-
+    # keyword entry at all, meaning Import Genius cargo-content matching
+    # never worked for it even though the commodity existed. Widened
+    # beyond aerospace specifically to the full defense-contracting
+    # space -- HigherGov is a channel for ALL of DoD contracting
+    # (Army/Navy/Marine Corps as much as Air Force), not just aircraft.
+    "aerospace_defense": ("aerospace", "aircraft", "avionics", "missile", "satellite", "naval", "shipbuilding", "ammunition", "tactical vehicle", "defense electronics"),
     "apparel": ("apparel", "clothing", "footwear", "garment", "textile"),
     # Auto parts/components -- confirmed Section 301 legacy list
     # coverage on motor vehicles/industrial machinery from China.
@@ -967,12 +974,25 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     # each a distinct business type worth its own targeted search
     # rather than one blended Apollo/Cobalt query that can't tell a
     # distributor from a diner.
-    "meat_processor": ("meat processing", "poultry processing", "dairy processing", "food manufacturing", "meat packing"),
+    # "slaughterhouse" moved here from livestock_producer below -- a
+    # real classification bug, caught by actually tracing the
+    # economics: a slaughterhouse BUYS live cattle and SELLS meat, the
+    # same cost-input relationship as any other processor, not a
+    # seller of cattle. Under livestock_producer's trade_side
+    # ("producer"), a cattle price spike would have been wrongly
+    # framed as a windfall for a slaughterhouse, when it's actually a
+    # cost squeeze -- the same mirror-image mistake the whole
+    # producer/consumer split exists to prevent elsewhere.
+    "meat_processor": ("meat processing", "poultry processing", "dairy processing", "food manufacturing", "meat packing", "slaughterhouse"),
     "food_wholesaler": ("food distribution", "wholesale grocery", "foodservice distribution", "cold storage warehouse"),
     "food_retailer": ("supermarket", "grocery", "grocery store", "food retail"),
     "food_service": ("restaurant", "food service", "catering"),
-    "livestock_producer": ("cattle ranch", "feedlot", "dairy farm", "livestock", "ranch", "slaughterhouse", "meat packing"),
-    "aerospace_defense": ("aerospace", "defense contractor", "aircraft", "avionics", "missile", "satellite", "aviation"),
+    # "meat packing" removed too -- same economic entity as
+    # "slaughterhouse" (a meatpacking plant buys live animals, it
+    # doesn't sell them), already correctly present in meat_processor
+    # above.
+    "livestock_producer": ("cattle ranch", "feedlot", "dairy farm", "livestock", "ranch"),
+    "aerospace_defense": ("aerospace", "defense contractor", "aircraft", "avionics", "missile", "satellite", "aviation", "naval", "shipbuilding", "ammunition", "weapons system", "tactical vehicle", "defense electronics", "military logistics"),
     "fertilizer": ("fertilizer", "potash", "ammonia", "agricultural chemical", "crop input", "agribusiness"),
     "ecommerce_logistics": ("fulfillment", "warehouse", "distribution", "logistics", "parcel", "last mile", "cold storage"),
     # "neon"/"wafer"/"fab" catch the Ukraine-neon and Taiwan/China chip
@@ -1257,12 +1277,12 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "petrochemical_producer": ["NGL processor", "natural gas liquids", "chemical producer", "resin producer", "intermediate chemical manufacturer"],
     "port_congestion": ["import", "distribution center", "freight forwarding", "warehousing and storage", "wholesale trade"],
     "logistics_fuel": ["trucking company", "freight carrier", "logistics company", "transportation company", "trucking fleet"],
-    "meat_processor": ["meat processing company", "poultry processor", "dairy processor", "food manufacturer", "meat packing plant"],
+    "meat_processor": ["meat processing company", "poultry processor", "dairy processor", "food manufacturer", "meat packing plant", "slaughterhouse"],
     "food_wholesaler": ["food distributor", "wholesale grocer", "foodservice distributor", "meat wholesaler"],
     "food_retailer": ["supermarket chain", "grocery store", "grocery retailer"],
     "food_service": ["restaurant", "food service company", "catering company", "restaurant chain"],
-    "livestock_producer": ["cattle ranch", "feedlot operator", "dairy farm", "livestock producer", "meat packing plant", "slaughterhouse"],
-    "aerospace_defense": ["aerospace manufacturer", "defense contractor", "aircraft parts supplier", "avionics company", "aerospace supplier"],
+    "livestock_producer": ["cattle ranch", "feedlot operator", "dairy farm", "livestock producer"],
+    "aerospace_defense": ["aerospace manufacturer", "defense contractor", "aircraft parts supplier", "avionics company", "aerospace supplier", "naval shipbuilder", "ammunition manufacturer", "tactical vehicle manufacturer", "defense electronics company", "military logistics contractor"],
     "fertilizer": ["fertilizer distributor", "agricultural chemical company", "crop input supplier", "farm supply", "agribusiness"],
     "ecommerce_logistics": ["fulfillment center", "third-party logistics", "last-mile delivery", "e-commerce logistics", "parcel carrier", "warehousing and storage"],
     "semiconductor_distributor": ["electronics distributor", "semiconductor distributor", "electronic component distributor"],
