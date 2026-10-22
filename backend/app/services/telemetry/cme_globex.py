@@ -46,11 +46,21 @@ PRICE_SCALE = 1_000_000_000  # DBN fixed-point prices are scaled 1e-9
 # driver), and NG (natural gas, a core petrochemical feedstock) are real
 # CME/NYMEX-listed contracts; continuous front-month symbology follows
 # the same ROOT.c.0 convention as the original grain symbols.
+#
+# CME's Chicago complex is NOT only grain -- it also lists the real
+# livestock/dairy complex (Live Cattle, Feeder Cattle, Lean Hogs, Class
+# III Milk), which is a direct input-cost signal for meat/dairy
+# processors AND, one step further down the chain, restaurants and food
+# service -- a beef/pork/dairy price shock hits a restaurant's margin
+# as directly as a diesel shock hits a trucking company's. (Coffee,
+# sugar, cocoa, cotton are ICE-listed, not CME -- not added here, to
+# avoid claiming an exchange/provider relationship that isn't real.)
 SYMBOLS = [
     "ZC.c.0", "ZS.c.0", "ZW.c.0", "ZM.c.0", "ZL.c.0",  # grain
     "HRC.c.0",  # steel
     "CL.c.0", "HO.c.0",  # crude oil, diesel/heating oil -- logistics fuel cost
     "NG.c.0",  # natural gas -- petrochemical feedstock
+    "LE.c.0", "GF.c.0", "HE.c.0", "DC.c.0",  # live cattle, feeder cattle, lean hogs, Class III milk -- food cost
 ]
 
 

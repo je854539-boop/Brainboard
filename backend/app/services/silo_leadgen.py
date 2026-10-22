@@ -327,16 +327,40 @@ def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 # businesses actually feeling a port delay are spread across its whole
 # trucking catchment area, not clustered at the dock -- so that radius
 # is deliberately much wider. Tunable policy, not a measured constant.
+# These three river-corridor radii are deliberately NOT identical,
+# reflecting two different real things a "distance from the lock" is
+# standing in for -- how tightly the relevant FACILITIES actually
+# cluster near water, and how far a LOCK CLOSURE's disruption really
+# reaches along the river before the next lock absorbs it:
+#   - Petrochemical plants cluster extremely tightly around specific
+#     industrial corridors (Houston Ship Channel, the Baton Rouge
+#     chemical corridor) -- a wide net here just pulls in unrelated
+#     land uses, so this is the TIGHTEST radius.
+#   - Grain elevators are sparse and spread along long inter-lock
+#     stretches (Upper Mississippi/Illinois Waterway locks are often
+#     20-40 river miles apart) -- too tight a radius here misses real
+#     elevators that are still genuinely served by the disrupted
+#     segment, so this stays the WIDEST of the three.
+#   - Ohio River steel/coal facilities sit in between: real clustering
+#     around specific metro corridors (Pittsburgh, Steubenville/
+#     Weirton), but tighter inter-lock spacing than the Mississippi, so
+#     a middle-ground radius avoids pulling in the NEXT lock's catchment.
 _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
-    "grain": 20.0,
-    "steel_coal": 20.0,
-    "petrochemical": 20.0,
+    "grain": 25.0,
+    "steel_coal": 15.0,
+    "petrochemical": 10.0,
     "port_congestion": 60.0,
     # Trucking companies aren't tied to one dock the way a mill or
     # elevator is -- a diesel-price shock affects fleets regionally, so
     # this needs the same wide radius as port congestion, not a tight
     # waterside-facility one.
     "logistics_fuel": 60.0,
+    # Restaurants and food processors are everywhere, not clustered at
+    # a dock or plant -- same wide-catchment logic as port_congestion/
+    # logistics_fuel. Mostly relevant via the nationwide sweep (a
+    # cattle/hog/dairy price shock has no single location), not a
+    # specific lock radius.
+    "food_cost": 50.0,
 }
 _DEFAULT_SEARCH_RADIUS_MILES = 25.0
 
@@ -359,6 +383,7 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics"),
     "port_congestion": ("warehouse", "distribution", "logistics", "fulfillment", "freight", "terminal"),
     "logistics_fuel": ("trucking", "logistics", "freight", "warehouse", "distribution", "transportation", "fleet"),
+    "food_cost": ("restaurant", "food service", "meat processing", "dairy processing", "food distribution", "catering"),
 }
 
 
@@ -372,8 +397,15 @@ def _extract_land_use(properties: dict) -> str | None:
 
 @dataclass
 class GeoTarget:
-    lat: float
-    lon: float
+    # None for a nationwide-sweep target (see _geo_targets_from_signals)
+    # -- there's no real geography behind "steel prices moved
+    # everywhere," so this deliberately has no coordinates rather than
+    # a fake placeholder. _nearest_geo_target skips any target with no
+    # coordinates entirely -- Regrid's radius-based geo-matching only
+    # ever makes sense against a real disrupted point; a nationwide
+    # target drives Apollo/Cobalt (via location_hint/state) instead.
+    lat: float | None
+    lon: float | None
     commodity: str
     label: str
     radius_mi: float
@@ -391,25 +423,75 @@ class GeoTarget:
     state: str | None = None
 
 
+# A nationwide commodity price shock (CME Globex, GDELT's national
+# sweep) has no single place -- HRC steel moving 6% doesn't happen
+# "near Pittsburgh," it happens everywhere steel is priced at once.
+# Without a sweep location, that signal could only ever open a gate,
+# never drive a targeted hunt -- these are the real cities the hunt
+# sweeps across instead: your own top 6 states by actual lead
+# concentration in the real book (CA/FL/NY/TX/NJ/IL -- pulled from the
+# real sheet data earlier this session), using each state's major
+# metro, NOT the river/port-specific towns MONITORED_LOCKS uses (that
+# list was built for river/dock proximity, not general business
+# density -- Joliet/Marseilles/Peoria aren't where you'd look for a
+# restaurant or a steel distributor).
+_NATIONWIDE_SWEEP_LOCATIONS: list[dict] = [
+    {"apollo_location": "Los Angeles, California, US", "state": "CA"},
+    {"apollo_location": "Miami, Florida, US", "state": "FL"},
+    {"apollo_location": "New York, New York, US", "state": "NY"},
+    {"apollo_location": "Houston, Texas, US", "state": "TX"},
+    {"apollo_location": "Newark, New Jersey, US", "state": "NJ"},
+    {"apollo_location": "Chicago, Illinois, US", "state": "IL"},
+]
+
+
 def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
-    """One search target per active signal that actually carries a
-    location and a commodity (today, only USACE-origin ones do -- a CME
-    price shock or a GDELT tariff headline has no specific place to
-    point the search at, so those are simply skipped here, not an
-    error). This is the piece that turns "something disrupted
-    somewhere" into "go look specifically here, for this kind of
+    """One search target per active signal that carries a commodity.
+
+    When a signal ALSO carries a specific location (today, only
+    USACE-origin and GDELT-local ones do), the target is anchored
+    exactly there, same as before. When it carries a commodity but NO
+    location -- a nationwide CME Globex price shock, or GDELT's
+    national sweep -- this no longer just gets skipped: it sweeps
+    _NATIONWIDE_SWEEP_LOCATIONS instead, producing one target per real
+    metro so the hunt still runs, just across your own territory
+    instead of one exact disrupted point. This is the piece that turns
+    "something disrupted somewhere" (or "steel prices just moved
+    everywhere") into "go look specifically here, for this kind of
     business."
+
+    The existing per-location/per-state dedup inside the Apollo/Cobalt
+    hunts already protects against call-count blowup here -- several
+    signals (or a nationwide sweep's several cities) resolving to the
+    same place/state still costs exactly one paid call for it, not one
+    per signal.
     """
     targets = []
     for signal in signals:
-        if signal.commodity and signal.coordinates:
+        if not signal.commodity:
+            continue
+        radius = _COMMODITY_SEARCH_RADIUS_MILES.get(signal.commodity, _DEFAULT_SEARCH_RADIUS_MILES)
+
+        if signal.coordinates:
             lat, lon = signal.coordinates
-            radius = _COMMODITY_SEARCH_RADIUS_MILES.get(signal.commodity, _DEFAULT_SEARCH_RADIUS_MILES)
             targets.append(
                 GeoTarget(
                     lat=lat, lon=lon, commodity=signal.commodity, label=signal.description,
                     radius_mi=radius, weight=signal.weight, location_hint=signal.location_hint,
                     state=signal.state,
+                )
+            )
+            continue
+
+        # No single place -- sweep the nationwide locations instead of
+        # skipping this signal entirely.
+        for place in _NATIONWIDE_SWEEP_LOCATIONS:
+            targets.append(
+                GeoTarget(
+                    lat=None, lon=None,  # no real geography behind a nationwide sweep -- see GeoTarget docstring
+                    commodity=signal.commodity, label=f"{signal.description} (nationwide sweep: {place['apollo_location']})",
+                    radius_mi=radius, weight=signal.weight,
+                    location_hint=place["apollo_location"], state=place["state"],
                 )
             )
     return targets
@@ -418,12 +500,19 @@ def _geo_targets_from_signals(signals: list[MacroSignal]) -> list[GeoTarget]:
 def _nearest_geo_target(coordinates: tuple[float, float] | None, targets: list[GeoTarget]) -> tuple[GeoTarget, float] | None:
     """The closest target a parcel falls within the radius of, or None if
     it's outside every active target's radius (or there are no active
-    geo-tagged signals this sweep, or the parcel has no coordinates)."""
+    geo-tagged signals this sweep, or the parcel has no coordinates).
+    Targets with no coordinates of their own (nationwide-sweep targets
+    -- see GeoTarget) are skipped here entirely: there's no real
+    geography to measure a distance against, so they drive the Apollo/
+    Cobalt hunts via location_hint/state instead, never Regrid
+    geo-matching."""
     if not coordinates or not targets:
         return None
     lat, lon = coordinates
     best: tuple[GeoTarget, float] | None = None
     for target in targets:
+        if target.lat is None or target.lon is None:
+            continue
         distance = _haversine_miles(lat, lon, target.lat, target.lon)
         if distance <= target.radius_mi and (best is None or distance < best[1]):
             best = (target, distance)
@@ -541,6 +630,7 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "petrochemical": ["petrochemical", "chemical manufacturing", "petroleum refining", "plastics manufacturing"],
     "port_congestion": ["import", "distribution center", "freight forwarding", "warehousing and storage", "wholesale trade"],
     "logistics_fuel": ["trucking company", "freight carrier", "logistics company", "transportation company", "trucking fleet"],
+    "food_cost": ["restaurant", "food service company", "meat processing", "dairy processing", "food distributor", "catering company"],
 }
 
 # Who actually makes a financing decision at a small/mid-size business --
@@ -672,6 +762,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "petrochemical": "petrochemical",
     "port_congestion": "distribution",
     "logistics_fuel": "trucking",
+    "food_cost": "restaurant",
 }
 
 
@@ -788,6 +879,7 @@ SYMBOL_COMMODITY: dict[str, str] = {
     "HRC.c.0": "steel_coal",
     "CL.c.0": "logistics_fuel", "HO.c.0": "logistics_fuel",
     "NG.c.0": "petrochemical",
+    "LE.c.0": "food_cost", "GF.c.0": "food_cost", "HE.c.0": "food_cost", "DC.c.0": "food_cost",
 }
 
 
