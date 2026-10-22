@@ -78,6 +78,8 @@ from app.models.orm import SiloCandidate, TelemetryEvent
 from app.services import entity_matching, telemetry
 from app.services.telemetry.apollo import ApolloAdapter
 from app.services.telemetry.cobalt_intelligence import CobaltIntelligenceAdapter
+from app.services.telemetry.gdelt import GDELTAdapter
+from app.services.telemetry.usace import MONITORED_LOCKS
 
 SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     TelemetrySource.CME_GLOBEX: [SiloName.TARIFF_SILO],
@@ -330,6 +332,11 @@ _COMMODITY_SEARCH_RADIUS_MILES: dict[str, float] = {
     "steel_coal": 20.0,
     "petrochemical": 20.0,
     "port_congestion": 60.0,
+    # Trucking companies aren't tied to one dock the way a mill or
+    # elevator is -- a diesel-price shock affects fleets regionally, so
+    # this needs the same wide radius as port congestion, not a tight
+    # waterside-facility one.
+    "logistics_fuel": 60.0,
 }
 _DEFAULT_SEARCH_RADIUS_MILES = 25.0
 
@@ -351,6 +358,7 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "steel_coal": ("steel", "iron", "ore", "coal", "metal", "foundry", "mill", "smelt"),
     "petrochemical": ("petrochemical", "chemical", "refinery", "petroleum", "plastics"),
     "port_congestion": ("warehouse", "distribution", "logistics", "fulfillment", "freight", "terminal"),
+    "logistics_fuel": ("trucking", "logistics", "freight", "warehouse", "distribution", "transportation", "fleet"),
 }
 
 
@@ -532,6 +540,7 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "steel_coal": ["steel mill", "steel fabrication", "metal service center", "coal mining", "primary metal manufacturing"],
     "petrochemical": ["petrochemical", "chemical manufacturing", "petroleum refining", "plastics manufacturing"],
     "port_congestion": ["import", "distribution center", "freight forwarding", "warehousing and storage", "wholesale trade"],
+    "logistics_fuel": ["trucking company", "freight carrier", "logistics company", "transportation company", "trucking fleet"],
 }
 
 # Who actually makes a financing decision at a small/mid-size business --
@@ -662,6 +671,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "steel_coal": "steel",
     "petrochemical": "petrochemical",
     "port_congestion": "distribution",
+    "logistics_fuel": "trucking",
 }
 
 
@@ -765,22 +775,56 @@ _DISTRESS_STATUS_KEYWORDS = ("suspended", "dissolved", "revoked", "inactive", "d
 _GOOD_STANDING_KEYWORDS = ("active", "good standing", "in good standing", "current")
 
 
-def _cme_price_shock_signals(db: Session) -> list[MacroSignal]:
+# Maps every CME Globex symbol (see telemetry/cme_globex.py::SYMBOLS)
+# to the same commodity vocabulary USACE/Apollo/Cobalt already use. This
+# MUST stay in sync with that SYMBOLS list -- an untagged symbol is
+# silently treated as having no commodity (coordinates/location_hint
+# never get set for it, so it can still open a signal gate but can never
+# drive a targeted hunt or be commodity-filtered), not an error, but it
+# also means it would never wrongly contaminate a commodity-filtered
+# waterfall like Agriculture's.
+SYMBOL_COMMODITY: dict[str, str] = {
+    "ZC.c.0": "grain", "ZS.c.0": "grain", "ZW.c.0": "grain", "ZM.c.0": "grain", "ZL.c.0": "grain",
+    "HRC.c.0": "steel_coal",
+    "CL.c.0": "logistics_fuel", "HO.c.0": "logistics_fuel",
+    "NG.c.0": "petrochemical",
+}
+
+
+def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
+    """A same-day price shock on ANY tracked CME/NYMEX symbol -- not just
+    the original grain complex (see telemetry/cme_globex.py::SYMBOLS,
+    which now also covers steel, crude/diesel, and natural gas). Every
+    shock is tagged with its commodity via SYMBOL_COMMODITY so a caller
+    can filter the same way _usace_disruption_signals already requires:
+    the Agriculture & Grain Handling waterfall passes {"grain"} so a
+    steel or diesel price shock can't gate it open by mistake, while the
+    CME Macro Funnel passes None for every commodity. A nationwide price
+    move has no single lat/lon the way a specific lock does, so
+    coordinates/location_hint/state are deliberately left unset here --
+    see the module-level note on why that means these signals can open a
+    gate but can't yet drive a targeted Apollo/Cobalt hunt on their own.
+    """
     signals: list[MacroSignal] = []
     for event in _fresh_events(db, TelemetrySource.CME_GLOBEX, limit=50):
         open_, close = event.payload.get("open"), event.payload.get("close")
         if not open_ or not close:
             continue
         pct = abs(close - open_) / open_
-        if pct >= PRICE_SHOCK_PCT:
-            symbol = event.payload.get("symbol") or str(event.payload.get("instrument_id", "?"))
-            signals.append(
-                MacroSignal(
-                    kind="price_shock",
-                    description=f"CME Globex {symbol} moved {pct:.1%} intraday (open {open_:.2f} -> close {close:.2f})",
-                    source_reference=f"telemetry_event:{event.id} [cme_globex] {event.title}",
-                )
+        if pct < PRICE_SHOCK_PCT:
+            continue
+        symbol = event.payload.get("symbol") or str(event.payload.get("instrument_id", "?"))
+        commodity = SYMBOL_COMMODITY.get(symbol)
+        if commodities is not None and commodity not in commodities:
+            continue
+        signals.append(
+            MacroSignal(
+                kind="price_shock",
+                description=f"CME Globex {symbol} moved {pct:.1%} intraday (open {open_:.2f} -> close {close:.2f})",
+                source_reference=f"telemetry_event:{event.id} [cme_globex] {event.title}",
+                commodity=commodity,
             )
+        )
     return signals
 
 
@@ -799,6 +843,94 @@ def _gdelt_shock_signals(db: Session) -> list[MacroSignal]:
         )
         for event in _fresh_events(db, TelemetrySource.GDELT, limit=10)
     ]
+
+
+# Distress/operational-disruption language, per commodity -- combined
+# with a required local place name below to build a genuinely LOCAL
+# query, as opposed to COMMODITY_SHOCK_QUERY's national one. A strike,
+# fire, or shutdown at one specific plant would never make the national
+# feed, but it's exactly the kind of event that creates an urgent, local
+# capital need -- this is what actually catches it.
+_COMMODITY_DISTRESS_LANGUAGE: dict[str, str] = {
+    "grain": '("grain elevator" OR "crop failure" OR drought OR flood OR "grain shortage" OR "export ban")',
+    "steel_coal": '("steel mill" OR "steel plant" OR "coal mine" OR layoffs OR strike OR shutdown OR explosion OR fire)',
+    "petrochemical": '("petrochemical plant" OR refinery OR "chemical plant" OR explosion OR fire OR leak OR shutdown)',
+    "port_congestion": '(port OR terminal OR "shipping delay" OR congestion OR backlog OR strike)',
+    "logistics_fuel": '(trucking OR "freight carrier" OR "fuel surcharge" OR "diesel price" OR layoffs OR bankruptcy)',
+}
+
+
+def _gdelt_local_distress_signals(db: Session, commodities: set[str] | None = None) -> list[MacroSignal]:
+    """The LOCAL counterpart to _gdelt_shock_signals' national sweep.
+    Actively queries GDELT once per distinct monitored place (reusing
+    usace.py's MONITORED_LOCKS rather than maintaining a second location
+    list) for distress language specific to that place's commodity mix.
+    GDELT is free/keyless, so unlike the Apollo/Cobalt hunts there's no
+    per-call cost to manage -- dedup here is purely to avoid firing the
+    same identical query twice when two lock entries share a city (e.g.
+    the two Pittsburgh locks), not a budget concern.
+
+    A caller filters by commodity exactly like _usace_disruption_signals
+    and _cme_price_shock_signals -- the Agriculture & Grain Handling
+    waterfall passes {"grain"}, the CME Macro Funnel passes None.
+
+    Every hit is written as its own TelemetryEvent (tagged
+    local_news=True) before becoming a MacroSignal, same
+    real-stored-row invariant as every active-hunt path in this module.
+    A bad/failed call is swallowed per-location, same fault-isolation
+    posture as the Apollo/Cobalt hunts.
+    """
+    adapter = GDELTAdapter()
+    signals: list[MacroSignal] = []
+    seen_locations: set[str] = set()
+
+    for lock in MONITORED_LOCKS:
+        location = lock.get("apollo_location")
+        if not location or location in seen_locations:
+            continue
+        seen_locations.add(location)
+
+        place = location.split(",")[0].strip()  # "Pittsburgh, Pennsylvania, US" -> "Pittsburgh"
+        lat, lon, state = lock.get("lat"), lock.get("lon"), lock.get("state")
+
+        for commodity, weight in (lock.get("commodities") or {}).items():
+            if weight < _MIN_COMMODITY_WEIGHT:
+                continue
+            if commodities is not None and commodity not in commodities:
+                continue
+            distress_terms = _COMMODITY_DISTRESS_LANGUAGE.get(commodity)
+            if not distress_terms:
+                continue
+
+            try:
+                records = adapter.search(f'{distress_terms} AND "{place}"')
+            except Exception:
+                continue  # one bad call must not drop every other location's results this sweep
+
+            for record in records:
+                event = TelemetryEvent(
+                    source=TelemetrySource.GDELT,
+                    title=record.title,
+                    payload={**record.payload, "local_news": True, "commodity": commodity, "lat": lat, "lon": lon, "state": state, "place": place},
+                )
+                db.add(event)
+                db.flush()
+                label = commodity.replace("_", " ")
+                signals.append(
+                    MacroSignal(
+                        kind="local_news_distress",
+                        description=f"GDELT local {label} distress coverage near {place} ({weight:.0%} of this corridor's traffic): {record.title}",
+                        source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                        commodity=commodity,
+                        coordinates=(float(lat), float(lon)) if lat is not None and lon is not None else None,
+                        weight=weight,
+                        location_hint=location,
+                        state=state,
+                    )
+                )
+
+    db.commit()
+    return signals
 
 
 def _gfw_anomaly_signals(db: Session) -> list[MacroSignal]:
@@ -881,18 +1013,20 @@ CME_MACRO_SILO = SiloName.CME_MACRO_FUNNEL
 
 
 def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
-    """The gate. Returns every active macro signal found across the four
-    leading-indicator channels (CME Globex price shock, GDELT news --
-    now also tariff/trade-policy coverage, see telemetry/gdelt.py --, GFW
-    ocean anomaly, and USACE river/port disruption across EVERY monitored
-    corridor, not just grain -- a steel-corridor or port-congestion event
-    can open this funnel same as a grain one, since this waterfall's
-    filter/contact stages are generic, not grain-specific). An empty
-    return means the waterfall stops here -- stages 2-4 never run and
-    zero candidates get created."""
+    """The gate. Returns every active macro signal found across the five
+    leading-indicator channels (CME Globex price shock -- now also
+    steel/crude/diesel/nat gas, not just grain, see SYMBOL_COMMODITY --
+    GDELT NATIONAL news, GDELT LOCAL distress news near every monitored
+    place, GFW ocean anomaly, and USACE river/port disruption across
+    EVERY monitored corridor, not just grain -- a steel-corridor or
+    port-congestion event can open this funnel same as a grain one,
+    since this waterfall's filter/contact stages are generic, not
+    grain-specific). An empty return means the waterfall stops here --
+    stages 2-4 never run and zero candidates get created."""
     return (
         _cme_price_shock_signals(db)
         + _gdelt_shock_signals(db)
+        + _gdelt_local_distress_signals(db)
         + _gfw_anomaly_signals(db)
         + _usace_disruption_signals(db)
     )
@@ -928,12 +1062,19 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
         TelemetrySource.DATALASTIC,
         TelemetrySource.VESSELFINDER,
         TelemetrySource.USACE,
+        # News/ocean-anomaly corroboration -- if GDELT is ALSO carrying
+        # fresh distress coverage, or GFW is ALSO seeing a fresh ocean
+        # anomaly, this sweep, that's independent supporting evidence
+        # for whatever candidate Stage 2 identifies, same as a vessel or
+        # barge signal always was -- they just weren't counted before.
+        TelemetrySource.GDELT,
+        TelemetrySource.GFW_4WINGS,
     ):
         corroboration_events += _fresh_events(db, source, limit=10)
 
     if corroboration_events:
         sources_seen = sorted({e.source.value for e in corroboration_events})
-        corroboration_note = f"{len(corroboration_events)} corroborating vessel/barge signals this sweep ({', '.join(sources_seen)})"
+        corroboration_note = f"{len(corroboration_events)} corroborating signals this sweep ({', '.join(sources_seen)})"
     else:
         corroboration_note = "no corroborating vessel/barge logistics signal this sweep"
 
@@ -1280,7 +1421,11 @@ def run_agriculture_grain_handling_waterfall(db: Session) -> dict:
     conditions -> real grain-handling businesses at the physical
     location), not a broader creditworthiness funnel.
     """
-    signals = _cme_price_shock_signals(db) + _usace_disruption_signals(db, commodities={"grain"})
+    signals = (
+        _cme_price_shock_signals(db, commodities={"grain"})
+        + _gdelt_local_distress_signals(db, commodities={"grain"})
+        + _usace_disruption_signals(db, commodities={"grain"})
+    )
     if not signals:
         return {
             "signals_detected": 0,

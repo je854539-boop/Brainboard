@@ -11,6 +11,20 @@ wars, import duties) all move commodity futures and squeeze
 import-exposed businesses before the effect is visible anywhere else --
 a new tariff announcement is as real a leading indicator as a price
 shock, and this is a free source already wired up to catch it.
+
+`fetch()` keeps running this fixed NATIONAL query (unscoped to any
+place) on its own schedule, unchanged. `search()` is the same call
+generalized to take any query string -- this is what lets a LOCAL,
+place-scoped query run too (see silo_leadgen.py's
+_gdelt_local_distress_signals): national coverage catches a big macro
+headline ("steel tariff announced"), but would never catch something
+like a factory fire or a labor strike at one specific plant in Gary,
+Indiana -- too small to make national news, but exactly the kind of
+event that creates an urgent, local capital need. GDELT's query
+language is boolean keyword/phrase matching, not a geographic radius
+search (there's no lat/lon parameter) -- "local" here means requiring
+a real place name as part of the query text alongside distress
+language, not a true geo-filter.
 """
 
 import httpx
@@ -38,16 +52,27 @@ class GDELTAdapter(TelemetryAdapter):
     def enabled(self) -> bool:
         return True  # free/keyless, same as the globe and enrichment adapters
 
-    def fetch(self) -> list[RawTelemetryRecord]:
+    def search(self, query: str, timespan: str = "24h", maxrecords: int = 20) -> list[RawTelemetryRecord]:
+        """Generalized GDELT DOC query -- caller supplies the full query
+        string (e.g. distress language AND a required place name for a
+        local search). Raises on an HTTP error rather than swallowing
+        it, same posture as Apollo/Cobalt's search() methods; callers
+        doing several of these in a loop (the local-news sweep) catch
+        around this themselves so one bad call can't drop every other
+        location's results.
+        """
         with httpx.Client(timeout=30) as client:
             response = client.get(
                 GDELT_DOC_URL,
-                params={"query": COMMODITY_SHOCK_QUERY, "mode": "artlist", "format": "json", "timespan": "24h", "maxrecords": 50},
+                params={"query": query, "mode": "artlist", "format": "json", "timespan": timespan, "maxrecords": maxrecords},
             )
             response.raise_for_status()
             payload = response.json()
 
         return [
-            RawTelemetryRecord(title=article.get("title", "GDELT commodity-shock article"), payload=article)
+            RawTelemetryRecord(title=article.get("title", "GDELT article"), payload=article)
             for article in payload.get("articles", [])
         ]
+
+    def fetch(self) -> list[RawTelemetryRecord]:
+        return self.search(COMMODITY_SHOCK_QUERY, maxrecords=50)

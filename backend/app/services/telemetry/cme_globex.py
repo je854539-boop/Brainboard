@@ -37,10 +37,21 @@ BASE_URL = "https://hist.databento.com"
 DATASET = "GLBX.MDP3"  # CME Globex MDP 3.0, redistributed by Databento
 PRICE_SCALE = 1_000_000_000  # DBN fixed-point prices are scaled 1e-9
 
-# CBOT grain/oilseed complex continuous front-month contracts -- the core
-# "Chicago commodities market" instruments the CME Macro Funnel silo is
-# built around (corn, soybeans, wheat, soybean meal, soybean oil).
-SYMBOLS = ["ZC.c.0", "ZS.c.0", "ZW.c.0", "ZM.c.0", "ZL.c.0"]
+# CBOT grain/oilseed complex, plus CME/NYMEX contracts covering the
+# other commodity-tagged corridors this system now watches (see
+# telemetry/usace.py's MONITORED_LOCKS commodities mix and
+# silo_leadgen.py's SYMBOL_COMMODITY, which maps every one of these back
+# to the same commodity vocabulary USACE/Apollo/Cobalt already use).
+# HRC (steel), CL/HO (crude/diesel -- the real trucking fuel-cost
+# driver), and NG (natural gas, a core petrochemical feedstock) are real
+# CME/NYMEX-listed contracts; continuous front-month symbology follows
+# the same ROOT.c.0 convention as the original grain symbols.
+SYMBOLS = [
+    "ZC.c.0", "ZS.c.0", "ZW.c.0", "ZM.c.0", "ZL.c.0",  # grain
+    "HRC.c.0",  # steel
+    "CL.c.0", "HO.c.0",  # crude oil, diesel/heating oil -- logistics fuel cost
+    "NG.c.0",  # natural gas -- petrochemical feedstock
+]
 
 
 class CMEGlobexAdapter(TelemetryAdapter):
