@@ -3357,6 +3357,75 @@ def _active_revenue_check(company_name: str) -> tuple[float, bool, str]:
     )
 
 
+# Real-world grounding for this, direct from the business, not a guess:
+# cattle ranchers running 500-1,000+ head, major grain players, and
+# beef/potash/fertilizer importers moving heavy container volume are all
+# genuinely in the target revenue band. Apollo's firmographic revenue
+# field is frequently EMPTY for exactly these businesses -- closely-held,
+# privately-run operations with no reason to ever report revenue to a
+# public B2B database -- which is why _stage3b_revenue_range_filter and
+# _active_revenue_check so often come back "pending" for them, not a
+# true negative. That "pending" result was previously a dead end: no
+# bonus, no proxy, just silence on revenue fit for exactly the
+# businesses most likely to need Apollo's gap filled.
+#
+# Container/shipment volume is a REAL, already-available substitute --
+# Import Genius and SeaVantage both carry a literal shipment count for
+# any company that shows up in them at all, no third-party estimate
+# required. The threshold below is a reasoned starting point, not a
+# precise calculation -- a single ocean container typically carries
+# tens of thousands of dollars of goods value, so a company moving this
+# many containers in one sweep's fresh-event window is a real, scaling
+# trade operation, consistent with (not proof of) the target band.
+# Tune this against _signal_performance_report's real docs-in/funded
+# rate once there's real outcome data behind it, same as every other
+# reasoned constant in this file.
+_CARGO_VOLUME_REVENUE_PROXY_MIN_SHIPMENTS = 5
+# Smaller than BIG-TICKET CONFIRMED's +20 -- a real proxy off actual
+# trade volume, but still a proxy, not a confirmed revenue figure.
+_CARGO_VOLUME_REVENUE_PROXY_SCORE_BONUS = 10.0
+
+
+def _cargo_volume_revenue_proxy(db: Session, company_name: str) -> tuple[float, bool, str]:
+    """Fallback for _stage3b_revenue_range_filter/_active_revenue_check --
+    ONLY meant to be called when Apollo came back with no decisive
+    answer (score_delta 0.0, dismiss False: no match, or matched with no
+    revenue figure), never when Apollo already gave a confirmed in-band
+    or out-of-band answer. See both callers for the exact gating.
+
+    Counts this company's own distinct Import Genius + SeaVantage
+    shipments seen this sweep as a real, already-available scale signal
+    -- no third-party revenue estimate required, just real trade volume
+    this project already ingests. Never dismisses -- a low shipment
+    count just means the proxy has nothing to say, the same honesty
+    posture as the Apollo check it's filling a gap for; this only ever
+    adds confidence, it never subtracts it."""
+    if not company_name.strip():
+        return 0.0, False, "cargo-volume revenue proxy skipped -- no company name to match"
+
+    interzoid_key = get_settings().interzoid_api_key
+    shipment_count = 0
+    for source in (TelemetrySource.IMPORT_GENIUS, TelemetrySource.SEAVANTAGE):
+        for event in _fresh_events(db, source, limit=200):
+            matched_name = _company_name_from_event(event)
+            if entity_matching.names_match(interzoid_key, company_name, matched_name):
+                shipment_count += 1
+
+    if shipment_count >= _CARGO_VOLUME_REVENUE_PROXY_MIN_SHIPMENTS:
+        return (
+            _CARGO_VOLUME_REVENUE_PROXY_SCORE_BONUS,
+            False,
+            f"CARGO VOLUME REVENUE PROXY: {shipment_count} real Import Genius/SeaVantage shipments this sweep -- "
+            f"real trade volume consistent with the target revenue band, used because Apollo had no confirmed "
+            f"figure for this company",
+        )
+    return (
+        0.0,
+        False,
+        f"cargo-volume revenue proxy: only {shipment_count} shipment(s) seen this sweep -- not enough to use as a scale signal",
+    )
+
+
 # Bill-of-lading arrival/discharge date field name isn't confirmed
 # against Import Genius's live schema (same posture as every other
 # unconfirmed field in this module) -- check every plausible variant.
@@ -3646,6 +3715,13 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
 
         standing_delta, standing_dismiss, lending_note = _stage3_lending_appetite(db, company_name)
         revenue_delta, revenue_dismiss, revenue_note = _stage3b_revenue_range_filter(db, company_name)
+        if revenue_delta == 0.0 and not revenue_dismiss:
+            # Apollo had no decisive answer -- fall back to real
+            # container/shipment volume before giving up on revenue fit
+            # entirely. See _cargo_volume_revenue_proxy's own docstring.
+            proxy_delta, _proxy_dismiss, proxy_note = _cargo_volume_revenue_proxy(db, company_name)
+            if proxy_delta:
+                revenue_delta, revenue_note = proxy_delta, proxy_note
         # +10 for two or more INDEPENDENT sources (e.g. Apollo + Cobalt)
         # landing on the same business -- real corroboration, not the
         # same source counted twice. +5 when the hunt that found it was
@@ -3895,6 +3971,13 @@ def run_silo_leadgen(db: Session) -> dict:
             if event.source == TelemetrySource.IMPORT_GENIUS or is_named_highergov:
                 if company_name not in revenue_check_cache:
                     score_delta, dismiss, note = _active_revenue_check(company_name)
+                    if score_delta == 0.0 and not dismiss:
+                        # Apollo had no decisive answer -- same
+                        # container/shipment-volume fallback as the CME
+                        # Macro Funnel waterfall uses.
+                        proxy_delta, _proxy_dismiss, proxy_note = _cargo_volume_revenue_proxy(db, company_name)
+                        if proxy_delta:
+                            score_delta, note = proxy_delta, proxy_note
                     cached_score = 50.0 + score_delta if (score_delta or dismiss) else None
                     cached_status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
                     revenue_check_cache[company_name] = (cached_score, cached_status, note)
@@ -4017,6 +4100,7 @@ _SIGNAL_PERFORMANCE_MARKERS = (
     "DEMURRAGE RISK (CONFIRMED)",
     "DEMURRAGE RISK (ESTIMATED)",
     "BIG-TICKET CONFIRMED",
+    "CARGO VOLUME REVENUE PROXY",
     "MACRO-CORROBORATED",
     "CROSS-SOURCE CONFIRMED",
 )
