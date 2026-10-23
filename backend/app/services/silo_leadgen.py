@@ -2188,6 +2188,14 @@ _COMMODITY_TRADE_SIDE: dict[str, str] = {
     # consumer-side commodity.
     "semiconductor_distributor": "consumer",
     "electronics_manufacturer": "consumer",
+    # Previously missing entirely -- auto parts distributors/wholesalers
+    # BUY components as their core input, same consumer-side mirror logic
+    # as every other import-driven commodity here. Without this, a
+    # geopolitical "auto parts supply at risk" headline could classify
+    # the commodity but never produce a distress/expansion signal_type
+    # off it, since _signal_type_for_price_direction had nothing to look
+    # up.
+    "auto_parts": "consumer",
     # Poultry farms buy corn/soybean meal as feed -- a grain price
     # spike is a cost squeeze, not the windfall it is for grain's own
     # producer side (see SYMBOL_COMMODITIES' ZC/ZM comment).
@@ -2868,6 +2876,12 @@ _COMMODITY_DISTRESS_LANGUAGE: dict[str, str] = {
     # Apparel now carries real port weight too (see usace.py) -- same
     # fix, same reasoning.
     "apparel": '("apparel factory" OR garment OR textile OR tariff OR "supply chain" OR shutdown OR layoffs)',
+    # Previously missing despite auto_parts carrying real weight at the
+    # Port of Baltimore (ro-ro auto trade) -- same gap class as
+    # fertilizer/furniture_wood/apparel earlier: a commodity with a real
+    # place to anchor to, but the local per-place GDELT query never ran
+    # for it.
+    "auto_parts": '("auto parts factory" OR "automotive supplier" OR tariff OR "supply chain" OR shutdown OR layoffs)',
     # ecommerce_seller now carries real port weight too (see usace.py)
     # -- added here at the same time, not after the fact, this time.
     "ecommerce_seller": '("e-commerce" OR "online retailer" OR "direct-to-consumer" OR tariff OR "supply chain" OR container OR "inventory shortage")',
