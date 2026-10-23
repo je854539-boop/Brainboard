@@ -9,11 +9,19 @@ mode flips to LIVE. Shadow-era predictions stay in the ledger either way,
 so once a shadow-era lead resolves you can back-test how the model would
 have called it.
 
-This is a small, explainable model on purpose: a handful of numeric deal
-terms, one-hot co-broker, and an activity-count engagement signal, fit
-with scikit-learn's LogisticRegression on whatever terminal (Funded /
-attrited) leads exist so far. With few labeled examples the fit will be
-weak -- that's reported honestly via `training_set_size`, not hidden.
+This is a small, explainable model on purpose, but it's grown real ears
+since the summary above was first written: numeric deal terms, one-hot
+co-broker and source-silo, an activity-count engagement signal, real
+call sentiment/volume off every Deepgram-analyzed recording (the Brain
+genuinely listening to calls, not a metaphor), deterministic lexicon
+signals pulled from the lead's own notes (floor_language.py), and --
+one-hot per marker -- whichever of silo_leadgen.py's own real
+corroboration markers (TARIFF-AFFECTED SOURCING, ASIA SOURCING
+CONFIRMED, LARGEST VOLUME IMPORTER, etc.) rode along on a converted
+candidate's notes into this lead. All of it goes into scikit-learn's
+LogisticRegression on whatever terminal (Funded / attrited) leads exist
+so far. With few labeled examples the fit will be weak -- that's
+reported honestly via `training_set_size`, not hidden.
 """
 
 import asyncio
@@ -30,6 +38,7 @@ from app.config import get_settings
 from app.models.enums import BrainMode, CallAnalysisStatus, CoBroker, MasterLogStatus, SiloName, TERMINAL_ATTRITION_STATUSES, TERMINAL_STATUSES
 from app.models.orm import CallRecording, LeadActivityEvent, MasterLogEntry, ShadowScore
 from app.services import floor_language
+from app.services.silo_leadgen import _SIGNAL_PERFORMANCE_MARKERS
 
 logger = logging.getLogger("brainboard.brain")
 
@@ -134,6 +143,24 @@ def _lead_features(db: Session, leads: list[MasterLogEntry]) -> pd.DataFrame:
         # picking" once enough labeled examples exist.
         for silo in SiloName:
             row[f"source_silo__{silo.value}"] = 1.0 if lead.source_silo == silo else 0.0
+        # The real "listening to the brain's own reasoning" track --
+        # convert_or_update_silo_candidate (pipeline.py) copies a
+        # converted candidate's full notes, markers and all, verbatim
+        # into the new lead's own notes field. That means every one of
+        # silo_leadgen.py's real corroboration markers (TARIFF-AFFECTED
+        # SOURCING, ASIA SOURCING CONFIRMED, LARGEST VOLUME IMPORTER,
+        # etc.) is already sitting right there in lead.notes -- this is
+        # what finally lets the model learn whether a tariff-driven lead
+        # funds differently than a volume-ranked one, controlling for
+        # deal terms and call sentiment, instead of treating every
+        # silo-sourced lead as interchangeable. Same one-hot-per-
+        # category shape as source_silo/co_broker above, and the same
+        # single source of truth _signal_performance_report already
+        # uses, not a second, separately-maintained marker list.
+        notes_text = lead.notes or ""
+        for marker in _SIGNAL_PERFORMANCE_MARKERS:
+            slug = "".join(c if c.isalnum() else "_" for c in marker.lower())
+            row[f"marker__{slug}"] = 1.0 if marker in notes_text else 0.0
         rows.append(row)
     return pd.DataFrame(rows, index=[lead.lead_uid for lead in leads])
 
