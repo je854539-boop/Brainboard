@@ -515,6 +515,14 @@ class DialerCampaign(Base):
     the source mix (calendar leads / specific Sheet leads / silo-assigned
     candidates) is exactly the kind of ad hoc, evolving filter every other
     JSONB payload/extra_columns field in this schema already exists for.
+    Two more keys apply only alongside "silos", to siphon a deliberate test
+    slice instead of dialing a whole silo: "min_score" (e.g. 70, only the
+    strongest-scored candidates) and "notes_contains" (e.g.
+    ["ASIA SOURCING CONFIRMED"], matched as an OR against each candidate's
+    own notes). This is how a specific signal or score band gets its own
+    campaign, so its real call outcomes can be attributed back to it via
+    silo_leadgen.py::_signal_performance_report instead of being blended
+    into one undifferentiated dial list.
     `caller_connect_number` is the simple "ring me when the lead answers"
     number -- bridging one outbound call leg to the user's own phone. This
     is NOT the deferred live patch-in/double-dial (bridging a *second*,

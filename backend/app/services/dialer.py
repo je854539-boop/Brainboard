@@ -37,7 +37,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -232,13 +232,31 @@ def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEnt
         # Prioritized by score -- the real lending-appetite signal the
         # waterfall already computed, not a fabricated ranking. Highest
         # score (strongest signal) worked first.
+        conditions = [
+            SiloCandidate.silo.in_([SiloName(s) for s in filt["silos"]]),
+            SiloCandidate.status == SiloCandidateStatus.PENDING,
+            SiloCandidate.phone.is_not(None),
+        ]
+        # Siphon filters -- carve out a deliberate test slice of a silo
+        # instead of dialing the whole thing, so a campaign's own call
+        # outcomes (funded / docs-in / dead) can be attributed back to
+        # exactly which signal or score band produced them. min_score
+        # narrows to the strongest-scored candidates; notes_contains
+        # narrows to whichever of silo_leadgen.py's own marker strings
+        # (TARIFF-AFFECTED SOURCING, ASIA SOURCING CONFIRMED, etc. -- see
+        # _SIGNAL_PERFORMANCE_MARKERS) actually fired on that candidate,
+        # matched as an OR, same as every other "any of" filter here.
+        # Both are optional and combine with the silo filter above, not
+        # with each other's absence -- a campaign can set either, both,
+        # or neither.
+        if filt.get("min_score") is not None:
+            conditions.append(SiloCandidate.score >= filt["min_score"])
+        if filt.get("notes_contains"):
+            conditions.append(or_(*(SiloCandidate.notes.ilike(f"%{term}%") for term in filt["notes_contains"])))
+
         query = (
             select(SiloCandidate)
-            .where(
-                SiloCandidate.silo.in_([SiloName(s) for s in filt["silos"]]),
-                SiloCandidate.status == SiloCandidateStatus.PENDING,
-                SiloCandidate.phone.is_not(None),
-            )
+            .where(*conditions)
             .order_by(SiloCandidate.score.desc().nulls_last())
         )
         for candidate in db.execute(query).scalars().all():
