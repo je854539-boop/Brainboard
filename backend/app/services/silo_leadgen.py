@@ -756,6 +756,105 @@ def _detect_mixed_sourcing_companies(db: Session) -> dict[str, str]:
     }
 
 
+# HONESTY NOTE: before this, nothing in this file ever looked at a
+# shipment's actual SIZE -- every check so far (tariff, Latin America,
+# Asia sourcing, mixed sourcing, even the cargo-volume revenue proxy
+# above) is a binary match or a plain COUNT of shipments, never the
+# real weight/quantity on a given bill of lading. That's the honest
+# answer to "how do we tell who has the biggest volume": until now, we
+# couldn't -- a company with one 40,000 lb bulk potash shipment and one
+# with a 400 lb sample shipment would have scored identically. These
+# keys are the same defensive, multi-plausible-name posture as every
+# other unconfirmed Import Genius field in this file (see
+# _GOODS_DESCRIPTION_KEYS/_COUNTRY_OF_ORIGIN_KEYS) -- a real bill of
+# lading typically carries SOME weight/quantity field, exact name
+# unconfirmed against live docs.
+_SHIPMENT_WEIGHT_KEYS = (
+    "weight_kg", "gross_weight_kg", "gross_weight", "weight_lbs", "weight", "net_weight", "quantity",
+)
+
+
+def _extract_shipment_weight(payload: dict) -> float | None:
+    for key in _SHIPMENT_WEIGHT_KEYS:
+        value = payload.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _rank_importers_by_volume(db: Session, commodity: str) -> dict[str, tuple[int, float, int]]:
+    """Answers "who actually has the biggest volume" for one commodity,
+    using real extracted shipment weight/quantity instead of a plain
+    shipment count -- a company with fewer, bigger shipments correctly
+    outranks one with more, smaller ones, which _cargo_volume_revenue_
+    proxy's plain count above cannot tell apart.
+
+    Scans fresh Import Genius + SeaVantage shipments matching this
+    commodity's own goods keywords (same classification _tariff_trade_
+    diversion_note and friends already use), groups by company name,
+    and sums every shipment's extracted weight. A shipment with no
+    extractable weight field contributes 0 to that company's total --
+    it still counts toward being "seen," just not toward volume, same
+    honesty posture as every other defensive extractor here (missing
+    data is never treated as zero significance, only as unweighted).
+
+    Returns {company_name: (rank, total_weight, companies_seen)},
+    rank 1 = largest total weight this sweep. Only companies with at
+    least one shipment carrying a real extracted weight are ranked --
+    a company seen only via weightless shipments has no real volume
+    comparison to make and is left out rather than ranked on a 0 that
+    would misleadingly look like "smallest," not "unknown."""
+    keywords = _COMMODITY_GOODS_KEYWORDS.get(commodity, ())
+    totals: dict[str, float] = {}
+    if keywords:
+        for source in (TelemetrySource.IMPORT_GENIUS, TelemetrySource.SEAVANTAGE):
+            for event in _fresh_events(db, source, limit=50):
+                description = _extract_goods_description(event.payload)
+                if not description or not any(k in description for k in keywords):
+                    continue
+                name = _company_name_from_event(event)
+                weight = _extract_shipment_weight(event.payload)
+                if weight is not None:
+                    totals[name] = totals.get(name, 0.0) + weight
+
+    ranked = sorted(totals.items(), key=lambda pair: pair[1], reverse=True)
+    companies_seen = len(ranked)
+    return {name: (rank, total, companies_seen) for rank, (name, total) in enumerate(ranked, start=1)}
+
+
+# Top 3 by real volume -- not top 1 only, since several real importers
+# can legitimately be close together at the top of a thin market
+# (potash/fertilizer realistically has far fewer real importers than,
+# say, apparel). Smaller than BIG-TICKET CONFIRMED's +20 and bigger
+# than the cargo-volume proxy's +10 -- this is a real, ranked fact
+# about actual shipped weight, a stronger claim than the proxy's plain
+# shipment count, but still not a confirmed revenue figure.
+_VOLUME_RANK_TOP_N = 3
+_VOLUME_RANK_SCORE_BONUS = 14.0
+
+
+def _volume_rank_note(commodity: str, company_name: str, rankings: dict[str, tuple[int, float, int]]) -> str:
+    """Returns "" when company_name isn't in rankings (not seen with a
+    real extracted weight this sweep, or not ranked in the top N) --
+    never a dismiss, just no claim, same posture as every other
+    standing check here."""
+    entry = rankings.get(company_name)
+    if not entry:
+        return ""
+    rank, total_weight, companies_seen = entry
+    if rank > _VOLUME_RANK_TOP_N:
+        return ""
+    return (
+        f"LARGEST VOLUME IMPORTER: '{company_name}' ranks #{rank} of {companies_seen} real {commodity} "
+        f"importers by actual shipped weight this sweep ({total_weight:,.0f}) -- a measured volume fact, "
+        f"not a shipment-count guess"
+    )
+
+
 # The Argentina-beef chain, generalized to its own standing category
 # instead of only ever firing off a CME livestock price shock -- a
 # business with heavy, real import volume from a major Latin America
@@ -3188,6 +3287,14 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
 
     identified: list[tuple[str, str, str, tuple[float, float] | None]] = []
 
+    # Pre-pass, not per-event -- ranking "who has the biggest volume"
+    # needs every matching shipment totaled up first, same reasoning as
+    # _detect_mixed_sourcing_companies above. Scoped to just the
+    # commodities with an active target this sweep, not all 35 --
+    # cheap, since that set is normally small.
+    active_commodities = {t.commodity for t in targets}
+    volume_rankings = {c: _rank_importers_by_volume(db, c) for c in active_commodities}
+
     for event in _fresh_events(db, TelemetrySource.IMPORT_GENIUS, limit=25):
         name = event.payload.get("consignee_name") or event.payload.get("company_name")
         if name:
@@ -3206,9 +3313,20 @@ def _stage2_identify_companies(db: Session, targets: list[GeoTarget] | None = No
             tariff_note, _tariff_signal_type = _tariff_trade_diversion_note(event.payload)
             latam_note, _latam_signal_type = _latin_america_sourcing_note(event.payload)
             asia_note, _asia_signal_type = _asia_sourcing_note(event.payload)
+            # Real measured volume, not a guess -- only checked against
+            # commodities with an active target this sweep (see the
+            # pre-pass above), so this never claims a volume rank for a
+            # commodity that isn't actually in play.
+            volume_note = ""
+            for commodity in active_commodities:
+                found = _volume_rank_note(commodity, str(name), volume_rankings[commodity])
+                if found:
+                    volume_note = found
+                    break
             standing_note = f"{tariff_note} -- " if tariff_note else ""
             standing_note += f"{latam_note} -- " if latam_note else ""
             standing_note += f"{asia_note} -- " if asia_note else ""
+            standing_note += f"{volume_note} -- " if volume_note else ""
             trade_link_note = f"{port_link_note}{goods_link_note}{standing_note}"
             note = f"{trade_link_note}{corroboration_note}" if trade_link_note else corroboration_note
             identified.append((str(name), f"telemetry_event:{event.id} [import_genius] {event.title}", note, None))
@@ -3743,6 +3861,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
         )
         latam_bonus = _LATIN_AMERICA_SOURCING_SCORE_BONUS if "LATIN AMERICA SOURCING CONFIRMED" in corroboration_note else 0.0
         asia_bonus = _ASIA_SOURCING_SCORE_BONUS if "ASIA SOURCING CONFIRMED" in corroboration_note else 0.0
+        volume_rank_bonus = _VOLUME_RANK_SCORE_BONUS if "LARGEST VOLUME IMPORTER" in corroboration_note else 0.0
         score_delta = (
             standing_delta
             + revenue_delta
@@ -3751,6 +3870,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
             + tariff_bonus
             + latam_bonus
             + asia_bonus
+            + volume_rank_bonus
         )
         dismiss = standing_dismiss or revenue_dismiss
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
@@ -4101,6 +4221,7 @@ _SIGNAL_PERFORMANCE_MARKERS = (
     "DEMURRAGE RISK (ESTIMATED)",
     "BIG-TICKET CONFIRMED",
     "CARGO VOLUME REVENUE PROXY",
+    "LARGEST VOLUME IMPORTER",
     "MACRO-CORROBORATED",
     "CROSS-SOURCE CONFIRMED",
 )
