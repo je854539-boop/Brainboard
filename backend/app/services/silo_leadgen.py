@@ -2605,6 +2605,16 @@ _GEOPOLITICAL_SUPPLY_DISRUPTION_QUERY = (
 # commodity), just this one dual-population case handled explicitly.
 _GEOPOLITICAL_COMMODITY_SIBLING_TAGS: dict[str, list[str]] = {
     "petrochemical": ["petrochemical_producer", "chemical_products_manufacturer"],
+    # The real, extremely well-documented 2021-2023 global chip
+    # shortage case -- modern vehicles are chip-dependent (sensors,
+    # ECUs, infotainment), so a Taiwan/China semiconductor disruption
+    # headline squeezes auto parts the same real way it squeezes
+    # electronics -- GM/Ford/Toyota all cut production over exactly
+    # this. Previously missing entirely: a chip-shortage headline
+    # would classify as semiconductor_distributor and never produce a
+    # signal for auto_parts at all, despite this being one of the
+    # clearest real industry-to-industry connections there is.
+    "semiconductor_distributor": ["auto_parts"],
 }
 
 
