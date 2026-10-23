@@ -267,6 +267,22 @@ def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEnt
                 DialQueueEntry("silo_candidate", candidate.candidate_uid, candidate.company_name, candidate.phone, count)
             )
 
+    # Optional deterministic split -- e.g. {"shard": {"of": 2, "index": 0}}
+    # lets two callers split the SAME filtered pool (same silo, same
+    # min_score/notes_contains) into non-overlapping halves with zero
+    # coordination and zero risk of both dialing the same lead the same
+    # day. Pure function of each entity's own UUID (last byte mod "of"),
+    # not call order or timing -- campaign A's "index": 0 and campaign
+    # B's "index": 1 partition the pool identically every time this
+    # runs, independent of which one runs first. Deliberately NOT based
+    # on attempts/disposition (that's already handled above, per
+    # campaign) -- this is about dividing fresh leads between two
+    # people, not about who's already been called.
+    shard = filt.get("shard")
+    if shard:
+        of, index = shard["of"], shard["index"]
+        entries = [e for e in entries if e.entity_uid.bytes[-1] % of == index]
+
     cap = min(campaign.max_list_size or HARD_MAX_LIST_SIZE, HARD_MAX_LIST_SIZE)
     return entries[:cap]
 

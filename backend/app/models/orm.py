@@ -523,6 +523,12 @@ class DialerCampaign(Base):
     campaign, so its real call outcomes can be attributed back to it via
     silo_leadgen.py::_signal_performance_report instead of being blended
     into one undifferentiated dial list.
+
+    A fifth key, "shard" (e.g. {"of": 2, "index": 0}), applies on top of
+    any of the above to split the SAME filtered pool across two or more
+    campaigns with zero overlap -- e.g. two callers working the same
+    medium-score tier without either one's attempts affecting what the
+    other's queue contains, see services/dialer.py::build_dial_queue.
     `caller_connect_number` is the simple "ring me when the lead answers"
     number -- bridging one outbound call leg to the user's own phone. This
     is NOT the deferred live patch-in/double-dial (bridging a *second*,
