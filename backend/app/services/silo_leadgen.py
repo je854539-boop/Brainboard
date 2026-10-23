@@ -786,30 +786,98 @@ def _extract_shipment_weight(payload: dict) -> float | None:
     return None
 
 
-def _rank_importers_by_volume(db: Session, commodity: str) -> dict[str, tuple[int, float, int]]:
+# Import Genius's own support docs confirm a real field here --
+# "Container Numbers: unique identification numbers for the shipping
+# containers" -- but a single bill of lading can cover MULTIPLE
+# containers (consolidated shipments are common), so this field is
+# very likely a multi-value one (a list, or a delimited string), not a
+# single ID. Counting records the way _cargo_volume_revenue_proxy does
+# would undercount real container volume whenever a shipment is
+# consolidated -- this parses the field directly for the actual number
+# of container IDs listed instead. SeaVantage needs none of this: its
+# real, confirmed product tracks at the container level natively, one
+# record IS one container, so a matching SeaVantage event always
+# counts as exactly 1 container, no parsing required.
+_CONTAINER_NUMBER_KEYS = ("container_numbers", "container_number", "container_ids", "container_id")
+_CONTAINER_ID_DELIMITERS = (",", ";", "/")
+
+
+def _extract_container_count(payload: dict) -> int | None:
+    for key in _CONTAINER_NUMBER_KEYS:
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            count = len([v for v in value if v])
+            if count:
+                return count
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        for delimiter in _CONTAINER_ID_DELIMITERS:
+            text = text.replace(delimiter, ",")
+        ids = [part.strip() for part in text.split(",") if part.strip()]
+        if ids:
+            return len(ids)
+    return None
+
+
+# Container-count volume only means what it claims to mean for
+# commodities that genuinely move IN containers. Potash, grain, raw
+# petrochemical feedstock, and steel/coal/iron ore overwhelmingly ship
+# as BULK cargo -- loose in a bulk carrier's hold, never touching a
+# container at all (see "The Fertilizer Signal" brief) -- so counting
+# containers for those would systematically miss most of their real
+# volume, not just undercount it. These two sets are deliberately
+# conservative: left OUT entirely (crane_heavy_equipment, which ships
+# breakbulk/RoRo, too large for a standard container; raw lumber,
+# which commonly ships break-bulk) rather than guessed into either
+# bucket, same honesty posture as every other classification here.
+_CONTAINERIZED_GOODS_COMMODITIES = frozenset(
+    {"furniture_wood", "apparel", "electronics_manufacturer", "semiconductor_distributor", "ecommerce_seller", "auto_parts"}
+)
+_BULK_CARGO_COMMODITIES = frozenset({"fertilizer", "grain", "petrochemical", "petrochemical_producer", "steel_coal"})
+
+
+@dataclass
+class _VolumeRanking:
+    total_weight: float = 0.0
+    weight_rank: int | None = None
+    total_containers: int = 0
+    container_rank: int | None = None
+
+
+def _rank_importers_by_volume(db: Session, commodity: str) -> dict[str, _VolumeRanking]:
     """Answers "who actually has the biggest volume" for one commodity,
-    using real extracted shipment weight/quantity instead of a plain
-    shipment count -- a company with fewer, bigger shipments correctly
-    outranks one with more, smaller ones, which _cargo_volume_revenue_
-    proxy's plain count above cannot tell apart.
+    by TWO independent real measures -- actual shipped weight/quantity
+    (the right unit for a bulk commodity like potash or grain) and
+    actual container count (the right unit for a containerized-goods
+    commodity like furniture or apparel) -- instead of a plain shipment
+    count, which can't tell a company with fewer/bigger shipments
+    apart from one with more/smaller ones (see
+    _cargo_volume_revenue_proxy above).
 
     Scans fresh Import Genius + SeaVantage shipments matching this
     commodity's own goods keywords (same classification _tariff_trade_
     diversion_note and friends already use), groups by company name,
-    and sums every shipment's extracted weight. A shipment with no
-    extractable weight field contributes 0 to that company's total --
-    it still counts toward being "seen," just not toward volume, same
-    honesty posture as every other defensive extractor here (missing
-    data is never treated as zero significance, only as unweighted).
+    and sums both real weight and real container count per company --
+    one pass over the same events, not two separate scans. A shipment
+    with no extractable weight/container field simply contributes
+    nothing to that specific total; it's never treated as a zero that
+    would misleadingly look like "smallest."
 
-    Returns {company_name: (rank, total_weight, companies_seen)},
-    rank 1 = largest total weight this sweep. Only companies with at
-    least one shipment carrying a real extracted weight are ranked --
-    a company seen only via weightless shipments has no real volume
-    comparison to make and is left out rather than ranked on a 0 that
-    would misleadingly look like "smallest," not "unknown."""
+    Returns {company_name: _VolumeRanking} -- weight_rank/
+    container_rank are None for a company never seen with a real value
+    for that specific measure, same "unranked, not ranked last"
+    posture as before. Which of the two ranks actually MEANS anything
+    for this commodity is decided by the caller (_volume_rank_note),
+    using _CONTAINERIZED_GOODS_COMMODITIES/_BULK_CARGO_COMMODITIES --
+    this function always computes both, since the cost of tracking an
+    extra running total is negligible next to the cost of a second
+    full event scan."""
     keywords = _COMMODITY_GOODS_KEYWORDS.get(commodity, ())
-    totals: dict[str, float] = {}
+    rankings: dict[str, _VolumeRanking] = {}
     if keywords:
         for source in (TelemetrySource.IMPORT_GENIUS, TelemetrySource.SEAVANTAGE):
             for event in _fresh_events(db, source, limit=50):
@@ -817,13 +885,28 @@ def _rank_importers_by_volume(db: Session, commodity: str) -> dict[str, tuple[in
                 if not description or not any(k in description for k in keywords):
                     continue
                 name = _company_name_from_event(event)
+                entry = rankings.setdefault(name, _VolumeRanking())
+
                 weight = _extract_shipment_weight(event.payload)
                 if weight is not None:
-                    totals[name] = totals.get(name, 0.0) + weight
+                    entry.total_weight += weight
 
-    ranked = sorted(totals.items(), key=lambda pair: pair[1], reverse=True)
-    companies_seen = len(ranked)
-    return {name: (rank, total, companies_seen) for rank, (name, total) in enumerate(ranked, start=1)}
+                if source == TelemetrySource.SEAVANTAGE:
+                    entry.total_containers += 1  # one real container per record, by SeaVantage's own product design
+                else:
+                    containers = _extract_container_count(event.payload)
+                    if containers is not None:
+                        entry.total_containers += containers
+
+    by_weight = sorted((n for n, e in rankings.items() if e.total_weight > 0), key=lambda n: rankings[n].total_weight, reverse=True)
+    for rank, name in enumerate(by_weight, start=1):
+        rankings[name].weight_rank = rank
+
+    by_containers = sorted((n for n, e in rankings.items() if e.total_containers > 0), key=lambda n: rankings[n].total_containers, reverse=True)
+    for rank, name in enumerate(by_containers, start=1):
+        rankings[name].container_rank = rank
+
+    return rankings
 
 
 # Top 3 by real volume -- not top 1 only, since several real importers
@@ -831,28 +914,46 @@ def _rank_importers_by_volume(db: Session, commodity: str) -> dict[str, tuple[in
 # (potash/fertilizer realistically has far fewer real importers than,
 # say, apparel). Smaller than BIG-TICKET CONFIRMED's +20 and bigger
 # than the cargo-volume proxy's +10 -- this is a real, ranked fact
-# about actual shipped weight, a stronger claim than the proxy's plain
-# shipment count, but still not a confirmed revenue figure.
+# about actual shipped weight or container count, a stronger claim
+# than the proxy's plain shipment count, but still not a confirmed
+# revenue figure.
 _VOLUME_RANK_TOP_N = 3
 _VOLUME_RANK_SCORE_BONUS = 14.0
 
 
-def _volume_rank_note(commodity: str, company_name: str, rankings: dict[str, tuple[int, float, int]]) -> str:
-    """Returns "" when company_name isn't in rankings (not seen with a
-    real extracted weight this sweep, or not ranked in the top N) --
-    never a dismiss, just no claim, same posture as every other
-    standing check here."""
+def _volume_rank_note(commodity: str, company_name: str, rankings: dict[str, "_VolumeRanking"]) -> str:
+    """Picks whichever of the two real measures actually means
+    something for this commodity's physical shipping mode --
+    container count for a _CONTAINERIZED_GOODS_COMMODITIES member,
+    shipped weight for a _BULK_CARGO_COMMODITIES member. A commodity in
+    neither set gets no volume note at all -- genuinely unknown which
+    unit would mean anything for it, so no claim, not a guess. Returns
+    "" when company_name isn't ranked top-N on the relevant measure."""
     entry = rankings.get(company_name)
     if not entry:
         return ""
-    rank, total_weight, companies_seen = entry
-    if rank > _VOLUME_RANK_TOP_N:
-        return ""
-    return (
-        f"LARGEST VOLUME IMPORTER: '{company_name}' ranks #{rank} of {companies_seen} real {commodity} "
-        f"importers by actual shipped weight this sweep ({total_weight:,.0f}) -- a measured volume fact, "
-        f"not a shipment-count guess"
-    )
+
+    if commodity in _CONTAINERIZED_GOODS_COMMODITIES:
+        if entry.container_rank is None or entry.container_rank > _VOLUME_RANK_TOP_N:
+            return ""
+        companies_seen = sum(1 for e in rankings.values() if e.container_rank is not None)
+        return (
+            f"LARGEST VOLUME IMPORTER: '{company_name}' ranks #{entry.container_rank} of {companies_seen} real "
+            f"{commodity} importers by actual container count this sweep ({entry.total_containers:,} containers) -- "
+            f"a measured volume fact, not a shipment-count guess"
+        )
+
+    if commodity in _BULK_CARGO_COMMODITIES:
+        if entry.weight_rank is None or entry.weight_rank > _VOLUME_RANK_TOP_N:
+            return ""
+        companies_seen = sum(1 for e in rankings.values() if e.weight_rank is not None)
+        return (
+            f"LARGEST VOLUME IMPORTER: '{company_name}' ranks #{entry.weight_rank} of {companies_seen} real "
+            f"{commodity} importers by actual shipped weight this sweep ({entry.total_weight:,.0f}) -- a measured "
+            f"volume fact, not a shipment-count guess"
+        )
+
+    return ""
 
 
 # The Argentina-beef chain, generalized to its own standing category
