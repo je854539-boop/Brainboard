@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models.enums import ActivitySource, CoBroker, DatePrecision, MasterLogStatus, SiloCandidateStatus, SiloName
 from app.models.orm import MasterLogEntry, SiloCandidate
-from app.services import pipeline
+from app.services import floor_language, pipeline
 
 logger = logging.getLogger("brainboard.sheets_sync")
 
@@ -159,6 +159,40 @@ def _format_funded_date(funded_date: dt.date | None, precision: DatePrecision | 
     return funded_date.strftime("%m/%d/%Y") if precision == DatePrecision.EXACT else funded_date.strftime("%m/%Y")
 
 
+def _auto_advance_follow_up_date(fields: dict) -> None:
+    """follow_up_date (column K) and the dated entries inside notes (column
+    L) are the same underlying fact -- "when was/is this lead next touched"
+    -- stored in two places that nothing keeps in sync. A human adds a new
+    dated note entry on a call and doesn't also remember to move K forward;
+    confirmed for real on Orleans Ford Mercury, whose notes carry a 10/8/26
+    entry ("Shaun has him on lock") while follow_up_date sat on 8/21/26,
+    two months stale. floor_language.py's _drift_reason already detects
+    this exact condition read-only (its "follow_up_stale_vs_notes" case),
+    but detecting it after the fact still requires someone to go looking --
+    this fixes it at the one place every row actually passes through on
+    every sync, so a stale K never reaches Postgres in the first place.
+
+    Advances follow_up_date to the date of the most recent dated note entry
+    when that's later than what column K says (or when K is blank but a
+    dated entry exists) -- not to some guessed "next contact" date further
+    out, since this is correcting a known-stale fact (K lagging behind a
+    touch that already happened), not scheduling a future one. Reuses
+    extract_timeline's dated-entry parsing verbatim rather than
+    re-implementing it, so this agrees with revival_queue/renewal_queue
+    about what "the last entry" means, by construction, not by convention."""
+    notes = fields.get("notes")
+    if not notes:
+        return
+    last_entry_date_str = floor_language.extract_timeline(notes)["last_entry_date"]
+    if last_entry_date_str is None:
+        return
+    last_entry_date = dt.date.fromisoformat(last_entry_date_str)
+    current = fields.get("follow_up_date")
+    current_date = current.date() if current else None
+    if current_date is None or last_entry_date > current_date:
+        fields["follow_up_date"] = dt.datetime.combine(last_entry_date, dt.time.min, tzinfo=dt.timezone.utc)
+
+
 def row_to_master_log_fields(row: list[str]) -> dict:
     padded = row + [""] * (MASTER_LOG_COLUMN_COUNT - len(row))
     fields: dict = {"extra_columns": {}}
@@ -205,6 +239,7 @@ def row_to_master_log_fields(row: list[str]) -> dict:
                 fields[field_name] = None
         else:
             fields[field_name] = value or None
+    _auto_advance_follow_up_date(fields)
     return fields
 
 
