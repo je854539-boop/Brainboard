@@ -223,10 +223,20 @@ class GeofenceEventType(str, Enum):
 
 
 class WaterwayTriggerType(str, Enum):
-    """The two outputs of river_surveillance.py's trigger matrix."""
+    """The outputs of river_surveillance.py's trigger matrix."""
 
     DISTRESS_SUPPLY_STARVATION = "distress_supply_starvation"
     EXPANSION_THROUGHPUT_SPIKE = "expansion_throughput_spike"
+    # A company's cargo resolved at a coastal zone (Port Arthur, Corpus
+    # Christi) and again at a river zone (a Mississippi/Illinois/Ohio
+    # lock) within the transload window -- real evidence the same
+    # shipment moved off an ocean vessel onto a barge and continued
+    # inland, not two unrelated sightings. Vessel identity (MMSI) is
+    # NOT what links these two legs -- a transload swaps the vessel
+    # entirely -- so this is keyed on the resolved company name from
+    # cargo cross-reference, the same way every other entity match in
+    # this file works.
+    INLAND_TRANSLOAD_CONFIRMED = "inland_transload_confirmed"
 
 
 class DialerCampaignType(str, Enum):

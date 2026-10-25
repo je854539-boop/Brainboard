@@ -96,6 +96,16 @@ class Settings(BaseSettings):
     # distress-idle threshold above): a vessel still docked at the same
     # port zone this many days after its last recorded zone entry.
     river_surveillance_port_dwell_days: float = 10.0
+    # Multi-leg transload trigger: a coastal zone sighting and a river
+    # zone sighting of the SAME company's cargo, this many days apart or
+    # less, are treated as one continuous ocean-to-inland shipment rather
+    # than two unrelated sightings. Real-world Gulf-to-mid-Mississippi
+    # barge transit plus the transload itself realistically runs 1-3
+    # weeks; 21 days gives that real travel time room without stretching
+    # so wide it links two actually-unrelated shipments from the same
+    # frequent importer. Tunable policy, same posture as the search-radius
+    # table in silo_leadgen.py -- a reasoned default, not a measured one.
+    river_surveillance_transload_window_days: int = 21
 
     # SignalWire dialer (services/signalwire_adapter.py, services/dialer.py,
     # routers/dialer.py). Inert until project_id/api_token/space_url are all

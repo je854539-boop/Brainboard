@@ -103,13 +103,35 @@ WATERWAY_ZONES: list[dict] = [
             "corridor": "Mississippi" if "Mississippi" in lock["name"] else "Illinois Waterway",
             "restricted": True,
             "is_lock": True,
+            # MONITORED_LOCKS turned out to hold more than its name
+            # suggests -- real ocean/Great Lakes anchorages (Houston Ship
+            # Channel, Port of LA/Long Beach, Soo Locks' own harbor, etc.)
+            # alongside the actual Mississippi/Illinois/Ohio lock-and-dam
+            # structures, and nothing upstream of this file already
+            # separates the two (the blanket "is_lock": True above is a
+            # pre-existing gap of the same shape, out of scope to untangle
+            # here). The one reliable signal available without touching
+            # that file: every genuine anchorage entry is literally named
+            # "anchorage"; every real lock/dam is named as one. Good
+            # enough to classify for transload purposes -- an open
+            # anchorage is where a containership could realistically sit
+            # for a barge transload, a lock-and-dam structure is not.
+            "coastal": "anchorage" in lock["name"].lower(),
         }
         for lock in MONITORED_LOCKS
     ],
-    {"name": "McAlpine Locks (Ohio River, Louisville)", "lat": 38.264, "lon": -85.833, "office": "", "project_id": "", "corridor": "Ohio", "restricted": True, "is_lock": True},
-    {"name": "Port Arthur / Sabine-Neches Waterway (Gulf Intracoastal)", "lat": 29.897, "lon": -93.930, "office": "", "project_id": "", "corridor": "Gulf Intracoastal", "restricted": True, "is_lock": False},
-    {"name": "Port of Corpus Christi Ship Channel", "lat": 27.813, "lon": -97.393, "office": "", "project_id": "", "corridor": "Gulf Intracoastal", "restricted": True, "is_lock": False},
-    {"name": "Montreal / St. Lawrence Seaway", "lat": 45.550, "lon": -73.550, "office": "", "project_id": "", "corridor": "St. Lawrence Seaway", "restricted": False, "is_lock": False},
+    {"name": "McAlpine Locks (Ohio River, Louisville)", "lat": 38.264, "lon": -85.833, "office": "", "project_id": "", "corridor": "Ohio", "restricted": True, "is_lock": True, "coastal": False},
+    # These three are the system's ocean-access points, not inland river
+    # corridors -- `coastal: True` is what check_inland_transload below
+    # keys on to recognize a real ocean-to-barge handoff rather than two
+    # unrelated river sightings. A containership never transits a lock
+    # itself; the physical handoff is cargo moving off that ship onto a
+    # barge at one of these points, which is why transload linking can't
+    # go by vessel identity (MMSI) -- see check_inland_transload's
+    # docstring for why it matches on resolved company name instead.
+    {"name": "Port Arthur / Sabine-Neches Waterway (Gulf Intracoastal)", "lat": 29.897, "lon": -93.930, "office": "", "project_id": "", "corridor": "Gulf Intracoastal", "restricted": True, "is_lock": False, "coastal": True},
+    {"name": "Port of Corpus Christi Ship Channel", "lat": 27.813, "lon": -97.393, "office": "", "project_id": "", "corridor": "Gulf Intracoastal", "restricted": True, "is_lock": False, "coastal": True},
+    {"name": "Montreal / St. Lawrence Seaway", "lat": 45.550, "lon": -73.550, "office": "", "project_id": "", "corridor": "St. Lawrence Seaway", "restricted": False, "is_lock": False, "coastal": True},
 ]
 
 QUEUE_RADIUS_NM = 3
@@ -807,6 +829,86 @@ def check_expansion_trigger(db: Session, entity_uid, company_name: str, zone_nam
     return trigger
 
 
+def check_inland_transload(db: Session, entity_uid, company_name: str, zone_name: str) -> WaterwayTrigger | None:
+    """Third trigger: the same company's cargo resolved at a coastal
+    zone (Port Arthur, Corpus Christi, the St. Lawrence Seaway) and again
+    at a river zone (a Mississippi/Illinois/Ohio lock) within
+    river_surveillance_transload_window_days -- real confirmation a
+    shipment moved off an ocean vessel onto a barge and is continuing
+    inland, not two unrelated sightings of a frequent importer.
+
+    Deliberately NOT keyed on vessel identity (MMSI/IMO): a transload
+    swaps the vessel entirely, a containership doesn't transit a lock
+    itself, so same-vessel continuity across these two zone types isn't
+    physically real to begin with. This matches on `entity_uid` (the
+    resolved company) instead -- the one identity that's actually
+    continuous across the handoff, the same cargo cross-reference
+    already used everywhere else in this file, just checked against a
+    second zone instead of trusted in isolation.
+
+    Requires entity_uid (cargo cross-reference must have already
+    resolved a real company) -- an unresolved sighting at either leg has
+    nothing to link. Checks both directions (coastal-then-river and
+    river-then-coastal) since which leg gets observed first depends on
+    which zone's AIS/cargo poll happened to pick it up, not on the real
+    shipping direction."""
+    if entity_uid is None:
+        return None
+
+    zone = next((z for z in WATERWAY_ZONES if z["name"] == zone_name), None)
+    if zone is None:
+        return None
+
+    other_zone_names = {z["name"] for z in WATERWAY_ZONES if z.get("coastal") != zone.get("coastal")}
+    if not other_zone_names:
+        return None  # no opposite-type zone configured -- nothing to link against
+
+    window_start = _now() - dt.timedelta(days=get_settings().river_surveillance_transload_window_days)
+    other_leg = (
+        db.query(GeofenceEvent)
+        .filter(
+            GeofenceEvent.entity_uid == entity_uid,
+            GeofenceEvent.event_type == GeofenceEventType.ZONE_ENTRY,
+            GeofenceEvent.zone_name.in_(other_zone_names),
+            GeofenceEvent.detected_at >= window_start,
+        )
+        .order_by(GeofenceEvent.detected_at.desc())
+        .first()
+    )
+    if other_leg is None:
+        return None
+
+    recent_fire = (
+        db.query(WaterwayTrigger)
+        .filter(
+            WaterwayTrigger.trigger_type == WaterwayTriggerType.INLAND_TRANSLOAD_CONFIRMED,
+            WaterwayTrigger.entity_uid == entity_uid,
+            WaterwayTrigger.created_at >= _now() - _TRIGGER_DEDUPE_WINDOW,
+        )
+        .first()
+    )
+    if recent_fire:
+        return None
+
+    coastal_leg, river_leg = (zone_name, other_leg.zone_name) if zone.get("coastal") else (other_leg.zone_name, zone_name)
+    trigger = WaterwayTrigger(
+        trigger_type=WaterwayTriggerType.INLAND_TRANSLOAD_CONFIRMED,
+        entity_uid=entity_uid,
+        company_name_guess=company_name,
+        zone_name=zone_name,
+        detail=(
+            f"'{company_name}' cargo resolved at coastal zone '{coastal_leg}' and river zone '{river_leg}' "
+            f"within {get_settings().river_surveillance_transload_window_days}d -- consistent with an ocean "
+            f"shipment transloaded onto a barge and continuing inland."
+        ),
+        source_reference=f"transload_link:{entity_uid}:{other_leg.id}",
+    )
+    db.add(trigger)
+    db.commit()
+    _apply_trigger_note(db, entity_uid, trigger)
+    return trigger
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -814,9 +916,12 @@ def check_expansion_trigger(db: Session, entity_uid, company_name: str, zone_nam
 
 def run_full_sweep(db: Session) -> dict:
     """One complete synchronous pass: USACE lock status + queue,
-    velocity-anomaly detection, zone-transition tracking, trigger matrix,
-    friction index per zone. Mirrors the summary-dict convention of
-    silo_leadgen.run_silo_leadgen -- callable directly (see
+    velocity-anomaly detection, zone-transition tracking, the three-trigger
+    matrix (distress, expansion, inland transload -- see
+    check_inland_transload for why that third one matches on resolved
+    company identity rather than vessel identity), friction index per
+    zone. Mirrors the summary-dict convention of silo_leadgen.
+    run_silo_leadgen -- callable directly (see
     scripts/verify_river_surveillance.py) or from the async polling loop
     below via asyncio.to_thread."""
     lock_status_events = poll_usace_lock_status(db)
@@ -843,12 +948,16 @@ def run_full_sweep(db: Session) -> dict:
         .distinct()
         .all()
     )
+    transload_triggers: list[WaterwayTrigger] = []
     for entity_uid, zone_name in recent_entity_zones:
         lead = db.get(MasterLogEntry, entity_uid)
         company_name = lead.business_name if lead is not None else str(entity_uid)
         trigger = check_expansion_trigger(db, entity_uid, company_name, zone_name)
         if trigger:
             expansion_triggers.append(trigger)
+        transload_trigger = check_inland_transload(db, entity_uid, company_name, zone_name)
+        if transload_trigger:
+            transload_triggers.append(transload_trigger)
 
     friction_metrics = [compute_friction_index(db, zone["name"]) for zone in WATERWAY_ZONES]
 
@@ -859,6 +968,7 @@ def run_full_sweep(db: Session) -> dict:
         "zone_entry_events": len(zone_entry_events),
         "distress_triggers": len(distress_triggers),
         "expansion_triggers": len(expansion_triggers),
+        "transload_triggers": len(transload_triggers),
         "friction_metrics_computed": len(friction_metrics),
         "zones_monitored": len(WATERWAY_ZONES),
     }
