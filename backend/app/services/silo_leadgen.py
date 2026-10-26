@@ -1378,6 +1378,17 @@ _COMMODITY_LAND_USE_KEYWORDS: dict[str, tuple[str, ...]] = {
     # doesn't sell them), already correctly present in meat_processor
     # above.
     "livestock_producer": ("cattle ranch", "feedlot", "dairy farm", "livestock", "ranch"),
+    # The hurricane/tornado/flood cleanup trade-side mirror: the same
+    # disaster that's distress for a petrochemical refiner or a farm in
+    # its path is simultaneously an expansion event for every
+    # construction, roofing, and debris-removal business in the same
+    # zone -- real, fast capital need to scale crews/equipment for
+    # cleanup work that's coming whether they're ready or not. See
+    # _noaa_weather_disaster_signals, which is the real driver of this
+    # tag (always "expansion", never classified via these land-use
+    # keywords alone since NOAA's structured alert data is the primary
+    # source).
+    "disaster_recovery_construction": ("debris removal", "disaster recovery", "storm cleanup", "roofing", "restoration contractor"),
     "aerospace_defense": ("aerospace", "defense contractor", "aircraft", "avionics", "missile", "satellite", "aviation", "naval", "shipbuilding", "ammunition", "weapons system", "tactical vehicle", "defense electronics", "military logistics"),
     "fertilizer": ("fertilizer", "potash", "ammonia", "agricultural chemical", "crop input", "agribusiness"),
     "ecommerce_logistics": ("fulfillment", "warehouse", "distribution", "logistics", "parcel", "last mile", "cold storage"),
@@ -1719,6 +1730,7 @@ _COMMODITY_APOLLO_KEYWORDS: dict[str, list[str]] = {
     "food_retailer": ["supermarket chain", "grocery store", "grocery retailer"],
     "food_service": ["restaurant", "food service company", "catering company", "restaurant chain"],
     "livestock_producer": ["cattle ranch", "feedlot operator", "dairy farm", "livestock producer"],
+    "disaster_recovery_construction": ["debris removal contractor", "disaster restoration", "roofing contractor", "general contractor", "storm damage repair"],
     "aerospace_defense": ["aerospace manufacturer", "defense contractor", "aircraft parts supplier", "avionics company", "aerospace supplier", "naval shipbuilder", "ammunition manufacturer", "tactical vehicle manufacturer", "defense electronics company", "military logistics contractor"],
     "fertilizer": ["fertilizer distributor", "agricultural chemical company", "crop input supplier", "farm supply", "agribusiness"],
     "ecommerce_logistics": ["fulfillment center", "third-party logistics", "last-mile delivery", "e-commerce logistics", "parcel carrier", "warehousing and storage"],
@@ -1920,6 +1932,7 @@ _COMMODITY_COBALT_SEARCH_TERMS: dict[str, str] = {
     "food_retailer": "grocery",
     "food_service": "restaurant",
     "livestock_producer": "livestock",
+    "disaster_recovery_construction": "debris removal",
     "aerospace_defense": "aerospace",
     "fertilizer": "fertilizer",
     "ecommerce_logistics": "fulfillment",
@@ -2379,10 +2392,16 @@ def _extract_us_state_from_text(text: str) -> str | None:
     first match in dict-insertion order, not the "best" match -- same
     good-enough-for-narrowing posture as _classify_commodity_from_text,
     not a claim of precise geocoding (see PersistedMacroSignal's
-    docstring)."""
-    text_lower = f" {text.lower()} "
+    docstring).
+
+    Uses a word-boundary regex rather than space-padding -- a naive
+    " name " substring check misses "Louisiana," (comma immediately
+    after the word, no space) which is exactly how a real NOAA areaDesc
+    or news headline punctuates a state name. Caught by this build's
+    own verification script, not assumed correct."""
+    text_lower = text.lower()
     for name, abbr in _US_STATE_ABBREVIATIONS.items():
-        if f" {name} " in text_lower or text_lower.startswith(f" {name} "):
+        if re.search(rf"\b{re.escape(name)}\b", text_lower):
             return abbr
     return None
 
@@ -3300,6 +3319,128 @@ def _hot_commodities_this_sweep(macro_level_signals: list[MacroSignal]) -> set[s
     return {s.commodity for s in macro_level_signals if s.commodity}
 
 
+def _noaa_weather_disaster_signals(db: Session) -> list[MacroSignal]:
+    """A real primary source for disaster detection, better than waiting
+    on GDELT news coverage to catch up -- NOAA issues a structured
+    alert (properties.event, properties.areaDesc) the moment it
+    declares one, not after a journalist writes about it. Always
+    "expansion" for disaster_recovery_construction, the trade-side
+    mirror of whatever commodity is actually in distress in that same
+    area (a hurricane is simultaneously bad for a petrochemical plant
+    and good for every roofing/debris-removal business nearby) -- see
+    that commodity's own comment in _COMMODITY_LAND_USE_KEYWORDS.
+
+    NOAANWSAdapter.fetch() already filters to disaster-relevant event
+    types, so every TelemetryEvent seen here is real signal, no further
+    keyword gate needed."""
+    signals: list[MacroSignal] = []
+    for event in _fresh_events(db, TelemetrySource.NOAA_NWS, limit=20):
+        area_desc = event.payload.get("areaDesc", "")
+        new_signal = MacroSignal(
+            kind="weather_disaster",
+            description=f"NOAA NWS {event.payload.get('event', 'alert')} active over {area_desc or 'unspecified area'}",
+            source_reference=f"telemetry_event:{event.id} [noaa_nws] {event.title}",
+            commodity="disaster_recovery_construction",
+            signal_type="expansion",
+            location_hint=area_desc or None,
+            state=_extract_us_state_from_text(area_desc),
+        )
+        signals.append(new_signal)
+        _persist_macro_signal(db, new_signal, state=new_signal.state)
+    return signals
+
+
+# Net % of banks reporting tighter small-business lending standards
+# above this threshold counts as a real credit-tightening signal, not
+# routine month-to-month noise. Reasoned, not measured -- same posture
+# as every other threshold in this file; revisit once real outcome data
+# exists (silo_leadgen.py::_signal_performance_report can be extended to
+# cover this the same way).
+_FRED_CREDIT_TIGHTENING_THRESHOLD_PCT = 20.0
+
+
+def _fred_credit_conditions_signals(db: Session) -> list[MacroSignal]:
+    """A macro CONTEXT signal, deliberately unlike every other signal in
+    this file: no commodity, no location. Tighter conventional bank
+    lending nationwide means more small businesses are likely to need
+    alternative capital, independent of any commodity or disaster
+    signal already active this sweep -- additional pressure layered on
+    top, not a new company-pointer on its own (same posture SONAR's
+    trucking-capacity data would have if that gets added later). Not
+    persisted via _persist_macro_signal -- it has no commodity for
+    river_surveillance.py's zone-matching to key off, so there's
+    nothing for that query to ever match against."""
+    events = _fresh_events(db, TelemetrySource.FRED, limit=1)
+    if not events:
+        return []
+
+    latest = events[0]
+    try:
+        value = float(latest.payload.get("value"))
+    except (TypeError, ValueError):
+        return []  # FRED's "." placeholder for a missing observation, or a genuinely bad read -- never guess
+
+    if value < _FRED_CREDIT_TIGHTENING_THRESHOLD_PCT:
+        return []
+
+    return [
+        MacroSignal(
+            kind="credit_tightening",
+            description=(
+                f"FRED: {value:.1f}% net tightening in small-business lending standards "
+                f"(as of {latest.payload.get('date', 'unknown date')}) -- nationwide credit-pressure context"
+            ),
+            source_reference=f"telemetry_event:{latest.id} [fred] {latest.title}",
+        )
+    ]
+
+
+def _rail_congestion_signals(db: Session) -> list[MacroSignal]:
+    """Macro rail volume/congestion context, classified the same
+    keyword-text way as _gdelt_shock_signals. HONESTY NOTE: stays
+    effectively a no-op until RailTrafficAdapter's placeholder fetch()
+    is replaced with a real, confirmed AAR/STB access method -- see
+    telemetry/rail_traffic.py. Never company-specific; there is no
+    Railinc-equivalent car-level data behind this."""
+    signals: list[MacroSignal] = []
+    for event in _fresh_events(db, TelemetrySource.RAIL_TRAFFIC, limit=20):
+        commodity = _classify_commodity_from_text(event.title)
+        if not commodity:
+            continue
+        new_signal = MacroSignal(
+            kind="rail_congestion",
+            description=f"Rail service-metric coverage classified {commodity}: {event.title}",
+            source_reference=f"telemetry_event:{event.id} [rail_traffic] {event.title}",
+            commodity=commodity,
+        )
+        signals.append(new_signal)
+        _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(event.title))
+    return signals
+
+
+def _adsb_air_cargo_signals(db: Session) -> list[MacroSignal]:
+    """Macro air-cargo activity context. HONESTY NOTE: stays effectively
+    a no-op until ADSBAdapter's placeholder fetch() is replaced with a
+    confirmed live ADS-B Exchange/FlightAware contract -- see
+    telemetry/adsb.py. Deliberately NOT an airport-zone idle-detection
+    engine (that would mirror river_surveillance.py's full trigger
+    matrix) -- this is a first classification pass only, same scope
+    discipline as every other "trim it down" decision in this build."""
+    signals: list[MacroSignal] = []
+    for event in _fresh_events(db, TelemetrySource.ADSB, limit=20):
+        commodity = _classify_commodity_from_text(event.title)
+        new_signal = MacroSignal(
+            kind="air_cargo_activity",
+            description=f"ADS-B cargo-aircraft activity: {event.title}",
+            source_reference=f"telemetry_event:{event.id} [adsb] {event.title}",
+            commodity=commodity,
+        )
+        signals.append(new_signal)
+        if commodity:
+            _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(event.title))
+    return signals
+
+
 def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     """The gate. Returns every active macro signal found across the five
     leading-indicator channels (CME Globex price shock -- now also
@@ -3339,7 +3480,16 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     fulfillment has no dedicated calendar channel here -- it's driven
     by real port disruption instead, so it surfaces through
     usace_signals itself (ecommerce_logistics is now a weighted
-    commodity on the 4 coastal port_congestion locks, see usace.py)."""
+    commodity on the 4 coastal port_congestion locks, see usace.py).
+
+    ALSO includes four newer channels: NOAA NWS structured disaster
+    alerts (a better primary source than GDELT for "did a real weather
+    disaster just happen" -- see _noaa_weather_disaster_signals), FRED
+    credit-tightening (a commodity-less, location-less macro CONTEXT
+    signal, not a company-pointer), and rail/ADS-B macro congestion
+    signals that stay effectively inert until their adapters' honestly-
+    flagged placeholder fetch() calls are replaced with confirmed live
+    endpoints (see telemetry/rail_traffic.py, telemetry/adsb.py)."""
     cme_signals = _cme_price_shock_signals(db)
     national_gdelt_signals = _gdelt_shock_signals(db)
     contract_signals = _highergov_contract_signals(db)
@@ -3368,6 +3518,10 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + _asia_import_signals()
         + _gdelt_avian_flu_signals(db)
         + _gdelt_tariff_relief_signals(db)
+        + _noaa_weather_disaster_signals(db)
+        + _fred_credit_conditions_signals(db)
+        + _rail_congestion_signals(db)
+        + _adsb_air_cargo_signals(db)
     )
 
 

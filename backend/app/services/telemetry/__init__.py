@@ -1,14 +1,18 @@
 from app.config import get_settings
+from app.services.telemetry.adsb import ADSBAdapter
 from app.services.telemetry.apollo import ApolloAdapter
 from app.services.telemetry.base import RawTelemetryRecord, TelemetryAdapter
 from app.services.telemetry.cme_globex import CMEGlobexAdapter
 from app.services.telemetry.cobalt_intelligence import CobaltIntelligenceAdapter
 from app.services.telemetry.datalastic import DatalasticAdapter
+from app.services.telemetry.fred import FREDAdapter
 from app.services.telemetry.gdelt import GDELTAdapter
 from app.services.telemetry.gfw_4wings import GFW4WingsAdapter
 from app.services.telemetry.highergov import HigherGovAdapter
 from app.services.telemetry.import_genius import ImportGeniusAdapter
+from app.services.telemetry.noaa_nws import NOAANWSAdapter
 from app.services.telemetry.openfda import OpenFDATelemetryAdapter
+from app.services.telemetry.rail_traffic import RailTrafficAdapter
 from app.services.telemetry.regrid import RegridAdapter
 from app.services.telemetry.seavantage import SeaVantageAdapter
 from app.services.telemetry.sos_registries import SOSRegistriesAdapter
@@ -39,6 +43,10 @@ def all_adapters() -> list[TelemetryAdapter]:
             vesselfinder_api_key=settings.vesselfinder_api_key,
             cwms_api_key=settings.cwms_api_key,
         ),
+        NOAANWSAdapter(),
+        FREDAdapter(api_key=settings.fred_api_key),
+        RailTrafficAdapter(api_key=settings.rail_traffic_api_key),
+        ADSBAdapter(api_key=settings.adsb_api_key),
     ]
 
 
@@ -60,5 +68,9 @@ __all__ = [
     "CobaltIntelligenceAdapter",
     "ApolloAdapter",
     "USACEAdapter",
+    "NOAANWSAdapter",
+    "FREDAdapter",
+    "RailTrafficAdapter",
+    "ADSBAdapter",
     "all_adapters",
 ]

@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     # above for its complementary AIS-proxy channel. See
     # app/services/telemetry/usace.py.
     cwms_api_key: str = ""
+    # NOAA National Weather Service alerts (api.weather.gov) -- genuinely
+    # free and keyless; no setting needed to enable it, see
+    # app/services/telemetry/noaa_nws.py.
+    fred_api_key: str = ""  # Federal Reserve Economic Data -- free signup key, api.stlouisfed.org
+    # HONESTY NOTE: both of these are real provider categories (AAR/STB
+    # rail data, ADS-B aircraft tracking) but the exact live endpoint/
+    # auth shape is unconfirmed in this sandbox -- see
+    # app/services/telemetry/rail_traffic.py and adsb.py. Empty key ->
+    # adapter stays inert, same "no key -> no-op" posture as every other
+    # adapter here.
+    rail_traffic_api_key: str = ""
+    adsb_api_key: str = ""
 
     cobalt_intelligence_api_key: str = ""
     interzoid_api_key: str = ""

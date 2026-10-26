@@ -106,6 +106,37 @@ class TelemetrySource(str, Enum):
     DATALASTIC = "datalastic"
     VESSELFINDER = "vesselfinder"
     USACE = "usace"
+    # Free/keyless, real, well-documented government API (api.weather.gov)
+    # -- structured hurricane/tornado/flood/winter-storm alerts by exact
+    # zone, issued the moment NOAA declares them. A better primary source
+    # for disaster detection than waiting on GDELT news coverage to catch
+    # up, since it doesn't depend on a journalist writing about it first.
+    NOAA_NWS = "noaa_nws"
+    # Federal Reserve Economic Data (FRED) -- free with a signup key.
+    # Regional credit-tightening conditions as a macro context signal:
+    # tighter conventional lending in an area means more businesses there
+    # are likely to need alternative capital, independent of any
+    # commodity or disaster signal. See silo_leadgen.py::
+    # _fred_credit_conditions_signals.
+    FRED = "fred"
+    # HONESTY NOTE: AAR (Association of American Railroads) and the STB
+    # (Surface Transportation Board) publish real rail traffic/service-
+    # performance data, but as downloadable reports, not a confirmed
+    # clean REST API the way CWMS or api.weather.gov are. This source
+    # exists so the adapter/signal-classification scaffolding is in
+    # place, but telemetry/rail_traffic.py's fetch() is a placeholder
+    # until a real access method (API, scheduled file pull, etc.) is
+    # confirmed -- same posture as the LPMS note in river_surveillance.py.
+    # No Railinc-equivalent car-level tracking exists here; this is
+    # macro volume/dwell only, never company-specific.
+    RAIL_TRAFFIC = "rail_traffic"
+    # ADS-B (Automatic Dependent Surveillance-Broadcast) -- the real
+    # AIS-equivalent for aircraft: most cargo aircraft broadcast position
+    # openly, unlike railcars or trucks. telemetry/adsb.py is written
+    # against a plausible provider shape (ADS-B Exchange / FlightAware)
+    # but, like RAIL_TRAFFIC, is unconfirmed against live docs in this
+    # sandbox -- see that module's own docstring.
+    ADSB = "adsb"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads /
@@ -149,6 +180,10 @@ MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.COBALT_INTELLIGENCE,
         TelemetrySource.APOLLO,
         TelemetrySource.USACE,
+        TelemetrySource.NOAA_NWS,
+        TelemetrySource.FRED,
+        TelemetrySource.RAIL_TRAFFIC,
+        TelemetrySource.ADSB,
     }
 )
 
