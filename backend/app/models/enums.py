@@ -168,6 +168,17 @@ class TelemetrySource(str, Enum):
     # context -- see silo_leadgen.py::_xeneta_air_freight_signals.
     # WorldACD is a real comparable alternative, not built here.
     XENETA = "xeneta"
+    # Sentinel Hub -- commercial-friendly processing API over the same
+    # free, open ESA Copernicus Sentinel-1 SAR data discussed at length
+    # earlier (radar, sees through cloud cover a real storm brings,
+    # unlike Planet Labs' optical sensors). Serves two consumers: a
+    # disaster-damage-extent score in silo_leadgen.py (confirming a NOAA
+    # alert actually did real damage before gating open the disaster-
+    # recovery-construction hunt), and a river-barge presence check in
+    # river_surveillance.py, for the real AIS coverage gap on inland
+    # barges/towboats discussed earlier this session. One adapter, two
+    # genuinely different use cases, same data source.
+    SENTINEL_HUB = "sentinel_hub"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads /
@@ -219,6 +230,7 @@ MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.SONAR,
         TelemetrySource.PLANET_LABS,
         TelemetrySource.XENETA,
+        TelemetrySource.SENTINEL_HUB,
     }
 )
 

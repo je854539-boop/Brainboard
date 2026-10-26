@@ -62,10 +62,17 @@ class NOAANWSAdapter(TelemetryAdapter):
                 event = (props.get("event") or "").lower()
                 if not any(keyword in event for keyword in _DISASTER_EVENT_KEYWORDS):
                     continue
+                # NWS alert polygons are optional (per NWS's own docs --
+                # not every alert carries one), so this is a real,
+                # honest "if present" carry-through, not an assumption
+                # every alert has one. See silo_leadgen.py::
+                # _noaa_weather_disaster_signals for the Sentinel Hub
+                # bbox this feeds.
+                payload = {**props, "geometry": feature.get("geometry")}
                 records.append(
                     RawTelemetryRecord(
                         title=f"NOAA NWS {props.get('event', 'alert')}: {props.get('areaDesc', 'unknown area')}",
-                        payload=props,
+                        payload=payload,
                     )
                 )
         return records

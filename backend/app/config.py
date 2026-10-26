@@ -68,6 +68,20 @@ class Settings(BaseSettings):
     # Xeneta -- confirmed subscription/enterprise pricing, quote-based,
     # no public dollar figure.
     xeneta_api_key: str = ""
+    # Sentinel Hub -- commercial processing API over free Sentinel-1
+    # SAR data, explicitly licensed for business use (see the earlier
+    # discussion on why Earth Engine's own commercial-tier licensing
+    # change made this the better pick). Real, published self-serve
+    # pricing tiers exist; not independently re-verified in this
+    # sandbox -- confirm current numbers at sentinel-hub.com before
+    # budgeting against them.
+    sentinel_hub_api_key: str = ""
+    # River-barge AIS-gap confirmation (see river_surveillance.py::
+    # check_barge_presence_via_satellite): how much SAR backscatter
+    # change at a zone counts as "a real vessel cluster is physically
+    # there," distinct from ordinary water/weather noise. Reasoned, not
+    # measured -- same posture as every other threshold in this file.
+    river_surveillance_sar_barge_confidence_threshold: float = 0.6
 
     cobalt_intelligence_api_key: str = ""
     interzoid_api_key: str = ""

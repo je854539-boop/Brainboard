@@ -70,7 +70,7 @@ import json
 import logging
 import math
 import re
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 from dataclasses import dataclass
@@ -84,6 +84,7 @@ from app.services import entity_matching, telemetry
 from app.services.telemetry.apollo import ApolloAdapter
 from app.services.telemetry.cobalt_intelligence import CobaltIntelligenceAdapter
 from app.services.telemetry.gdelt import GDELTAdapter
+from app.services.telemetry.sentinel_hub import SentinelHubAdapter
 from app.services.telemetry.usace import MONITORED_LOCKS, vessels_near_datalastic, vessels_near_vesselfinder
 
 logger = logging.getLogger("brainboard.silo_leadgen")
@@ -2754,6 +2755,7 @@ def _gdelt_geopolitical_disruption_signals(db: Session, commodities: set[str] | 
         db.add(event)
         db.flush()
 
+        geo_state = _extract_us_state_from_text(record.title)
         for commodity in [primary_commodity] + _GEOPOLITICAL_COMMODITY_SIBLING_TAGS.get(primary_commodity, []):
             if commodities is not None and commodity not in commodities:
                 continue
@@ -2767,9 +2769,10 @@ def _gdelt_geopolitical_disruption_signals(db: Session, commodities: set[str] | 
                 source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
                 commodity=commodity,
                 signal_type=signal_type,
+                state=geo_state,
             )
             signals.append(new_signal)
-            _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(record.title))
+            _persist_macro_signal(db, new_signal, state=geo_state)
 
     db.commit()
     return signals
@@ -2790,14 +2793,27 @@ def _gdelt_geopolitical_disruption_signals(db: Session, commodities: set[str] | 
 _AVIAN_FLU_QUERY = '("avian flu" OR "bird flu" OR "H5N1" OR "poultry outbreak" OR "flock culled")'
 
 
+# Real bug, caught while reasoning through a user-raised real-world
+# case (H5N1 spreading into US dairy cattle since March 2024, not just
+# poultry): this query's keywords ("avian flu"/"bird flu"/"H5N1") match
+# a dairy-cattle headline just as easily as a poultry one, but every
+# hit was being hardcoded to poultry_producer regardless of which
+# population the headline was actually about -- silently misrouting a
+# real cattle/dairy distress signal into the wrong commodity bucket,
+# where it would never surface as a trigger for an actual dairy or
+# cattle operation.
+_AVIAN_FLU_CATTLE_DAIRY_KEYWORDS = ("cattle", "dairy", "cow", "cows", "herd")
+
+
 def _gdelt_avian_flu_signals(db: Session) -> list[MacroSignal]:
-    """Poultry's only disease-driven trigger, distinct from and
-    additive to its feed-cost trigger (see SYMBOL_COMMODITIES' ZC/ZM
-    tags) -- a grain price spike and a bird flu outbreak are two
-    completely different real capital-need stories for the same
-    population (cost squeeze vs. direct flock loss), so both run,
-    neither replaces the other. One free national GDELT call per
-    sweep, same posture as every other national-level query here."""
+    """Poultry's (and, since the keywords below were widened, dairy
+    cattle's) disease-driven trigger, distinct from and additive to
+    poultry's feed-cost trigger (see SYMBOL_COMMODITIES' ZC/ZM tags) --
+    a grain price spike and a disease outbreak are two completely
+    different real capital-need stories for the same population (cost
+    squeeze vs. direct flock/herd loss), so both run, neither replaces
+    the other. One free national GDELT call per sweep, same posture as
+    every other national-level query here."""
     adapter = GDELTAdapter()
     try:
         records = adapter.search(_AVIAN_FLU_QUERY, maxrecords=20)
@@ -2806,22 +2822,28 @@ def _gdelt_avian_flu_signals(db: Session) -> list[MacroSignal]:
 
     signals: list[MacroSignal] = []
     for record in records:
+        title_lower = record.title.lower()
+        is_cattle_dairy = any(k in title_lower for k in _AVIAN_FLU_CATTLE_DAIRY_KEYWORDS)
+        commodity = "livestock_producer" if is_cattle_dairy else "poultry_producer"
+
         event = TelemetryEvent(
             source=TelemetrySource.GDELT,
             title=record.title,
-            payload={**record.payload, "geopolitical_commodity": "poultry_producer"},
+            payload={**record.payload, "geopolitical_commodity": commodity},
         )
         db.add(event)
         db.flush()
+        state = _extract_us_state_from_text(record.title)
         new_signal = MacroSignal(
-            kind="poultry_disease_outbreak",
-            description=f"GDELT avian flu/bird flu outbreak coverage: {record.title}",
+            kind="poultry_disease_outbreak" if not is_cattle_dairy else "dairy_cattle_disease_outbreak",
+            description=f"GDELT avian flu/H5N1 outbreak coverage ({commodity}): {record.title}",
             source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
-            commodity="poultry_producer",
+            commodity=commodity,
             signal_type="distress",
+            state=state,
         )
         signals.append(new_signal)
-        _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(record.title))
+        _persist_macro_signal(db, new_signal, state=state)
 
     db.commit()
     return signals
@@ -2907,6 +2929,7 @@ def _gdelt_tariff_relief_signals(db: Session, commodities: set[str] | None = Non
             )
             db.add(event)
             db.flush()
+            state = _extract_us_state_from_text(record.title)
             new_signal = MacroSignal(
                 kind="tariff_relief_competitive_pressure",
                 description=(
@@ -2916,9 +2939,10 @@ def _gdelt_tariff_relief_signals(db: Session, commodities: set[str] | None = Non
                 source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
                 commodity=commodity,
                 signal_type=signal_type,
+                state=state,
             )
             signals.append(new_signal)
-            _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(record.title))
+            _persist_macro_signal(db, new_signal, state=state)
             break  # one commodity match per headline is enough
 
     db.commit()
@@ -2938,14 +2962,16 @@ def _gdelt_shock_signals(db: Session) -> list[MacroSignal]:
     # direction here would be worse than leaving it unclassified.
     signals: list[MacroSignal] = []
     for event in _fresh_events(db, TelemetrySource.GDELT, limit=10):
+        state = _extract_us_state_from_text(event.title)
         new_signal = MacroSignal(
             kind="news_shock",
             description=f"GDELT commodity/tariff-shock coverage: {event.title}",
             source_reference=f"telemetry_event:{event.id} [gdelt] {event.title}",
             commodity=_classify_commodity_from_text(event.title),
+            state=state,
         )
         signals.append(new_signal)
-        _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(event.title))
+        _persist_macro_signal(db, new_signal, state=state)
     db.commit()
     return signals
 
@@ -3330,6 +3356,23 @@ def _hot_commodities_this_sweep(macro_level_signals: list[MacroSignal]) -> set[s
     return {s.commodity for s in macro_level_signals if s.commodity}
 
 
+def _bbox_from_geojson_geometry(geometry: dict | None) -> tuple[float, float, float, float] | None:
+    """A NOAA alert's GeoJSON polygon (when present -- not every alert
+    carries one, see noaa_nws.py's own honesty note) reduced to a
+    simple bounding box for Sentinel Hub's bbox-based API. Good enough
+    for a damage-confirmation query over the alerted area, not a claim
+    of precise polygon intersection."""
+    if not geometry or geometry.get("type") != "Polygon":
+        return None
+    try:
+        coords = geometry["coordinates"][0]
+        lons = [pt[0] for pt in coords]
+        lats = [pt[1] for pt in coords]
+        return (min(lons), min(lats), max(lons), max(lats))
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 def _noaa_weather_disaster_signals(db: Session) -> list[MacroSignal]:
     """A real primary source for disaster detection, better than waiting
     on GDELT news coverage to catch up -- NOAA issues a structured
@@ -3343,13 +3386,33 @@ def _noaa_weather_disaster_signals(db: Session) -> list[MacroSignal]:
 
     NOAANWSAdapter.fetch() already filters to disaster-relevant event
     types, so every TelemetryEvent seen here is real signal, no further
-    keyword gate needed."""
+    keyword gate needed.
+
+    OPTIONAL Sentinel Hub confirmation: when the alert carries a real
+    polygon (not every one does) and SENTINEL_HUB_API_KEY is
+    configured, this also asks for a real before/after SAR change
+    score over that area -- a confidence gate on top of the NOAA
+    alert, same "annotation, never a block" posture as the river
+    engine's GDELT corroboration. A NOAA alert with no key configured,
+    no polygon, or a failed satellite read still fires the signal --
+    this only ever adds confidence, never withholds a real NOAA alert."""
+    sentinel = SentinelHubAdapter(api_key=get_settings().sentinel_hub_api_key)
     signals: list[MacroSignal] = []
     for event in _fresh_events(db, TelemetrySource.NOAA_NWS, limit=20):
         area_desc = event.payload.get("areaDesc", "")
+        description = f"NOAA DISASTER ALERT: {event.payload.get('event', 'alert')} active over {area_desc or 'unspecified area'}"
+
+        bbox = _bbox_from_geojson_geometry(event.payload.get("geometry"))
+        if bbox is not None and sentinel.api_key:
+            change_score = sentinel.request_change_score(
+                bbox, before_date=(event.ingested_at - timedelta(days=7)).date().isoformat(), after_date=date.today().isoformat()
+            )
+            if change_score is not None:
+                description += f" -- SENTINEL HUB CONFIRMED (SAR change score {change_score:.2f})"
+
         new_signal = MacroSignal(
             kind="weather_disaster",
-            description=f"NOAA NWS {event.payload.get('event', 'alert')} active over {area_desc or 'unspecified area'}",
+            description=description,
             source_reference=f"telemetry_event:{event.id} [noaa_nws] {event.title}",
             commodity="disaster_recovery_construction",
             signal_type="expansion",
@@ -3398,7 +3461,7 @@ def _fred_credit_conditions_signals(db: Session) -> list[MacroSignal]:
         MacroSignal(
             kind="credit_tightening",
             description=(
-                f"FRED: {value:.1f}% net tightening in small-business lending standards "
+                f"CREDIT TIGHTENING CONTEXT: FRED {value:.1f}% net tightening in small-business lending standards "
                 f"(as of {latest.payload.get('date', 'unknown date')}) -- nationwide credit-pressure context"
             ),
             source_reference=f"telemetry_event:{latest.id} [fred] {latest.title}",
@@ -3421,7 +3484,7 @@ def _rail_congestion_signals(db: Session) -> list[MacroSignal]:
         state = _extract_us_state_from_text(event.title)
         new_signal = MacroSignal(
             kind="rail_congestion",
-            description=f"Rail service-metric coverage classified {commodity}: {event.title}",
+            description=f"RAIL CONGESTION SIGNAL: service-metric coverage classified {commodity}: {event.title}",
             source_reference=f"telemetry_event:{event.id} [rail_traffic] {event.title}",
             commodity=commodity,
             state=state,
@@ -3445,7 +3508,7 @@ def _adsb_air_cargo_signals(db: Session) -> list[MacroSignal]:
         state = _extract_us_state_from_text(event.title)
         new_signal = MacroSignal(
             kind="air_cargo_activity",
-            description=f"ADS-B cargo-aircraft activity: {event.title}",
+            description=f"AIR CARGO ACTIVITY: ADS-B cargo-aircraft sighting: {event.title}",
             source_reference=f"telemetry_event:{event.id} [adsb] {event.title}",
             commodity=commodity,
             state=state,
@@ -3489,7 +3552,7 @@ def _sonar_trucking_signals(db: Session) -> list[MacroSignal]:
         MacroSignal(
             kind="trucking_capacity_tight",
             description=(
-                f"SONAR: {value:.1f}% outbound tender reject rate "
+                f"TRUCKING CAPACITY TIGHT: SONAR {value:.1f}% outbound tender reject rate "
                 f"(as of {latest.payload.get('date', 'unknown date')}) -- nationwide trucking-capacity pressure context"
             ),
             source_reference=f"telemetry_event:{latest.id} [sonar] {latest.title}",
@@ -3514,7 +3577,7 @@ def _planet_labs_landuse_signals(db: Session) -> list[MacroSignal]:
         state = _extract_us_state_from_text(event.title)
         new_signal = MacroSignal(
             kind="satellite_landuse_change",
-            description=f"Planet Labs land-use change: {event.title}",
+            description=f"SATELLITE LAND-USE CHANGE: Planet Labs parcel change detected: {event.title}",
             source_reference=f"telemetry_event:{event.id} [planet_labs] {event.title}",
             commodity=commodity,
             state=state,
@@ -3557,7 +3620,7 @@ def _xeneta_air_freight_signals(db: Session) -> list[MacroSignal]:
         new_signal = MacroSignal(
             kind="air_freight_rate_tight",
             description=(
-                f"Xeneta air-freight rate index {rate_index:.0f} on lane {event.title} -- "
+                f"AIR FREIGHT RATE TIGHT: Xeneta rate index {rate_index:.0f} on lane {event.title} -- "
                 f"capacity-tightness signal{f' near {destination}' if destination else ''}"
             ),
             source_reference=f"telemetry_event:{event.id} [xeneta] {event.title}",
@@ -4701,6 +4764,17 @@ _SIGNAL_PERFORMANCE_MARKERS = (
     "LARGEST VOLUME IMPORTER",
     "MACRO-CORROBORATED",
     "CROSS-SOURCE CONFIRMED",
+    # Added alongside tonight's new sources so their real conversion
+    # rates get their own line in the report instead of blending
+    # invisibly into the generic CME_MACRO_SILO bucket -- see each
+    # signal function's description string for where these appear.
+    "NOAA DISASTER ALERT",
+    "CREDIT TIGHTENING CONTEXT",
+    "RAIL CONGESTION SIGNAL",
+    "AIR CARGO ACTIVITY",
+    "TRUCKING CAPACITY TIGHT",
+    "SATELLITE LAND-USE CHANGE",
+    "AIR FREIGHT RATE TIGHT",
 )
 
 # Every MasterLogStatus that means real paperwork actually came back from

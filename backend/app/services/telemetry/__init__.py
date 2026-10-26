@@ -16,6 +16,7 @@ from app.services.telemetry.planet_labs import PlanetLabsAdapter
 from app.services.telemetry.rail_traffic import RailTrafficAdapter
 from app.services.telemetry.regrid import RegridAdapter
 from app.services.telemetry.seavantage import SeaVantageAdapter
+from app.services.telemetry.sentinel_hub import SentinelHubAdapter
 from app.services.telemetry.sonar import SONARAdapter
 from app.services.telemetry.sos_registries import SOSRegistriesAdapter
 from app.services.telemetry.transmetriq import TransmetriQAdapter
@@ -55,6 +56,7 @@ def all_adapters() -> list[TelemetryAdapter]:
         SONARAdapter(api_key=settings.sonar_api_key),
         PlanetLabsAdapter(api_key=settings.planet_labs_api_key),
         XenetaAdapter(api_key=settings.xeneta_api_key),
+        SentinelHubAdapter(api_key=settings.sentinel_hub_api_key),
     ]
 
 
@@ -84,5 +86,6 @@ __all__ = [
     "SONARAdapter",
     "PlanetLabsAdapter",
     "XenetaAdapter",
+    "SentinelHubAdapter",
     "all_adapters",
 ]

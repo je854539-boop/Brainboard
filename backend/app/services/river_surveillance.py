@@ -77,6 +77,7 @@ from app.models.orm import (
     WaterwayTrigger,
 )
 from app.services import entity_matching, pipeline
+from app.services.telemetry.sentinel_hub import SentinelHubAdapter
 from app.services.telemetry.usace import (
     CWMS_BASE_URL,
     GATE_CHANGE_LOOKBACK_HOURS,
@@ -208,6 +209,42 @@ def _resolve_entity(db: Session, company_name: str | None):
             return candidate.candidate_uid
 
     return None
+
+
+def check_barge_presence_via_satellite(zone: dict) -> bool | None:
+    """Independent confirmation for the real AIS coverage gap on inland
+    barges/towboats (weaker transponder requirements than oceangoing
+    vessels -- the exact blind spot discussed at length earlier this
+    session: poll_usace_lock_queue's idle-vessel count is 100% AIS-
+    derived, so a real queue of non-broadcasting barges is otherwise
+    invisible to this entire file, not just under-counted).
+
+    Asks Sentinel Hub for a real Sentinel-1 SAR change score over a
+    small bounding box around the zone's coordinates, trailing 24h.
+    Above river_surveillance_sar_barge_confidence_threshold is treated
+    as "a real vessel cluster is physically there," independent of
+    whatever AIS did or didn't see.
+
+    Returns None (not a guess) when no SENTINEL_HUB_API_KEY is
+    configured or the satellite read fails -- the caller must fall
+    back to AIS-only behavior exactly as before this function existed,
+    same "annotation, never a block" posture as everything else added
+    tonight."""
+    settings = get_settings()
+    sentinel = SentinelHubAdapter(api_key=settings.sentinel_hub_api_key)
+    if not sentinel.api_key:
+        return None
+
+    delta = 0.05  # roughly a several-km box around the zone's coordinates -- good enough to catch a real queue, not precise geofencing
+    bbox = (zone["lon"] - delta, zone["lat"] - delta, zone["lon"] + delta, zone["lat"] + delta)
+    change_score = sentinel.request_change_score(
+        bbox,
+        before_date=(_now() - dt.timedelta(hours=24)).date().isoformat(),
+        after_date=_now().date().isoformat(),
+    )
+    if change_score is None:
+        return None
+    return change_score >= settings.river_surveillance_sar_barge_confidence_threshold
 
 
 def _apply_trigger_note(db: Session, entity_uid, trigger: WaterwayTrigger) -> None:
@@ -405,6 +442,25 @@ def poll_usace_lock_queue(db: Session) -> list[GeofenceEvent]:
                 )
                 db.add(event)
                 events.append(event)
+            elif zone.get("is_lock") and idle_count < QUEUE_THRESHOLD:
+                # The real AIS-gap fix: AIS alone would silently miss a
+                # queue of non-broadcasting barges entirely (idle_count
+                # stays below threshold, nothing ever fires). Satellite
+                # confirmation doesn't replace AIS -- it catches exactly
+                # the case AIS structurally can't.
+                if check_barge_presence_via_satellite(zone):
+                    event = GeofenceEvent(
+                        zone_name=zone["name"],
+                        event_type=GeofenceEventType.LOCK_QUEUE_DELAY,
+                        detail=(
+                            f"{idle_count} idle vessels via AIS (below the {QUEUE_THRESHOLD}-vessel threshold), "
+                            f"but SENTINEL HUB SATELLITE CONFIRMED a real vessel cluster independent of AIS -- "
+                            f"the known AIS coverage gap on inland barges/towboats"
+                        ),
+                        source_reference=f"sentinel_hub_sar:{zone['name']}",
+                    )
+                    db.add(event)
+                    events.append(event)
     db.commit()
     return events
 
