@@ -3525,6 +3525,52 @@ def _planet_labs_landuse_signals(db: Session) -> list[MacroSignal]:
     return signals
 
 
+# Xeneta rate index above this value on a given lane counts as real
+# air-freight capacity tightness on that lane, not routine fluctuation.
+# Reasoned, not measured -- same posture as every other threshold here.
+_XENETA_RATE_INDEX_THRESHOLD = 120.0
+
+
+def _xeneta_air_freight_signals(db: Session) -> list[MacroSignal]:
+    """Air-freight rate/capacity tightness, lane-specific -- unlike
+    SONAR/FRED, Xeneta's data names a real destination, so a tight lane
+    CAN carry a location_hint/state the same way USACE's place-anchored
+    signals drive a real Apollo/Cobalt hunt near that city, not just
+    nationwide pressure context. commodity is best-effort: a payload
+    carrying an explicit commodity_category field (some air-cargo rate
+    products segment by pharma/perishables/general cargo) is trusted
+    directly; otherwise falls back to text classification, which will
+    often honestly return None for a bare lane/rate-index title -- not
+    a bug, the same honest limit as a bare ADS-B flight-number title."""
+    signals: list[MacroSignal] = []
+    for event in _fresh_events(db, TelemetrySource.XENETA, limit=20):
+        try:
+            rate_index = float(event.payload.get("rate_index"))
+        except (TypeError, ValueError):
+            continue
+        if rate_index < _XENETA_RATE_INDEX_THRESHOLD:
+            continue
+
+        commodity = event.payload.get("commodity_category") or _classify_commodity_from_text(event.title)
+        destination = event.payload.get("destination_city") or event.payload.get("destination_airport")
+        state = _extract_us_state_from_text(str(destination)) if destination else None
+        new_signal = MacroSignal(
+            kind="air_freight_rate_tight",
+            description=(
+                f"Xeneta air-freight rate index {rate_index:.0f} on lane {event.title} -- "
+                f"capacity-tightness signal{f' near {destination}' if destination else ''}"
+            ),
+            source_reference=f"telemetry_event:{event.id} [xeneta] {event.title}",
+            commodity=commodity,
+            location_hint=str(destination) if destination else None,
+            state=state,
+        )
+        signals.append(new_signal)
+        if commodity:
+            _persist_macro_signal(db, new_signal, state=state)
+    return signals
+
+
 def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
     """The gate. Returns every active macro signal found across the five
     leading-indicator channels (CME Globex price shock -- now also
@@ -3608,6 +3654,7 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + _adsb_air_cargo_signals(db)
         + _sonar_trucking_signals(db)
         + _planet_labs_landuse_signals(db)
+        + _xeneta_air_freight_signals(db)
     )
 
 

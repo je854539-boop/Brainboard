@@ -158,6 +158,16 @@ class TelemetrySource(str, Enum):
     # tool (pairs with Regrid), not the cloud-penetrating disaster tool
     # (that's Sentinel-1 SAR / ICEYE / Capella, a different use case).
     PLANET_LABS = "planet_labs"
+    # Xeneta -- real, confirmed air-freight rate/capacity intelligence
+    # (30,000+ airport pairs, daily shipper rates, subscription/
+    # enterprise pricing, quote-based). The missing piece alongside
+    # ADSB: ADS-B gives aircraft POSITION (the AIS-equivalent); Xeneta
+    # gives RATE/CAPACITY tightness per lane (the SONAR-equivalent for
+    # air). Unlike SONAR/FRED, Xeneta's lane structure is specific
+    # enough to carry a real destination location, not just nationwide
+    # context -- see silo_leadgen.py::_xeneta_air_freight_signals.
+    # WorldACD is a real comparable alternative, not built here.
+    XENETA = "xeneta"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads /
@@ -208,6 +218,7 @@ MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.TRANSMETRIQ,
         TelemetrySource.SONAR,
         TelemetrySource.PLANET_LABS,
+        TelemetrySource.XENETA,
     }
 )
 

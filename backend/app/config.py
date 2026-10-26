@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     # Planet Labs -- confirmed Monitoring-plan pricing $2,700-$9,650/yr
     # depending on coverage area (planet.com/pricing).
     planet_labs_api_key: str = ""
+    # Xeneta -- confirmed subscription/enterprise pricing, quote-based,
+    # no public dollar figure.
+    xeneta_api_key: str = ""
 
     cobalt_intelligence_api_key: str = ""
     interzoid_api_key: str = ""

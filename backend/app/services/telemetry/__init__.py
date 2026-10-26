@@ -22,6 +22,7 @@ from app.services.telemetry.transmetriq import TransmetriQAdapter
 from app.services.telemetry.ucc_filings import UCCFilingsAdapter
 from app.services.telemetry.usace import USACEAdapter
 from app.services.telemetry.vesselfinder import VesselFinderAdapter
+from app.services.telemetry.xeneta import XenetaAdapter
 
 
 def all_adapters() -> list[TelemetryAdapter]:
@@ -53,6 +54,7 @@ def all_adapters() -> list[TelemetryAdapter]:
         TransmetriQAdapter(api_key=settings.transmetriq_api_key),
         SONARAdapter(api_key=settings.sonar_api_key),
         PlanetLabsAdapter(api_key=settings.planet_labs_api_key),
+        XenetaAdapter(api_key=settings.xeneta_api_key),
     ]
 
 
@@ -81,5 +83,6 @@ __all__ = [
     "TransmetriQAdapter",
     "SONARAdapter",
     "PlanetLabsAdapter",
+    "XenetaAdapter",
     "all_adapters",
 ]
