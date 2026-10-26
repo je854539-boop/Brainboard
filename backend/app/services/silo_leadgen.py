@@ -70,7 +70,8 @@ import json
 import logging
 import math
 import re
-from datetime import date, timedelta
+import statistics
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from dataclasses import dataclass
@@ -2087,6 +2088,49 @@ def _stage2c_cobalt_industry_hunt(db: Session, targets: list[GeoTarget]) -> list
 # grain/oilseed contract counts as an active price-shock signal.
 PRICE_SHOCK_PCT = 0.02
 
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _price_pct_change_history(db: Session, symbol: str, exclude_event_id, window_days: int) -> list[float]:
+    """Trailing per-symbol pct-change history for the Z-score gate --
+    reuses TelemetryEvent rows CMEGlobexAdapter.ingest() already writes
+    every sweep, no new table or external data needed. Excludes the
+    event being evaluated itself, which would otherwise bias its own
+    baseline."""
+    window_start = _now() - timedelta(days=window_days)
+    history = []
+    for event in (
+        db.query(TelemetryEvent)
+        .filter(TelemetryEvent.source == TelemetrySource.CME_GLOBEX, TelemetryEvent.ingested_at >= window_start)
+        .all()
+    ):
+        if event.id == exclude_event_id:
+            continue
+        if (event.payload or {}).get("symbol") != symbol:
+            continue
+        open_, close = event.payload.get("open"), event.payload.get("close")
+        if not open_ or not close:
+            continue
+        history.append((close - open_) / open_)
+    return history
+
+
+def _price_shock_zscore(pct: float, history: list[float]) -> float | None:
+    """None (not a guess) below cme_zscore_min_history observations --
+    same posture as river_surveillance.py's learn_baseline_transit.
+    The caller falls back to the flat PRICE_SHOCK_PCT gate in that
+    case, exactly as before this function existed."""
+    settings = get_settings()
+    if len(history) < settings.cme_zscore_min_history:
+        return None
+    mean = statistics.mean(history)
+    stdev = statistics.pstdev(history)
+    if stdev == 0:
+        return None
+    return (pct - mean) / stdev
+
 _DISTRESS_STATUS_KEYWORDS = ("suspended", "dissolved", "revoked", "inactive", "delinquent", "forfeited")
 _GOOD_STANDING_KEYWORDS = ("active", "good standing", "in good standing", "current")
 
@@ -2325,15 +2369,33 @@ def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -
     instead when it sees a commodity with no location attached, so
     this still drives a real targeted hunt downstream.
     """
+    settings = get_settings()
     signals: list[MacroSignal] = []
     for event in _fresh_events(db, TelemetrySource.CME_GLOBEX, limit=50):
         open_, close = event.payload.get("open"), event.payload.get("close")
         if not open_ or not close:
             continue
         pct = (close - open_) / open_
-        if abs(pct) < PRICE_SHOCK_PCT:
-            continue
         symbol = event.payload.get("symbol") or str(event.payload.get("instrument_id", "?"))
+
+        # Volatility-normalized gate (a Gemini-reviewed suggestion):
+        # compare this move against the symbol's OWN trailing
+        # distribution, not a flat percentage applied identically to
+        # every instrument. Falls back to the original flat
+        # PRICE_SHOCK_PCT gate when there isn't yet enough rolling
+        # history for a real symbol -- never silently suppress a shock
+        # just because the Z-score infrastructure is still warming up.
+        history = _price_pct_change_history(db, symbol, exclude_event_id=event.id, window_days=settings.cme_zscore_rolling_window_days)
+        zscore = _price_shock_zscore(pct, history)
+        if zscore is not None:
+            if abs(zscore) < settings.cme_zscore_threshold:
+                continue
+            zscore_note = f" -- VOLATILITY-NORMALIZED SHOCK (Z={zscore:.2f} vs {len(history)}d rolling history)"
+        else:
+            if abs(pct) < PRICE_SHOCK_PCT:
+                continue
+            zscore_note = ""
+
         price_up = pct > 0
         direction = "up" if price_up else "down"
 
@@ -2351,7 +2413,7 @@ def _cme_price_shock_signals(db: Session, commodities: set[str] | None = None) -
                     kind="price_shock",
                     description=(
                         f"CME Globex {symbol} moved {abs(pct):.1%} {direction} intraday "
-                        f"(open {open_:.2f} -> close {close:.2f}) -- {commodity}: {framing}"
+                        f"(open {open_:.2f} -> close {close:.2f}) -- {commodity}: {framing}{zscore_note}"
                     ),
                     source_reference=f"telemetry_event:{event.id} [cme_globex] {event.title}",
                     signal_type=signal_type,
@@ -4116,6 +4178,19 @@ _DEMURRAGE_FREE_TIME_DAYS = 5
 _DEMURRAGE_SCORE_BONUS = 15.0
 _DEMURRAGE_CONFIRMED_SCORE_BONUS = 22.0
 
+# A Gemini-reviewed gap, closed here: _geo_match_note already computes
+# a real Haversine distance between a Regrid parcel and the active
+# disruption signal that triggered this hunt (see _nearest_geo_target),
+# and already writes "TARGETED MATCH" into corroboration_note when the
+# parcel's own land-use text confirms the commodity -- but until now
+# that confirmation only ever affected the NOTE text, never the actual
+# score. This is the real fix: turn an already-computed geo-confirmation
+# into an actual scoring input. Smaller than the cross-source bonus
+# (+10) since this confirms LOCATION plausibility, not a second
+# independent source agreeing on COMPANY IDENTITY -- a real but
+# narrower form of corroboration.
+_GEOSPATIAL_MATCH_SCORE_BONUS = 8.0
+
 # Same confidence tier as a confirmed revenue-band match -- a known
 # country of origin is a measured fact about this specific shipment
 # (see _tariff_trade_diversion_note), not an industry-level guess.
@@ -4390,6 +4465,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
         # confirms the COMMODITY is active, not this specific company.
         cross_source_bonus = 10.0 if cross_source_confirmed else 0.0
         macro_corroboration_bonus = 5.0 if "MACRO-CORROBORATED" in corroboration_note else 0.0
+        geospatial_bonus = _GEOSPATIAL_MATCH_SCORE_BONUS if "TARGETED MATCH" in corroboration_note else 0.0
         # Same confidence tier either way -- a confirmed country of
         # origin is a measured fact about THIS shipment (see
         # _tariff_trade_diversion_note), not a hypothesis, whichever
@@ -4407,6 +4483,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
             + revenue_delta
             + cross_source_bonus
             + macro_corroboration_bonus
+            + geospatial_bonus
             + tariff_bonus
             + latam_bonus
             + asia_bonus
@@ -4429,6 +4506,7 @@ def run_cme_macro_funnel_waterfall(db: Session) -> dict:
                     revenue_note,
                     contact_note,
                     "cross-source confirmed (+10 score)" if cross_source_confirmed else None,
+                    f"GEOSPATIAL CROSS-CHECK CONFIRMED (+{_GEOSPATIAL_MATCH_SCORE_BONUS:.0f} score)" if geospatial_bonus else None,
                 ],
             )
         )
@@ -4775,6 +4853,10 @@ _SIGNAL_PERFORMANCE_MARKERS = (
     "TRUCKING CAPACITY TIGHT",
     "SATELLITE LAND-USE CHANGE",
     "AIR FREIGHT RATE TIGHT",
+    # Added alongside the Gemini-reviewed volatility/geospatial
+    # upgrades, same reasoning as the batch above.
+    "VOLATILITY-NORMALIZED SHOCK",
+    "GEOSPATIAL CROSS-CHECK CONFIRMED",
 )
 
 # Every MasterLogStatus that means real paperwork actually came back from

@@ -97,6 +97,38 @@ class Settings(BaseSettings):
     mca_target_revenue_min_usd: float = 5_000_000.0
     mca_target_revenue_max_usd: float = 49_000_000.0
 
+    # Volatility-normalized price-shock gate (silo_leadgen.py::
+    # _cme_price_shock_signals) -- a Gemini-reviewed suggestion worth
+    # taking seriously: PRICE_SHOCK_PCT is a flat percentage applied
+    # identically to every CME symbol, so a naturally volatile
+    # instrument (nat gas) trips it far more often than a naturally
+    # calm one (grain), which is uneven noise, not absent noise. A
+    # rolling Z-score normalizes each symbol against its OWN recent
+    # volatility instead. |Z| > 2.0 is the standard ~95% two-tailed
+    # threshold for a genuine statistical outlier, not a reasoned
+    # guess the way most thresholds in this project are -- the window/
+    # min-history values below are still reasoned policy, same posture
+    # as everywhere else.
+    cme_zscore_threshold: float = 2.0
+    cme_zscore_rolling_window_days: int = 30
+    # Below this many historical observations for a symbol, the Z-score
+    # is statistically meaningless -- same "don't fabricate a baseline
+    # from near-zero data" posture as river_surveillance.py's
+    # learn_baseline_transit. Falls back to the flat PRICE_SHOCK_PCT
+    # gate instead of silently suppressing every shock while history
+    # builds up.
+    cme_zscore_min_history: int = 10
+
+    # Geospatial cross-check tolerance (silo_leadgen.py::
+    # _geospatial_corroboration_bonus) -- a second Gemini-reviewed
+    # suggestion: verify a signal's own coordinates (a vessel's
+    # destination, a disrupted USACE zone) actually fall near the
+    # Regrid-matched parcel's coordinates before crediting the match,
+    # instead of trusting a name/address match alone. Reasoned, not
+    # measured -- wide enough to allow for a large industrial parcel's
+    # real footprint, tight enough to catch a genuinely wrong match.
+    geospatial_corroboration_tolerance_miles: float = 10.0
+
     brain_shadow_mode_lead_threshold: int = 1000
 
     # CesiumJS globe (templates/globe.html). Empty by default -- the
