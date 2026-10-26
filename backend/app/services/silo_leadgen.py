@@ -104,6 +104,17 @@ SOURCE_TO_SILOS: dict[TelemetrySource, list[SiloName]] = {
     ],
     TelemetrySource.DATALASTIC: [SiloName.OIL_GAS_REFINING_SILO],
     TelemetrySource.VESSELFINDER: [SiloName.OIL_GAS_REFINING_SILO],
+    # TransmetriQ carries a real named consignee per rail event (see
+    # telemetry/transmetriq.py) -- same named-entity shape as Import
+    # Genius, just for rail instead of ocean, so it gets the same flat
+    # mapping and the same active revenue-check treatment below rather
+    # than feeding the MacroSignal/hunt path the way the macro-only
+    # RAIL_TRAFFIC source does.
+    TelemetrySource.TRANSMETRIQ: [
+        SiloName.HEAVY_MACHINERY_INDUSTRIAL_EQUIPMENT_SILO,
+        SiloName.FOOD_PROCESSING_FABRICATION_SILO,
+        SiloName.AGRICULTURE_GRAIN_HANDLING_SILO,
+    ],
     TelemetrySource.UCC_FILINGS: [
         SiloName.FOOD_PROCESSING_FABRICATION_SILO,
         SiloName.HEAVY_MACHINERY_INDUSTRIAL_EQUIPMENT_SILO,
@@ -3407,14 +3418,16 @@ def _rail_congestion_signals(db: Session) -> list[MacroSignal]:
         commodity = _classify_commodity_from_text(event.title)
         if not commodity:
             continue
+        state = _extract_us_state_from_text(event.title)
         new_signal = MacroSignal(
             kind="rail_congestion",
             description=f"Rail service-metric coverage classified {commodity}: {event.title}",
             source_reference=f"telemetry_event:{event.id} [rail_traffic] {event.title}",
             commodity=commodity,
+            state=state,
         )
         signals.append(new_signal)
-        _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(event.title))
+        _persist_macro_signal(db, new_signal, state=state)
     return signals
 
 
@@ -3429,15 +3442,86 @@ def _adsb_air_cargo_signals(db: Session) -> list[MacroSignal]:
     signals: list[MacroSignal] = []
     for event in _fresh_events(db, TelemetrySource.ADSB, limit=20):
         commodity = _classify_commodity_from_text(event.title)
+        state = _extract_us_state_from_text(event.title)
         new_signal = MacroSignal(
             kind="air_cargo_activity",
             description=f"ADS-B cargo-aircraft activity: {event.title}",
             source_reference=f"telemetry_event:{event.id} [adsb] {event.title}",
             commodity=commodity,
+            state=state,
         )
         signals.append(new_signal)
         if commodity:
-            _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(event.title))
+            _persist_macro_signal(db, new_signal, state=state)
+    return signals
+
+
+# SONAR's outbound tender reject index above this value counts as real
+# national trucking-capacity tightness, not routine week-to-week noise.
+# Reasoned, not measured -- same posture as the FRED threshold above.
+_SONAR_TENDER_REJECT_THRESHOLD_PCT = 10.0
+
+
+def _sonar_trucking_signals(db: Session) -> list[MacroSignal]:
+    """Macro trucking-capacity CONTEXT signal, same shape and same
+    honest limit as _fred_credit_conditions_signals: no commodity, no
+    location. There is no AIS/ADS-B-equivalent open broadcast for
+    trucks, so this never resolves to a specific company's specific
+    truck -- it's pressure context layered onto a company already
+    identified through another channel, not a discovery mechanism on
+    its own. Not persisted via _persist_macro_signal for the same
+    reason FRED isn't: no commodity for river_surveillance.py's zone-
+    matching to key off."""
+    events = _fresh_events(db, TelemetrySource.SONAR, limit=1)
+    if not events:
+        return []
+
+    latest = events[0]
+    try:
+        value = float(latest.payload.get("value"))
+    except (TypeError, ValueError):
+        return []
+
+    if value < _SONAR_TENDER_REJECT_THRESHOLD_PCT:
+        return []
+
+    return [
+        MacroSignal(
+            kind="trucking_capacity_tight",
+            description=(
+                f"SONAR: {value:.1f}% outbound tender reject rate "
+                f"(as of {latest.payload.get('date', 'unknown date')}) -- nationwide trucking-capacity pressure context"
+            ),
+            source_reference=f"telemetry_event:{latest.id} [sonar] {latest.title}",
+        )
+    ]
+
+
+def _planet_labs_landuse_signals(db: Session) -> list[MacroSignal]:
+    """Parcel-level optical change detection -- daily revisit, better
+    cadence than free Sentinel-2, but still needs a Regrid parcel-to-
+    owner lookup downstream to become an actual company (not done here
+    -- see telemetry/planet_labs.py's own docstring on why this is the
+    land-use/construction-change tool, not the cloud-penetrating
+    disaster tool). Classified by keyword text same as every other
+    national sweep; a bare parcel_id/change_score with no descriptive
+    text in the payload legitimately classifies to no commodity -- that
+    is the honest result, not a bug, same as a bare ADS-B flight-number
+    title."""
+    signals: list[MacroSignal] = []
+    for event in _fresh_events(db, TelemetrySource.PLANET_LABS, limit=20):
+        commodity = _classify_commodity_from_text(event.title)
+        state = _extract_us_state_from_text(event.title)
+        new_signal = MacroSignal(
+            kind="satellite_landuse_change",
+            description=f"Planet Labs land-use change: {event.title}",
+            source_reference=f"telemetry_event:{event.id} [planet_labs] {event.title}",
+            commodity=commodity,
+            state=state,
+        )
+        signals.append(new_signal)
+        if commodity:
+            _persist_macro_signal(db, new_signal, state=state)
     return signals
 
 
@@ -3522,6 +3606,8 @@ def _stage1_detect_signals(db: Session) -> list[MacroSignal]:
         + _fred_credit_conditions_signals(db)
         + _rail_congestion_signals(db)
         + _adsb_air_cargo_signals(db)
+        + _sonar_trucking_signals(db)
+        + _planet_labs_landuse_signals(db)
     )
 
 
@@ -4432,7 +4518,7 @@ def run_silo_leadgen(db: Session) -> dict:
             # call on a non-company string, so this only fires for
             # HigherGov when a real name was actually extracted.
             is_named_highergov = event.source == TelemetrySource.HIGHERGOV and company_name != event.title
-            if event.source == TelemetrySource.IMPORT_GENIUS or is_named_highergov:
+            if event.source in (TelemetrySource.IMPORT_GENIUS, TelemetrySource.TRANSMETRIQ) or is_named_highergov:
                 if company_name not in revenue_check_cache:
                     score_delta, dismiss, note = _active_revenue_check(company_name)
                     if score_delta == 0.0 and not dismiss:

@@ -137,6 +137,27 @@ class TelemetrySource(str, Enum):
     # but, like RAIL_TRAFFIC, is unconfirmed against live docs in this
     # sandbox -- see that module's own docstring.
     ADSB = "adsb"
+    # TransmetriQ (Railinc's modernized API layer over the same
+    # infrastructure RAIL_TRAFFIC's AAR/STB macro-only placeholder sits
+    # outside of) -- real, confirmed product: VIN-level railcar tracking
+    # across 600+ North American railroads, quote-based pricing, no
+    # Railinc shipper-of-record membership required the way raw Umler/
+    # EDI access does. This is the real car-level answer RAIL_TRAFFIC
+    # explicitly said didn't exist -- see telemetry/transmetriq.py for
+    # what's still unconfirmed (exact live endpoint contract).
+    TRANSMETRIQ = "transmetriq"
+    # FreightWaves SONAR -- real trucking tender-rejection/capacity macro
+    # signal (confirmed self-serve tier ~$25-35/mo, full API access
+    # quote-based/enterprise). Same macro-context-only posture as FRED:
+    # no company-level targeting exists for trucking the way AIS/ADS-B
+    # give it for vessels/aircraft.
+    SONAR = "sonar"
+    # Planet Labs -- real, confirmed pricing ($2,700-$9,650/yr by
+    # coverage area on their Monitoring plan). Daily-revisit optical
+    # imagery, NOT radar -- this is the land-use/parcel change-detection
+    # tool (pairs with Regrid), not the cloud-penetrating disaster tool
+    # (that's Sentinel-1 SAR / ICEYE / Capella, a different use case).
+    PLANET_LABS = "planet_labs"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads /
@@ -184,6 +205,9 @@ MACRO_TELEMETRY_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.FRED,
         TelemetrySource.RAIL_TRAFFIC,
         TelemetrySource.ADSB,
+        TelemetrySource.TRANSMETRIQ,
+        TelemetrySource.SONAR,
+        TelemetrySource.PLANET_LABS,
     }
 )
 

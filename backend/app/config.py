@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     # adapter here.
     rail_traffic_api_key: str = ""
     adsb_api_key: str = ""
+    # TransmetriQ (Railinc) -- real, confirmed product, quote-based
+    # pricing (no public dollar figure; ~$2,700-$9,650/yr-scale
+    # commercial relationship is the realistic range by analogy to
+    # similar industry data subscriptions, not a confirmed TransmetriQ
+    # number itself). Empty key -> adapter stays inert.
+    transmetriq_api_key: str = ""
+    # FreightWaves SONAR -- confirmed self-serve tier ~$25-35/mo; full
+    # API access is enterprise/quote-based.
+    sonar_api_key: str = ""
+    # Planet Labs -- confirmed Monitoring-plan pricing $2,700-$9,650/yr
+    # depending on coverage area (planet.com/pricing).
+    planet_labs_api_key: str = ""
 
     cobalt_intelligence_api_key: str = ""
     interzoid_api_key: str = ""

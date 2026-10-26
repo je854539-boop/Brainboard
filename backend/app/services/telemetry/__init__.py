@@ -12,10 +12,13 @@ from app.services.telemetry.highergov import HigherGovAdapter
 from app.services.telemetry.import_genius import ImportGeniusAdapter
 from app.services.telemetry.noaa_nws import NOAANWSAdapter
 from app.services.telemetry.openfda import OpenFDATelemetryAdapter
+from app.services.telemetry.planet_labs import PlanetLabsAdapter
 from app.services.telemetry.rail_traffic import RailTrafficAdapter
 from app.services.telemetry.regrid import RegridAdapter
 from app.services.telemetry.seavantage import SeaVantageAdapter
+from app.services.telemetry.sonar import SONARAdapter
 from app.services.telemetry.sos_registries import SOSRegistriesAdapter
+from app.services.telemetry.transmetriq import TransmetriQAdapter
 from app.services.telemetry.ucc_filings import UCCFilingsAdapter
 from app.services.telemetry.usace import USACEAdapter
 from app.services.telemetry.vesselfinder import VesselFinderAdapter
@@ -47,6 +50,9 @@ def all_adapters() -> list[TelemetryAdapter]:
         FREDAdapter(api_key=settings.fred_api_key),
         RailTrafficAdapter(api_key=settings.rail_traffic_api_key),
         ADSBAdapter(api_key=settings.adsb_api_key),
+        TransmetriQAdapter(api_key=settings.transmetriq_api_key),
+        SONARAdapter(api_key=settings.sonar_api_key),
+        PlanetLabsAdapter(api_key=settings.planet_labs_api_key),
     ]
 
 
@@ -72,5 +78,8 @@ __all__ = [
     "FREDAdapter",
     "RailTrafficAdapter",
     "ADSBAdapter",
+    "TransmetriQAdapter",
+    "SONARAdapter",
+    "PlanetLabsAdapter",
     "all_adapters",
 ]
