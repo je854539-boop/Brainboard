@@ -448,6 +448,37 @@ class WaterwayFrictionMetric(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class PersistedMacroSignal(Base):
+    """Durable row for a classified GDELT-origin MacroSignal
+    (silo_leadgen.py) -- the raw headline already lives in TelemetryEvent
+    the moment it's ingested, but the INTERPRETATION a GDELT sweep
+    derives from it (which commodity, which direction, which US state if
+    the headline/LLM extraction named one) previously only existed as an
+    in-memory MacroSignal for the duration of one run_silo_leadgen call,
+    then evaporated. This table is what lets river_surveillance.py -- a
+    completely separate engine, polling on its own schedule -- later ask
+    "was there a real, cited news reason behind this zone's behavior,"
+    instead of every trigger firing blind to why. See
+    silo_leadgen.py::_persist_macro_signal (the only writer) and
+    river_surveillance.py::_find_corroborating_signal (the only reader).
+
+    `state` is null for the large majority of signals -- most GDELT
+    coverage here is deliberately nationwide (see each _gdelt_*_signals
+    docstring in silo_leadgen.py for why), not because extraction failed.
+    """
+
+    __tablename__ = "persisted_macro_signals"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    source_reference: Mapped[str | None] = mapped_column(String(512))
+    commodity: Mapped[str | None] = mapped_column(String(128), index=True)
+    signal_type: Mapped[str | None] = mapped_column(String(32))
+    state: Mapped[str | None] = mapped_column(String(2), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class WaterwayTrigger(Base):
     """One firing of the trigger matrix (distress or expansion). This is
     the actionable output of the whole engine -- when `entity_uid`
@@ -466,6 +497,16 @@ class WaterwayTrigger(Base):
     zone_name: Mapped[str | None] = mapped_column(String(256))
     detail: Mapped[str] = mapped_column(Text, nullable=False)
     source_reference: Mapped[str | None] = mapped_column(String(512))
+    # Annotation only, never a gate: vessel/dock behavior alone still
+    # fires every trigger below exactly as before. When a persisted
+    # GDELT signal corroborates it (see river_surveillance.py::
+    # _find_corroborating_signal), these two columns carry the "why" so
+    # a broker's note cites a real headline instead of a bare heuristic
+    # number, and trigger_performance_report can measure whether
+    # corroborated triggers actually convert at a different rate than
+    # uncorroborated ones.
+    gdelt_corroborated: Mapped[bool] = mapped_column(nullable=False, default=False)
+    gdelt_context: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 

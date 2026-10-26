@@ -75,6 +75,18 @@ def list_vessels(db: Session = Depends(get_db)):
     return results
 
 
+@router.get("/performance-report")
+def river_performance_report(db: Session = Depends(get_db)):
+    """Empirical conversion/funding rate per trigger type, and per
+    trigger-type+GDELT-corroboration bucket, measured against each
+    resolved lead's REAL Master Log outcome -- not a reasoned assumption.
+    Use this to decide whether the GDELT-corroboration annotation (see
+    river_surveillance.py::_annotate_gdelt_corroboration) is actually
+    worth anything once real trigger-to-outcome data exists -- see
+    river_surveillance.py::trigger_performance_report."""
+    return river_surveillance.trigger_performance_report(db)
+
+
 @router.get("/friction")
 def list_friction(db: Session = Depends(get_db)):
     """Latest computed friction score per monitored zone -- see

@@ -79,7 +79,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models.enums import MasterLogStatus, SiloCandidateStatus, SiloName, TelemetrySource
-from app.models.orm import MasterLogEntry, SiloCandidate, TelemetryEvent
+from app.models.orm import MasterLogEntry, PersistedMacroSignal, SiloCandidate, TelemetryEvent
 from app.services import entity_matching, telemetry
 from app.services.telemetry.apollo import ApolloAdapter
 from app.services.telemetry.cobalt_intelligence import CobaltIntelligenceAdapter
@@ -2353,6 +2353,62 @@ def _classify_commodity_from_text(text: str) -> str | None:
     return None
 
 
+# Free, keyless US-state mention in a headline's own text -- no added
+# API cost, same crude-but-useful posture as _classify_commodity_from_
+# text's keyword matching. Full state names only (not bare 2-letter
+# codes, which false-positive constantly against ordinary prose, e.g.
+# "IN" or "OR" as words) -- good enough to feed river_surveillance.py's
+# state-match narrowing, not precise geocoding.
+_US_STATE_ABBREVIATIONS: dict[str, str] = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+    "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+    "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+    "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS", "missouri": "MO",
+    "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ",
+    "new mexico": "NM", "new york": "NY", "north carolina": "NC", "north dakota": "ND", "ohio": "OH",
+    "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT", "vermont": "VT",
+    "virginia": "VA", "washington": "WA", "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+    "puerto rico": "PR",
+}
+
+
+def _extract_us_state_from_text(text: str) -> str | None:
+    """Scans headline text for a full US state name. Deliberately the
+    first match in dict-insertion order, not the "best" match -- same
+    good-enough-for-narrowing posture as _classify_commodity_from_text,
+    not a claim of precise geocoding (see PersistedMacroSignal's
+    docstring)."""
+    text_lower = f" {text.lower()} "
+    for name, abbr in _US_STATE_ABBREVIATIONS.items():
+        if f" {name} " in text_lower or text_lower.startswith(f" {name} "):
+            return abbr
+    return None
+
+
+def _persist_macro_signal(db: Session, signal: "MacroSignal", state: str | None = None) -> None:
+    """The only writer of PersistedMacroSignal -- see that model's
+    docstring for why. Called once per GDELT-origin MacroSignal actually
+    emitted (not every record a GDELT query returns, only the ones that
+    survived classification), right alongside the existing TelemetryEvent
+    write each _gdelt_*_signals function already does. `state` is passed
+    explicitly by callers that extracted one (keyword-text match, or the
+    LLM discovery path's own "us_state" field) rather than read off
+    `signal.state`, which MacroSignal's own docstring says is only ever
+    set for USACE-origin signals today."""
+    db.add(
+        PersistedMacroSignal(
+            kind=signal.kind,
+            description=signal.description,
+            source_reference=signal.source_reference,
+            commodity=signal.commodity,
+            signal_type=signal.signal_type,
+            state=state,
+        )
+    )
+
+
 # Below this, an LLM classification is treated as "not confident
 # enough to spend a real paid Apollo/Cobalt hunt on" and discarded --
 # a bad/uncertain classification is worse than none here.
@@ -2394,6 +2450,8 @@ def _llm_classify_news(title: str) -> dict | None:
         '"signal_type": "expansion"|"distress"|"neutral", '
         '"apollo_keywords": ["<3 to 5 B2B company-search keywords for that exact industry>"], '
         '"cobalt_term": "<one search term for a Secretary of State business-name search>", '
+        '"us_state": "<2-letter US state code ONLY if the headline specifically names a US state or a city/'
+        'facility you can confidently map to one state, else null -- do not guess>", '
         '"confidence": <0.0 to 1.0>}\n\n'
         'If the headline is generic financial/political news with no identifiable industry, respond with: '
         '{"industry": null}'
@@ -2481,20 +2539,24 @@ def _gdelt_llm_discovery_signals(db: Session) -> list[MacroSignal]:
         db.flush()
 
         signal_type = result.get("signal_type")
-        signals.append(
-            MacroSignal(
-                kind="llm_discovered_industry",
-                description=(
-                    f"LLM-discovered industry '{result['industry']}' (confidence {result['confidence']:.0%}, "
-                    f"not a verified tag): {record.title}"
-                ),
-                source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
-                commodity=result["industry"],
-                signal_type=signal_type if signal_type != "neutral" else None,
-                dynamic_apollo_keywords=result.get("apollo_keywords"),
-                dynamic_cobalt_term=result.get("cobalt_term"),
-            )
+        new_signal = MacroSignal(
+            kind="llm_discovered_industry",
+            description=(
+                f"LLM-discovered industry '{result['industry']}' (confidence {result['confidence']:.0%}, "
+                f"not a verified tag): {record.title}"
+            ),
+            source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+            commodity=result["industry"],
+            signal_type=signal_type if signal_type != "neutral" else None,
+            dynamic_apollo_keywords=result.get("apollo_keywords"),
+            dynamic_cobalt_term=result.get("cobalt_term"),
         )
+        signals.append(new_signal)
+        # The only path where a US state comes from a real, paid LLM
+        # read of the headline itself (every other GDELT signal below
+        # uses the free keyword-text matcher) -- see _llm_classify_news'
+        # prompt schema.
+        _persist_macro_signal(db, new_signal, state=result.get("us_state"))
 
     db.commit()
     return signals
@@ -2666,18 +2728,18 @@ def _gdelt_geopolitical_disruption_signals(db: Session, commodities: set[str] | 
             if commodities is not None and commodity not in commodities:
                 continue
             signal_type = _signal_type_for_price_direction(commodity, price_up=True)
-            signals.append(
-                MacroSignal(
-                    kind="geopolitical_supply_disruption",
-                    description=(
-                        f"GDELT geopolitical supply-disruption coverage classified {commodity} "
-                        f"({signal_type or 'unclassified'}): {record.title}"
-                    ),
-                    source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
-                    commodity=commodity,
-                    signal_type=signal_type,
-                )
+            new_signal = MacroSignal(
+                kind="geopolitical_supply_disruption",
+                description=(
+                    f"GDELT geopolitical supply-disruption coverage classified {commodity} "
+                    f"({signal_type or 'unclassified'}): {record.title}"
+                ),
+                source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                commodity=commodity,
+                signal_type=signal_type,
             )
+            signals.append(new_signal)
+            _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(record.title))
 
     db.commit()
     return signals
@@ -2721,15 +2783,15 @@ def _gdelt_avian_flu_signals(db: Session) -> list[MacroSignal]:
         )
         db.add(event)
         db.flush()
-        signals.append(
-            MacroSignal(
-                kind="poultry_disease_outbreak",
-                description=f"GDELT avian flu/bird flu outbreak coverage: {record.title}",
-                source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
-                commodity="poultry_producer",
-                signal_type="distress",
-            )
+        new_signal = MacroSignal(
+            kind="poultry_disease_outbreak",
+            description=f"GDELT avian flu/bird flu outbreak coverage: {record.title}",
+            source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+            commodity="poultry_producer",
+            signal_type="distress",
         )
+        signals.append(new_signal)
+        _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(record.title))
 
     db.commit()
     return signals
@@ -2815,18 +2877,18 @@ def _gdelt_tariff_relief_signals(db: Session, commodities: set[str] | None = Non
             )
             db.add(event)
             db.flush()
-            signals.append(
-                MacroSignal(
-                    kind="tariff_relief_competitive_pressure",
-                    description=(
-                        f"GDELT tariff-relief/exemption coverage -- competitive pressure on domestic "
-                        f"{commodity} producers from a cheaper competing import ({signal_type}): {record.title}"
-                    ),
-                    source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
-                    commodity=commodity,
-                    signal_type=signal_type,
-                )
+            new_signal = MacroSignal(
+                kind="tariff_relief_competitive_pressure",
+                description=(
+                    f"GDELT tariff-relief/exemption coverage -- competitive pressure on domestic "
+                    f"{commodity} producers from a cheaper competing import ({signal_type}): {record.title}"
+                ),
+                source_reference=f"telemetry_event:{event.id} [gdelt] {record.title}",
+                commodity=commodity,
+                signal_type=signal_type,
             )
+            signals.append(new_signal)
+            _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(record.title))
             break  # one commodity match per headline is enough
 
     db.commit()
@@ -2844,15 +2906,18 @@ def _gdelt_shock_signals(db: Session) -> list[MacroSignal]:
     # direction-ambiguous news (a new tariff can be good news for a
     # protected domestic producer, bad for an importer), so guessing a
     # direction here would be worse than leaving it unclassified.
-    return [
-        MacroSignal(
+    signals: list[MacroSignal] = []
+    for event in _fresh_events(db, TelemetrySource.GDELT, limit=10):
+        new_signal = MacroSignal(
             kind="news_shock",
             description=f"GDELT commodity/tariff-shock coverage: {event.title}",
             source_reference=f"telemetry_event:{event.id} [gdelt] {event.title}",
             commodity=_classify_commodity_from_text(event.title),
         )
-        for event in _fresh_events(db, TelemetrySource.GDELT, limit=10)
-    ]
+        signals.append(new_signal)
+        _persist_macro_signal(db, new_signal, state=_extract_us_state_from_text(event.title))
+    db.commit()
+    return signals
 
 
 # Distress/operational-disruption language, per commodity -- combined

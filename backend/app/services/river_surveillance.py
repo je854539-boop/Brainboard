@@ -63,11 +63,14 @@ from app.models.enums import (
     ActivitySource,
     GeofenceEventType,
     TelemetrySource,
+    TERMINAL_STATUSES,
+    TERMINAL_SUCCESS_STATUSES,
     WaterwayTriggerType,
 )
 from app.models.orm import (
     GeofenceEvent,
     MasterLogEntry,
+    PersistedMacroSignal,
     SiloCandidate,
     WaterwayFrictionMetric,
     WaterwayTelemetrySnapshot,
@@ -220,6 +223,65 @@ def _apply_trigger_note(db: Session, entity_uid, trigger: WaterwayTrigger) -> No
     audit_line = f"[River Surveillance {timestamp}] {trigger.trigger_type.value}: {trigger.detail}"
     new_notes = f"{lead.notes}\n{audit_line}" if lead.notes else audit_line
     pipeline.update_lead_fields(db, lead, {"notes": new_notes}, source=ActivitySource.SYSTEM)
+
+
+def _find_corroborating_signal(db: Session, zone: dict) -> PersistedMacroSignal | None:
+    """Zone-resolution for the GDELT-corroboration annotation: narrows
+    silo_leadgen.py's persisted GDELT signals to the ones whose commodity
+    is actually part of THIS zone's real commodity mix (usace.py's
+    MONITORED_LOCKS percentages -- the same data that already drives the
+    search-radius/corridor logic elsewhere in this project), within
+    river_surveillance_gdelt_corroboration_window_days.
+
+    Prefers a signal whose extracted state matches this zone's state,
+    but falls back to a placeless nationwide signal (state IS NULL) --
+    most GDELT coverage here is nationwide by design (see
+    PersistedMacroSignal's docstring), so requiring a state match would
+    silently throw away the majority of real corroboration.
+
+    Returns None (not a guess) when nothing matches -- the caller must
+    leave the trigger exactly as it would have fired without this
+    function existing."""
+    commodities = list(zone.get("commodities") or {})
+    if not commodities:
+        return None
+
+    window_start = _now() - dt.timedelta(days=get_settings().river_surveillance_gdelt_corroboration_window_days)
+    base_query = db.query(PersistedMacroSignal).filter(
+        PersistedMacroSignal.commodity.in_(commodities),
+        PersistedMacroSignal.created_at >= window_start,
+    )
+
+    zone_state = zone.get("state")
+    if zone_state:
+        state_matched = (
+            base_query.filter(PersistedMacroSignal.state == zone_state)
+            .order_by(PersistedMacroSignal.created_at.desc())
+            .first()
+        )
+        if state_matched is not None:
+            return state_matched
+
+    return base_query.filter(PersistedMacroSignal.state.is_(None)).order_by(PersistedMacroSignal.created_at.desc()).first()
+
+
+def _annotate_gdelt_corroboration(db: Session, trigger: WaterwayTrigger, zone_name: str) -> None:
+    """Annotation, never a gate -- call this AFTER a trigger has already
+    decided to fire on vessel/dock behavior alone, right before it's
+    added/committed. When a corroborating signal exists, marks the
+    trigger and folds the cited headline into its note text, so a
+    broker's call opens with a real reason instead of a bare heuristic
+    number; when none exists, this is a no-op and the trigger is
+    unchanged from how it fired before this annotation existed."""
+    zone = next((z for z in WATERWAY_ZONES if z["name"] == zone_name), None)
+    if zone is None:
+        return
+    signal = _find_corroborating_signal(db, zone)
+    if signal is None:
+        return
+    trigger.gdelt_corroborated = True
+    trigger.gdelt_context = f"{signal.description} ({signal.source_reference or 'gdelt'})"
+    trigger.detail = f"{trigger.detail} | GDELT corroboration: {signal.description}"
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +823,7 @@ def check_distress_trigger(db: Session, mmsi: str, zone_name: str, idle_hours: f
             ),
             source_reference=f"cargo_cross_reference:{record.get('source')}:mmsi={mmsi}",
         )
+        _annotate_gdelt_corroboration(db, trigger, zone_name)
         db.add(trigger)
         db.commit()
         if entity_uid:
@@ -823,6 +886,7 @@ def check_expansion_trigger(db: Session, entity_uid, company_name: str, zone_nam
         ),
         source_reference=f"geofence_zone_entry_rate:{entity_uid}:{zone_name}",
     )
+    _annotate_gdelt_corroboration(db, trigger, zone_name)
     db.add(trigger)
     db.commit()
     _apply_trigger_note(db, entity_uid, trigger)
@@ -903,6 +967,7 @@ def check_inland_transload(db: Session, entity_uid, company_name: str, zone_name
         ),
         source_reference=f"transload_link:{entity_uid}:{other_leg.id}",
     )
+    _annotate_gdelt_corroboration(db, trigger, zone_name)
     db.add(trigger)
     db.commit()
     _apply_trigger_note(db, entity_uid, trigger)
@@ -972,6 +1037,80 @@ def run_full_sweep(db: Session) -> dict:
         "friction_metrics_computed": len(friction_metrics),
         "zones_monitored": len(WATERWAY_ZONES),
     }
+
+
+# ---------------------------------------------------------------------------
+# Trigger performance report -- same measurement posture as
+# silo_leadgen.py::_signal_performance_report, applied to this file's
+# trigger matrix instead of SiloCandidate markers. The GDELT-
+# corroboration annotation above is a reasoned bet, not a measured one;
+# this is what tells you, against real Master Log outcomes, whether a
+# gdelt_corroborated trigger actually converts better than an
+# uncorroborated one of the same type -- the first real feedback this
+# engine has ever had on its own heuristics.
+# ---------------------------------------------------------------------------
+
+
+def trigger_performance_report(db: Session) -> list[dict]:
+    """For every trigger that resolved to a real lead (entity_uid is not
+    None), walks that lead's real MasterLogEntry.status/funding_events
+    and attributes the outcome back to the trigger's type, AND
+    separately to a type+corroboration bucket (e.g.
+    "distress_supply_starvation:gdelt_corroborated" vs.
+    "distress_supply_starvation:uncorroborated") -- so the report answers
+    not just "does this trigger type work" but "does citing a real news
+    reason actually improve it," the real question the annotation
+    decision (vs. gating) left open.
+
+    Returns one row per trigger type and per type+corroboration bucket,
+    each with total_triggers, resolved_count (reached any terminal
+    status -- funded or attrited), funded_count, total_funded_amount,
+    and funded_rate. Deliberately read-only -- same "hand a human the
+    real numbers, don't auto-tune" posture as the silo report."""
+    triggers = db.query(WaterwayTrigger).filter(WaterwayTrigger.entity_uid.isnot(None)).all()
+
+    stats: dict[str, dict] = {}
+
+    def _bucket(key: str) -> dict:
+        return stats.setdefault(
+            key, {"total_triggers": 0, "resolved_count": 0, "funded_count": 0, "total_funded_amount": 0.0}
+        )
+
+    for trigger in triggers:
+        lead = db.get(MasterLogEntry, trigger.entity_uid)
+        if lead is None:
+            continue  # entity_uid resolved to a SiloCandidate, never materialized into a lead
+
+        resolved = lead.status in TERMINAL_STATUSES
+        funded = lead.status in TERMINAL_SUCCESS_STATUSES
+        funded_amount = sum(float(fe.funded_amount) for fe in lead.funding_events)
+
+        type_tag = trigger.trigger_type.value
+        corroboration_tag = f"{type_tag}:gdelt_corroborated" if trigger.gdelt_corroborated else f"{type_tag}:uncorroborated"
+
+        for tag in (type_tag, corroboration_tag):
+            bucket = _bucket(tag)
+            bucket["total_triggers"] += 1
+            bucket["resolved_count"] += int(resolved)
+            bucket["funded_count"] += int(funded)
+            bucket["total_funded_amount"] += funded_amount
+
+    report = []
+    for tag, bucket in stats.items():
+        total = bucket["total_triggers"]
+        report.append(
+            {
+                "tag": tag,
+                "total_triggers": total,
+                "resolved_count": bucket["resolved_count"],
+                "funded_count": bucket["funded_count"],
+                "total_funded_amount": round(bucket["total_funded_amount"], 2),
+                "resolved_rate": round(bucket["resolved_count"] / total, 3) if total else 0.0,
+                "funded_rate": round(bucket["funded_count"] / total, 3) if total else 0.0,
+            }
+        )
+    report.sort(key=lambda r: (r["funded_rate"], r["total_triggers"]), reverse=True)
+    return report
 
 
 # ---------------------------------------------------------------------------

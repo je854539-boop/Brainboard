@@ -106,6 +106,18 @@ class Settings(BaseSettings):
     # frequent importer. Tunable policy, same posture as the search-radius
     # table in silo_leadgen.py -- a reasoned default, not a measured one.
     river_surveillance_transload_window_days: int = 21
+    # GDELT corroboration annotation (see persisted_macro_signals /
+    # PersistedMacroSignal, river_surveillance.py::
+    # _find_corroborating_signal): how old a persisted GDELT signal can
+    # be and still count as "the reason" behind a live trigger. Shorter
+    # than the 21-day transload window on purpose -- a transload is
+    # confirming the SAME physical shipment across two legs of a real
+    # multi-week transit, while a news signal explaining a behavior
+    # anomaly needs to actually still be current. Tunable policy, same
+    # reasoned-not-measured posture as every other window here --
+    # validate against trigger_performance_report's real corroborated
+    # vs. uncorroborated funded_rate once live data exists.
+    river_surveillance_gdelt_corroboration_window_days: int = 14
 
     # SignalWire dialer (services/signalwire_adapter.py, services/dialer.py,
     # routers/dialer.py). Inert until project_id/api_token/space_url are all
