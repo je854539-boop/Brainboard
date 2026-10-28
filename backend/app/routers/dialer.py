@@ -518,7 +518,13 @@ async def inbound_call(request: Request, db: Session = Depends(get_db)):
         '<Say>Sorry we missed you. Please leave a message after the tone.</Say>'
         f'<Record maxLength="120" recordingStatusCallback="{voicemail_status_url}"/>'
     )
-    return _laml(f"<Response>{dial}{voicemail}</Response>")
+    # Industry-tailored opener -- see dialer.industry_greeting_for_number's
+    # docstring. None (unregistered number, no pool, no industry_tag, or
+    # an unmatched tag) means "behave exactly as before" -- the ring-group
+    # itself is unchanged either way, this only ever prepends a <Say>.
+    greeting = dialer.industry_greeting_for_number(db, form.get("To"))
+    opener = f"<Say>{escape(greeting)}</Say>" if greeting else ""
+    return _laml(f"<Response>{opener}{dial}{voicemail}</Response>")
 
 
 @router.post("/webhooks/inbound-leg-answered/{attempt_id}")

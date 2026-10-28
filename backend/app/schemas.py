@@ -272,6 +272,7 @@ class DialerNumberPoolOut(BaseModel):
     id: uuid.UUID
     name: str
     description: str | None
+    industry_tag: str | None
     created_at: datetime
     numbers: list[DialerNumberOut] = []
 
@@ -279,6 +280,7 @@ class DialerNumberPoolOut(BaseModel):
 class DialerNumberPoolCreate(BaseModel):
     name: str
     description: str | None = None
+    industry_tag: str | None = None
 
 
 class DialerCampaignOut(BaseModel):

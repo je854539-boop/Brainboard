@@ -520,6 +520,13 @@ class DialerNumberPool(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    # Free text, not an enum -- used only to pick an inbound TTS greeting
+    # (see services/dialer.py::INDUSTRY_INBOUND_GREETINGS) when a merchant
+    # calls back a number in this pool, e.g. "Trucking & Logistics" for a
+    # UCC Batch Silo trucking-tier pool. NULL -> the inbound webhook falls
+    # back to the existing generic greeting-less ring-group flow, so every
+    # pool that predates this column keeps behaving exactly as before.
+    industry_tag: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     numbers: Mapped[list["DialerNumber"]] = relationship(back_populates="pool", cascade="all, delete-orphan")

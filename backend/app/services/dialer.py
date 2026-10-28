@@ -55,6 +55,7 @@ from app.models.orm import (
     DialerCallAttempt,
     DialerCampaign,
     DialerNumber,
+    DialerNumberPool,
     InboundRingTarget,
     LeadContributor,
     MasterLogEntry,
@@ -129,6 +130,49 @@ def identify_inbound_caller(db: Session, from_number: str) -> tuple[str | None, 
             return "silo_candidate", candidate.candidate_uid, candidate.company_name
 
     return None, None, None
+
+
+# Inbound TTS greeting per DialerNumberPool.industry_tag -- played via
+# <Say> before the existing ring-group <Dial>, so a merchant calling back
+# a number dedicated to one UCC Batch Silo industry hears a greeting that
+# names their own situation, then falls into the exact same "whoever
+# picks up first" roster as every other inbound call. Deliberately plain
+# TTS, not a recorded human voice -- that's a different, lower-stakes
+# category than pitch_recording_url's real-recording-only pitch
+# (outbound_laml's docstring/the product decision behind it): this is a
+# neutral routing greeting, not a synthetic sales pitch standing in for
+# a broker. Reasoned copy, not measured -- edit freely, same posture as
+# every other string template in this project. Tag strings deliberately
+# match the SiloName values they correspond to for a clean mental model,
+# though industry_tag itself is free text on the pool, not typed against
+# SiloName -- a pool can carry any tag, unmatched tags just skip the
+# greeting and fall through to the existing generic flow untouched.
+INDUSTRY_INBOUND_GREETINGS: dict[str, str] = {
+    "Trucking & Logistics": "Thanks for calling about fleet or equipment financing. Connecting you with someone who can help right now.",
+    "Food Processing & Fabrication": "Thanks for calling about working capital for your business. Connecting you now.",
+    "Heavy Machinery & Industrial Equipment": "Thanks for calling about equipment financing. Connecting you now.",
+}
+
+
+def industry_greeting_for_number(db: Session, to_number: str | None) -> str | None:
+    """Looks up which DialerNumber was actually called (inbound webhook's
+    `To` field), then that number's pool's industry_tag, then the
+    matching greeting above. Returns None (not a guess) for an
+    unregistered number, a pool with no industry_tag, or an unmatched
+    tag -- the inbound handler treats None as "use the existing
+    generic flow," so every number that predates this feature keeps
+    behaving exactly as it did before."""
+    target = _last10_digits(to_number)
+    if target is None:
+        return None
+    for number in db.execute(select(DialerNumber)).scalars().all():
+        if _last10_digits(number.phone_number) != target:
+            continue
+        pool = db.get(DialerNumberPool, number.pool_id) if number.pool_id else None
+        if pool is None or not pool.industry_tag:
+            return None
+        return INDUSTRY_INBOUND_GREETINGS.get(pool.industry_tag)
+    return None
 
 
 def active_ring_targets(db: Session) -> list[InboundRingTarget]:
