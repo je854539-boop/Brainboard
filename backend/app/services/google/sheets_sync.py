@@ -499,24 +499,36 @@ UCC_BATCH_HOT_MEDIUM_TAB = "Hot + Medium"
 UCC_BATCH_COLD_TAB = "Cold"
 
 
-def push_ucc_batch_candidates(db: Session, service, sheet_id: str) -> dict:
-    """Pushes every UCC Batch Silo candidate to its tier's tab on the
-    separate UCC batch sheet. Call after services/ucc_batch.py::
-    import_ucc_batch_csv (and again after enrich_pending_candidates, since
-    an FMCSA fleet-confirm can move a candidate's score across a tier
-    boundary) -- not wired into any automatic sweep yet, since this sheet
-    is genuinely separate from the continuous pulls the rest of this
-    module runs."""
-    settings = get_settings()
-    candidates = db.execute(select(SiloCandidate).where(SiloCandidate.silo == SiloName.UCC_BATCH_SILO)).scalars().all()
+def push_batch_silo_candidates(db: Session, service, sheet_id: str, silo: SiloName, medium_threshold: float) -> dict:
+    """Pushes every candidate of ONE purchased-batch silo to its tier's
+    tab (Hot+Medium vs Cold, same two tab names reused across every
+    batch's separate sheet -- it's a different spreadsheet per batch via
+    `sheet_id`, so the names don't collide) on that batch's own separate
+    sheet. Call after a batch's own CSV import (and again after any
+    enrichment pass that can move a candidate's score across a tier
+    boundary, e.g. ucc_batch.py's FMCSA check) -- not wired into any
+    automatic sweep yet, since these sheets are genuinely separate from
+    the continuous pulls the rest of this module runs. Shared by every
+    purchased batch (see app/models/enums.py's PURCHASED_BATCH_SILOS) via
+    the thin per-batch wrappers below -- one push implementation, not one
+    per batch."""
+    candidates = db.execute(select(SiloCandidate).where(SiloCandidate.silo == silo)).scalars().all()
 
     pushed = {"hot_medium": 0, "cold": 0}
     for candidate in candidates:
         score = candidate.score or 0.0
-        tab = UCC_BATCH_COLD_TAB if score < settings.ucc_batch_medium_score_threshold else UCC_BATCH_HOT_MEDIUM_TAB
+        tab = UCC_BATCH_COLD_TAB if score < medium_threshold else UCC_BATCH_HOT_MEDIUM_TAB
         push_silo_candidate(service, sheet_id, tab, candidate)
         pushed["cold" if tab == UCC_BATCH_COLD_TAB else "hot_medium"] += 1
     return pushed
+
+
+def push_ucc_batch_candidates(db: Session, service, sheet_id: str) -> dict:
+    return push_batch_silo_candidates(db, service, sheet_id, SiloName.UCC_BATCH_SILO, get_settings().ucc_batch_medium_score_threshold)
+
+
+def push_mca_history_batch_candidates(db: Session, service, sheet_id: str) -> dict:
+    return push_batch_silo_candidates(db, service, sheet_id, SiloName.MCA_HISTORY_BATCH_SILO, get_settings().mca_history_batch_medium_score_threshold)
 
 
 # ---------------------------------------------------------------------------

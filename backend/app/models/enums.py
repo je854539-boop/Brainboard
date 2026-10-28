@@ -82,6 +82,23 @@ class SiloName(str, Enum):
     # Master Log V2's 9-silo workbook, and feeds its own shadow-mode
     # population -- see brain.py::ucc_batch_mode. See services/ucc_batch.py.
     UCC_BATCH_SILO = "UCC Batch Silo"
+    # A second, distinct purchased batch -- 18,000 contacts, current/
+    # prior MCA position + $100K/mo+ revenue, a different list and a
+    # different real signal (proven MCA payment behavior, not a UCC debt
+    # filing) from the UCC Batch Silo above. Kept as its own silo rather
+    # than merged into UCC_BATCH_SILO so conversion performance between
+    # the two purchased sources stays separately attributable. See
+    # PURCHASED_BATCH_SILOS below and services/mca_history_batch.py.
+    MCA_HISTORY_BATCH_SILO = "MCA History Batch Silo"
+
+
+# Every silo whose candidates are staged (SiloCandidate, not counted
+# toward brain.py's lead threshold) until a real human touchpoint
+# promotes one into Master Log V2 -- see brain.py's current_mode /
+# per-silo *_mode docstrings for why this split exists. Add a new
+# purchased-batch silo here (and nowhere else) to get the same
+# separate-shadow-population treatment automatically.
+PURCHASED_BATCH_SILOS: frozenset[SiloName] = frozenset({SiloName.UCC_BATCH_SILO, SiloName.MCA_HISTORY_BATCH_SILO})
 
 
 class SiloCandidateStatus(str, Enum):
@@ -204,6 +221,12 @@ class TelemetrySource(str, Enum):
     # recurring sweep -- same "tag, not a swept/queried source" posture
     # as DRIVE_OCR above.
     UCC_BATCH_UPLOAD = "ucc_batch_upload"
+    # Tag for SiloCandidate rows from the MCA History Batch Silo's CSV
+    # import (18K contacts, current/prior MCA position + $100K/mo+
+    # revenue) -- same "one-time import, not a swept/queried source"
+    # posture as UCC_BATCH_UPLOAD above, deliberately absent from
+    # ENRICHMENT_SOURCES/MACRO_TELEMETRY_SOURCES for the same reason.
+    MCA_HISTORY_BATCH_UPLOAD = "mca_history_batch_upload"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads /

@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # empty-string-means-inert posture as google_master_log_sheet_id.
     # See app/services/ucc_batch.py.
     google_ucc_batch_sheet_id: str = ""
+    # The MCA History Batch Silo's own, separate spreadsheet -- same
+    # rationale as google_ucc_batch_sheet_id, a different purchased
+    # list stays operationally and statistically separate from both
+    # Master Log V2 and the UCC batch. See services/mca_history_batch.py.
+    google_mca_history_batch_sheet_id: str = ""
 
     # CME Globex MDP 3.0 futures data, via Databento (databento.com) -- a
     # licensed redistributor. Raw CME MDP 3.0 access requires a direct
@@ -164,6 +169,20 @@ class Settings(BaseSettings):
     # validate against.
     ucc_batch_hot_score_threshold: float = 70.0
     ucc_batch_medium_score_threshold: float = 40.0
+
+    # MCA History Batch Silo (services/mca_history_batch.py) -- a
+    # SEPARATE revenue floor from mca_target_revenue_min/max_usd above.
+    # $100K/mo+ ($1.2M/yr+) is the real stated floor for this specific
+    # 18K-contact list -- much lower than the $5M-$49M band the UCC
+    # batch and CME funnel use, and deliberately NOT forced through that
+    # band. Reuses mca_target_revenue_max_usd as the ceiling (no
+    # separate upper bound was given for this list). Its own shadow-mode
+    # threshold and tiering bands, same reasoned-not-measured posture as
+    # the UCC batch's.
+    mca_history_batch_revenue_min_usd: float = 1_200_000.0
+    mca_history_batch_shadow_mode_lead_threshold: int = 1000
+    mca_history_batch_hot_score_threshold: float = 70.0
+    mca_history_batch_medium_score_threshold: float = 40.0
 
     # CesiumJS globe (templates/globe.html). Empty by default -- the
     # globe still renders (Cesium's bundled offline Natural Earth II
