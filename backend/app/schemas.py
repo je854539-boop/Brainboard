@@ -292,6 +292,7 @@ class DialerCampaignOut(BaseModel):
     number_pool_id: uuid.UUID | None
     lead_filter: dict
     caller_connect_number: str | None
+    bridge_to_ring_roster: bool
     pitch_recording_url: str | None
     max_attempts_per_lead: int
     max_list_size: int
@@ -306,6 +307,12 @@ class DialerCampaignCreate(BaseModel):
     number_pool_id: uuid.UUID | None = None
     lead_filter: dict = {}
     caller_connect_number: str | None = None
+    # When true, an answered outbound call rings every active
+    # InboundRingTarget simultaneously (same ring-group pattern as
+    # inbound) instead of the single caller_connect_number -- "first
+    # available desk takes the live lead." False keeps the existing
+    # single-number bridge behavior exactly as before.
+    bridge_to_ring_roster: bool = False
     pitch_recording_url: str | None = None
     max_attempts_per_lead: int = 3
     max_list_size: int = 1000
@@ -323,6 +330,7 @@ class DialerCampaignUpdate(BaseModel):
     number_pool_id: uuid.UUID | None = None
     lead_filter: dict | None = None
     caller_connect_number: str | None = None
+    bridge_to_ring_roster: bool | None = None
     pitch_recording_url: str | None = None
     max_attempts_per_lead: int | None = None
     max_list_size: int | None = None

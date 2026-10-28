@@ -593,6 +593,13 @@ class DialerCampaign(Base):
     number_pool_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("dialer_number_pools.id", ondelete="SET NULL"))
     lead_filter: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     caller_connect_number: Mapped[str | None] = mapped_column(String(32))
+    # When true, outbound_laml bridges an answered call to every active
+    # InboundRingTarget simultaneously (same ring-group <Dial> pattern
+    # already used for inbound), instead of the single
+    # caller_connect_number above -- "first available desk takes the
+    # live lead." Default false keeps every existing campaign's
+    # single-number bridge behavior exactly as it was.
+    bridge_to_ring_roster: Mapped[bool] = mapped_column(nullable=False, default=False)
     # A publicly reachable URL to a real recording of the broker pitching
     # (not a synthetic/AI voice -- deliberately, see routers/dialer.py's
     # outbound_laml docstring). When set, an answered call plays this and

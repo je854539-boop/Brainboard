@@ -20,6 +20,7 @@ from app.routers import (
 )
 from app.routers import river_surveillance as river_surveillance_router
 from app.services import brain as brain_service
+from app.services import dialer as dialer_service
 from app.services import enrichment_orchestrator
 from app.services import river_surveillance
 from app.services import silo_leadgen
@@ -45,6 +46,9 @@ async def lifespan(app: FastAPI):
     # lead-gen organism that sweeps daily" -- see
     # silo_leadgen.start_background_sweep's docstring.
     silo_leadgen.start_background_sweep()
+    # Off unless DIALER_PACING_ENABLED=true -- see
+    # dialer.start_pacing_loop's docstring.
+    dialer_service.start_pacing_loop()
     yield
     river_surveillance.stop_background_polling()
     brain_service.stop_background_refresh()
@@ -52,6 +56,7 @@ async def lifespan(app: FastAPI):
     calendar_sync.stop_background_pull()
     sheets_sync.stop_background_pull()
     silo_leadgen.stop_background_sweep()
+    dialer_service.stop_pacing_loop()
 
 
 app = FastAPI(title="Brainboard Command Deck", lifespan=lifespan)

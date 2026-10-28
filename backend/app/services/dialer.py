@@ -31,6 +31,7 @@ lookup, LaML structure, credit ledger) doesn't depend on that assumption
 being right and is fully verified here.
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -50,6 +51,7 @@ from app.models.enums import (
     LeadContributionReason,
     MasterLogStatus,
     SiloCandidateStatus,
+    TelemetrySource,
 )
 from app.models.orm import (
     DialerCallAttempt,
@@ -130,6 +132,72 @@ def identify_inbound_caller(db: Session, from_number: str) -> tuple[str | None, 
             return "silo_candidate", candidate.candidate_uid, candidate.company_name
 
     return None, None, None
+
+
+# Safe, curated TTS phrases per TelemetrySource -- deliberately NOT a
+# pull from the entity's own notes field. Notes carry internal broker
+# shorthand, disqualifying flags, and candid commentary never meant for
+# an external caller to hear read aloud; this is a fixed, reviewed
+# mapping instead, same "vetted copy, not raw internal data" posture as
+# INDUSTRY_INBOUND_GREETINGS. Sources with no real "why we reached out"
+# meaning (DEEPGRAM_NOVA, INTERZOID, DRIVE_OCR -- enrichment/data-quality
+# adapters, not lead-generating signals) are deliberately absent, same
+# "None means fall through" contract as industry_greeting_for_number.
+SIGNAL_PHRASES: dict[TelemetrySource, str] = {
+    TelemetrySource.CME_GLOBEX: "recent commodity price movement",
+    TelemetrySource.FRED: "current credit market conditions",
+    TelemetrySource.GDELT: "recent trade and tariff news",
+    TelemetrySource.IMPORT_GENIUS: "your recent import activity",
+    TelemetrySource.UCC_FILINGS: "a recent UCC filing on file",
+    TelemetrySource.UCC_BATCH_UPLOAD: "a recent UCC filing on file",
+    TelemetrySource.OPENFDA: "a recent FDA recall notice",
+    TelemetrySource.SONAR: "current trucking capacity conditions",
+    TelemetrySource.USACE: "recent river and port activity",
+    TelemetrySource.NOAA_NWS: "a recent weather disruption in your area",
+    TelemetrySource.SOS_REGISTRIES: "your business registration status",
+    TelemetrySource.REGRID: "your property and facility records",
+    TelemetrySource.COBALT_INTELLIGENCE: "your business standing records",
+    TelemetrySource.APOLLO: "your company profile",
+    TelemetrySource.TRANSMETRIQ: "recent rail shipment activity",
+    TelemetrySource.PLANET_LABS: "recent facility activity",
+    TelemetrySource.SENTINEL_HUB: "recent facility activity",
+    TelemetrySource.XENETA: "current air freight rate conditions",
+    TelemetrySource.HIGHERGOV: "your government contract activity",
+    TelemetrySource.DATALASTIC: "recent vessel activity",
+    TelemetrySource.VESSELFINDER: "recent vessel activity",
+    TelemetrySource.GFW_4WINGS: "recent vessel activity",
+    TelemetrySource.ADSB: "recent air cargo activity",
+    TelemetrySource.RAIL_TRAFFIC: "rail traffic conditions",
+    TelemetrySource.FMCSA: "your fleet's registration records",
+}
+
+
+def personalized_greeting_for_caller(db: Session, kind: str | None, entity_uid: uuid.UUID | None, company_name: str | None) -> str | None:
+    """The real "Dynamic Signal Greeting" -- builds on identify_inbound_
+    caller's existing ANI match instead of re-doing it. Looks up the
+    matched entity's own source_silo/source_channel (MasterLogEntry) or
+    silo/origin_source (SiloCandidate) and, when a SIGNAL_PHRASES entry
+    exists for it, names the real reason this specific caller was
+    contacted. Falls back to a company-name-only greeting when the
+    source has no mapped phrase, and returns None entirely for an
+    unidentified caller or missing company name -- the inbound handler
+    treats None as "fall through to the industry-pool greeting, then the
+    fully generic flow," same priority chain as before this existed."""
+    if not kind or entity_uid is None or not company_name:
+        return None
+
+    source: TelemetrySource | None = None
+    if kind == "lead":
+        entry = db.get(MasterLogEntry, entity_uid)
+        source = entry.source_channel if entry else None
+    elif kind == "silo_candidate":
+        candidate = db.get(SiloCandidate, entity_uid)
+        source = candidate.origin_source if candidate else None
+
+    phrase = SIGNAL_PHRASES.get(source) if source else None
+    if phrase:
+        return f"Thanks for calling back regarding {phrase} for {company_name}. Connecting you with someone who can help right now."
+    return f"Thanks for calling back, {company_name}. Connecting you now."
 
 
 # Inbound TTS greeting per DialerNumberPool.industry_tag -- played via
@@ -596,3 +664,74 @@ def apply_disposition(
     db.commit()
     db.refresh(attempt)
     return attempt
+
+
+# ---------------------------------------------------------------------------
+# Bounded Pacing Scheduler -- meters every active campaign's dial queue in
+# small, steady batches across a shift instead of one big run_campaign
+# call. Off by default; same background-loop shape as brain.py's
+# _refresh_loop / sheets_sync.py's _pull_loop, deliberately copied rather
+# than reinvented.
+# ---------------------------------------------------------------------------
+
+_pacing_task: asyncio.Task | None = None
+
+
+def _pace_all_active_campaigns(db: Session) -> dict[str, int]:
+    """One tick: run_campaign(max_calls=dialer_pacing_batch_size) for
+    every is_active campaign, via place_outbound_call -- which already
+    does its own calling-hours check per call, so a tick that starts
+    just before the window closes still can't place a late call, and a
+    tick during closed hours places zero calls for every campaign rather
+    than needing a separate skip here. _select_local_number (inside
+    place_outbound_call) is what actually picks the caller-ID number per
+    call -- this loop only decides WHEN and HOW MANY, never which
+    number."""
+    settings = get_settings()
+    placed: dict[str, int] = {}
+    campaigns = db.execute(select(DialerCampaign).where(DialerCampaign.is_active.is_(True))).scalars().all()
+    for campaign in campaigns:
+        attempts = run_campaign(db, campaign, max_calls=settings.dialer_pacing_batch_size)
+        if attempts:
+            placed[campaign.name] = len(attempts)
+    return placed
+
+
+async def _pacing_loop() -> None:
+    from app.database import SessionLocal
+
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                placed = await asyncio.to_thread(_pace_all_active_campaigns, db)
+                if placed:
+                    logger.info("Dialer pacing tick placed calls: %s", placed)
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001 -- one bad tick must not kill the loop
+            logger.exception("Dialer pacing tick failed -- will retry next interval")
+        await asyncio.sleep(get_settings().dialer_pacing_interval_seconds)
+
+
+def start_pacing_loop() -> asyncio.Task | None:
+    """Off unless dialer_pacing_enabled=true -- this places real outbound
+    calls on its own schedule, same explicit-opt-in posture as river
+    surveillance and the calendar/sheet pulls, not pure local
+    computation like brain's refresh loop."""
+    global _pacing_task
+    if not get_settings().dialer_pacing_enabled:
+        logger.info("Dialer pacing disabled (set DIALER_PACING_ENABLED=true to enable)")
+        return None
+    if _pacing_task is None or _pacing_task.done():
+        _pacing_task = asyncio.create_task(_pacing_loop())
+        logger.info("Dialer pacing loop started (interval=%ss, batch=%s)", get_settings().dialer_pacing_interval_seconds, get_settings().dialer_pacing_batch_size)
+    return _pacing_task
+
+
+def stop_pacing_loop() -> None:
+    global _pacing_task
+    if _pacing_task is not None:
+        _pacing_task.cancel()
+        _pacing_task = None
+        logger.info("Dialer pacing loop stopped")

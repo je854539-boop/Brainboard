@@ -396,37 +396,59 @@ async def outbound_laml(attempt_id: uuid.UUID, db: Session = Depends(get_db)):
     With campaign.pitch_recording_url set: plays that recording (a real
     recording of the broker pitching -- deliberately not synthetic/AI
     voice, see the compliance discussion this was built from) as the
-    opener, then always bridges to caller_connect_number -- no keypress
-    gate. If the lead hangs up during/after the recording, the call just
-    ends there (SignalWire never reaches the <Dial>); if they stay on the
-    line, they're connected live. This is a passive filter (self-select
-    out by hanging up) rather than an active one (press 1) -- lower
-    friction, same effect, and total call duration (captured either way
-    via the status webhook below) is still a usable engagement signal
-    even without a keypress.
+    opener, then always bridges -- no keypress gate. If the lead hangs up
+    during/after the recording, the call just ends there (SignalWire
+    never reaches the <Dial>); if they stay on the line, they're
+    connected live. This is a passive filter (self-select out by hanging
+    up) rather than an active one (press 1) -- lower friction, same
+    effect, and total call duration (captured either way via the status
+    webhook below) is still a usable engagement signal even without a
+    keypress.
 
-    Without a pitch_recording_url: legacy/simple mode, bridges immediately
-    on answer -- NOT the deferred live patch-in/double-dial conferencing,
-    which needs a second already-in-progress call to bridge into and isn't
-    built yet."""
+    Where it bridges TO depends on campaign.bridge_to_ring_roster: true
+    rings every active InboundRingTarget simultaneously (Multi-Endpoint
+    Bridge -- first available desk takes it, same pattern as inbound);
+    false (default) bridges to the single caller_connect_number, same
+    legacy/simple behavior as before this existed. Neither is the
+    deferred live patch-in/double-dial conferencing, which needs a
+    second already-in-progress call to bridge into and isn't built yet."""
     attempt = db.get(DialerCallAttempt, attempt_id)
     if attempt is None:
         return _laml("<Response><Say>Call record not found.</Say></Response>")
 
     campaign = db.get(DialerCampaign, attempt.campaign_id)
-    if campaign is None or not campaign.caller_connect_number:
-        return _laml(
-            "<Response><Say>Thanks for picking up. No follow-up line is configured for this campaign yet.</Say></Response>"
-        )
-
     settings = get_settings()
     base = settings.dialer_public_base_url.rstrip("/")
     status_url = escape(f"{base}/api/dialer/webhooks/status/{attempt.id}")
-    number = escape(campaign.caller_connect_number)
-    bridge = (
-        f'<Dial record="record-from-answer" recordingStatusCallback="{status_url}" '
-        f'action="{status_url}"><Number>{number}</Number></Dial>'
-    )
+
+    if campaign is not None and campaign.bridge_to_ring_roster:
+        # Multi-Endpoint Bridge -- same ring-group pattern as inbound
+        # (dialer.active_ring_targets), applied to an ANSWERED outbound
+        # call instead of a single caller_connect_number. Deliberately
+        # the minimal <Number> list only, no per-leg statusCallback --
+        # inbound's leg-answered credit attribution isn't duplicated
+        # here since it wasn't asked for; the shared outer status_url
+        # still captures overall call duration/recording either way.
+        targets = dialer.active_ring_targets(db)
+        if not targets:
+            return _laml(
+                "<Response><Say>Thanks for picking up. No one is available to take this call right now.</Say></Response>"
+            )
+        numbers_xml = "".join(f"<Number>{escape(t.phone_number)}</Number>" for t in targets)
+        bridge = (
+            f'<Dial record="record-from-answer" recordingStatusCallback="{status_url}" '
+            f'action="{status_url}">{numbers_xml}</Dial>'
+        )
+    elif campaign is not None and campaign.caller_connect_number:
+        number = escape(campaign.caller_connect_number)
+        bridge = (
+            f'<Dial record="record-from-answer" recordingStatusCallback="{status_url}" '
+            f'action="{status_url}"><Number>{number}</Number></Dial>'
+        )
+    else:
+        return _laml(
+            "<Response><Say>Thanks for picking up. No follow-up line is configured for this campaign yet.</Say></Response>"
+        )
 
     opener = f"<Play>{escape(campaign.pitch_recording_url)}</Play>" if campaign.pitch_recording_url else ""
     return _laml(f"<Response>{opener}{bridge}</Response>")
@@ -479,7 +501,7 @@ async def inbound_call(request: Request, db: Session = Depends(get_db)):
     from_number = form.get("From") or ""
     settings = get_settings()
 
-    kind, entity_uid, _company_name = dialer.identify_inbound_caller(db, from_number)
+    kind, entity_uid, company_name = dialer.identify_inbound_caller(db, from_number)
     attempt = DialerCallAttempt(
         direction=DialerCallDirection.INBOUND,
         to_number=from_number,
@@ -518,11 +540,12 @@ async def inbound_call(request: Request, db: Session = Depends(get_db)):
         '<Say>Sorry we missed you. Please leave a message after the tone.</Say>'
         f'<Record maxLength="120" recordingStatusCallback="{voicemail_status_url}"/>'
     )
-    # Industry-tailored opener -- see dialer.industry_greeting_for_number's
-    # docstring. None (unregistered number, no pool, no industry_tag, or
-    # an unmatched tag) means "behave exactly as before" -- the ring-group
-    # itself is unchanged either way, this only ever prepends a <Say>.
-    greeting = dialer.industry_greeting_for_number(db, form.get("To"))
+    # Dynamic Signal Greeting first (named caller + the real reason they
+    # were contacted, see dialer.personalized_greeting_for_caller), then
+    # the industry-tailored opener, then no opener at all -- the
+    # ring-group itself is unchanged by any of the three, this only ever
+    # prepends one <Say>.
+    greeting = dialer.personalized_greeting_for_caller(db, kind, entity_uid, company_name) or dialer.industry_greeting_for_number(db, form.get("To"))
     opener = f"<Say>{escape(greeting)}</Say>" if greeting else ""
     return _laml(f"<Response>{opener}{dial}{voicemail}</Response>")
 

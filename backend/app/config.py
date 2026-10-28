@@ -265,6 +265,23 @@ class Settings(BaseSettings):
     dialer_calling_hours_start_hour: int = 8
     dialer_calling_hours_end_hour: int = 20
 
+    # Bounded Pacing Scheduler (services/dialer.py::_pacing_loop) -- the
+    # "wire a simple, clean scheduler around run_campaign" request. Off
+    # by default, same opt-in posture as every other loop that places
+    # real external calls. When on, every ACTIVE campaign gets
+    # dialer_pacing_batch_size calls placed every dialer_pacing_interval_
+    # seconds (itself gated by _within_calling_hours, so it naturally
+    # idles outside the configured window instead of queuing failed
+    # attempts). Reasoned starting point, not a measured optimum: at the
+    # default 60s/1 call, one campaign places ~60 calls/hour -- roughly
+    # 720 across a 12-hour 8-20 window, under the 500-1,000 target: raise
+    # batch_size (not the interval toward 0) to close that gap, since a
+    # smaller interval with a 1-call batch starts to look like exactly
+    # the rapid-fire pattern this was built to avoid.
+    dialer_pacing_enabled: bool = False
+    dialer_pacing_interval_seconds: int = 60
+    dialer_pacing_batch_size: int = 1
+
     # Brain shadow-mode scoring (services/brain.py) refreshes continuously
     # in the background instead of only on a manual "Recompute Scores"
     # click -- pure local computation (no external API/network call), so
