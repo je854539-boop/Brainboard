@@ -7,11 +7,11 @@
 
 <div class="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4">
   <div class="tactical-panel p-4 lg:col-span-1">
-    <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-1">Mode</div>
+    <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-1">Mode // Organic</div>
     <div id="mode-badge" class="text-2xl font-bold">—</div>
   </div>
   <div class="tactical-panel p-4 lg:col-span-2">
-    <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-2">Leads Toward Live Threshold</div>
+    <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-2">Organic Leads Toward Live Threshold</div>
     <div class="flex items-center gap-2">
       <div class="flex-1 bg-[#1a1e18] border border-[var(--panel-border)] h-4">
         <div id="threshold-bar" style="width:0%; background:var(--amber); height:100%;"></div>
@@ -24,6 +24,12 @@
     <div id="model-info" class="text-xs leading-relaxed"></div>
   </div>
 </div>
+
+<!-- Purchased batches get their own independently-thresholded populations
+     (see brain.py's batch_silo_mode docstring) -- never blended into the
+     organic tile above, so a batch's early volume can't fast-track or
+     dilute the organic model's calibration. -->
+<div id="batch-populations" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4"></div>
 
 <div class="tactical-panel p-4 mb-4">
   <div class="stencil-header text-[10px] text-[var(--text-dim)] mb-2">Cognition Map // Geometric Growth</div>
@@ -140,6 +146,26 @@ async function renderStatus() {
   const pct = Math.min(100, (s.total_leads / s.threshold) * 100);
   document.getElementById("threshold-bar").style.width = pct + "%";
   document.getElementById("threshold-label").textContent = `${s.total_leads} / ${s.threshold}`;
+
+  const batchEl = document.getElementById("batch-populations");
+  const batches = (s.populations || []).filter(p => p.name !== "organic");
+  batchEl.innerHTML = batches.map(p => {
+    const bpct = Math.min(100, (p.total_leads / p.threshold) * 100);
+    const color = p.mode === "live" ? GREEN : AMBER;
+    return `
+      <div class="tactical-panel p-4">
+        <div class="flex items-center justify-between mb-1">
+          <div class="stencil-header text-[10px] text-[var(--text-dim)]">Mode // ${p.label}</div>
+          <div class="text-sm font-bold" style="color:${color}">${p.mode.toUpperCase()}</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <div class="flex-1 bg-[#1a1e18] border border-[var(--panel-border)] h-3">
+            <div style="width:${bpct}%; background:${color}; height:100%;"></div>
+          </div>
+          <div class="hud-value whitespace-nowrap text-xs">${p.total_leads} / ${p.threshold}</div>
+        </div>
+      </div>`;
+  }).join("");
 
   document.getElementById("model-info").innerHTML = `
     <div class="text-[var(--text-dim)]">version</div>
