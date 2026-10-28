@@ -74,6 +74,14 @@ class SiloName(str, Enum):
     HEALTHCARE_PHARMA_SILO = "Healthcare & Pharma Silo"
     ECOMMERCE_FULFILLMENT_SILO = "E-Commerce & Fulfillment Silo"
     HIGHERGOV_FUNNEL = "HigherGov Funnel"
+    # A one-time bulk UCC-lien batch the user already has (name, phone,
+    # email, revenue range already attached per record -- a purchased
+    # enriched UCC-lead product, not a bare debtor filing), distinct from
+    # the other 8 silos' live telemetry sweeps. Lives in its own silo tab
+    # on its own spreadsheet (settings.google_ucc_batch_sheet_id), not
+    # Master Log V2's 9-silo workbook, and feeds its own shadow-mode
+    # population -- see brain.py::ucc_batch_mode. See services/ucc_batch.py.
+    UCC_BATCH_SILO = "UCC Batch Silo"
 
 
 class SiloCandidateStatus(str, Enum):
@@ -179,6 +187,23 @@ class TelemetrySource(str, Enum):
     # barges/towboats discussed earlier this session. One adapter, two
     # genuinely different use cases, same data source.
     SENTINEL_HUB = "sentinel_hub"
+    # FMCSA Company Snapshot / QCMobile -- confirmed free (login.gov +
+    # WebKey query param), searchable by Carrier Name, DOT#, or MC# (the
+    # live Carrier Search screen confirmed name-search, not just DOT/MC
+    # as first assumed). Real power-units/driver-count fleet-size
+    # verification -- the actual mechanism behind the 25+ truck question
+    # for any logistics-flavored lead, including the UCC Batch Silo's
+    # trucking-keyword subset. See services/enrichment/fmcsa.py.
+    FMCSA = "fmcsa"
+    # A one-time bulk ingest of a UCC-lien batch the user already has
+    # (not a live per-state pull -- that's TelemetrySource.UCC_FILINGS,
+    # still inert/STATE_ENDPOINTS={}). Tags SiloCandidate.origin_source
+    # for every row created by services/ucc_batch.py::import_ucc_batch_csv.
+    # Deliberately not in ENRICHMENT_SOURCES or MACRO_TELEMETRY_SOURCES
+    # below -- it's a one-time import, not a per-lead lookup or a
+    # recurring sweep -- same "tag, not a swept/queried source" posture
+    # as DRIVE_OCR above.
+    UCC_BATCH_UPLOAD = "ucc_batch_upload"
 
 
 # Sources meant for targeted, per-lead enrichment lookups (uploaded leads /
@@ -200,6 +225,7 @@ ENRICHMENT_SOURCES: frozenset[TelemetrySource] = frozenset(
         TelemetrySource.GDELT,
         TelemetrySource.DATALASTIC,
         TelemetrySource.VESSELFINDER,
+        TelemetrySource.FMCSA,
     }
 )
 

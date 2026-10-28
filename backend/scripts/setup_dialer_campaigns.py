@@ -23,9 +23,47 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.config import get_settings
 from app.database import SessionLocal
 from app.models.enums import SiloName
 from app.models.orm import DialerCampaign
+
+# The generic per-silo loop below already creates one unfiltered
+# "Silo // UCC Batch Silo" campaign (every PENDING candidate, Cold
+# included) -- these three are the deliberate, non-overlapping Hot+Medium
+# shards for the 3 callers actually working this batch, using the exact
+# same shard mechanism two callers already split a silo with (see
+# dialer.py::build_dial_queue's shard docstring). min_score is read from
+# settings at creation time, not hardcoded, so it tracks whatever
+# ucc_batch_medium_score_threshold is currently configured.
+#
+# CALLER NAME HONESTY NOTE: DialerCampaign has no co_broker/owner field --
+# "Jose/Tony/James" below are campaign NAMES only, a human label for who
+# works which shard, not an enforced assignment. The real attachment
+# point is conversion time: apply_disposition's ADVANCE path requires a
+# co_broker to credit (pipeline.convert_or_update_silo_candidate). Tony
+# and James are both real CoBroker enum values already. Jose is not --
+# there is no "Jose" (or house/owner) member in CoBroker today, so
+# whoever runs this script's Jose shard will need either an existing
+# CoBroker value to credit conversions under, or a new enum member added
+# first. That's a real commission-attribution decision, not something to
+# guess here -- flagging it rather than inventing a CoBroker.JOSE value.
+def _ucc_batch_caller_campaigns() -> list[dict]:
+    threshold = get_settings().ucc_batch_medium_score_threshold
+    callers = ["Jose", "Tony", "James"]
+    return [
+        {
+            "name": f"UCC Batch // {caller} (shard {i + 1}/{len(callers)})",
+            "lead_filter": {
+                "silos": [SiloName.UCC_BATCH_SILO.value],
+                "min_score": threshold,
+                "shard": {"of": len(callers), "index": i},
+            },
+            "max_attempts_per_lead": 3,
+        }
+        for i, caller in enumerate(callers)
+    ]
+
 
 SILO_CAMPAIGNS = [{"name": f"Silo // {silo.value}", "lead_filter": {"silos": [silo.value]}, "max_attempts_per_lead": 3} for silo in SiloName]
 
@@ -42,7 +80,7 @@ def main() -> None:
     try:
         existing_names = {name for (name,) in db.query(DialerCampaign.name).all()}
         created, skipped = 0, 0
-        for payload in SILO_CAMPAIGNS + STATUS_AND_CALENDAR_CAMPAIGNS:
+        for payload in SILO_CAMPAIGNS + STATUS_AND_CALENDAR_CAMPAIGNS + _ucc_batch_caller_campaigns():
             if payload["name"] in existing_names:
                 print(f"skip (already exists): {payload['name']}")
                 skipped += 1

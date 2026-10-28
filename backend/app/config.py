@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     google_master_log_sheet_id: str = ""
     google_calendar_id: str = "primary"
     google_drive_root_folder_id: str = ""
+    # A genuinely separate spreadsheet (not a tab on the Master Log V2
+    # workbook, and not one of the other 8 macro-silo tabs there either)
+    # for the one-time bulk UCC-lien batch -- per the explicit request
+    # that this population stay operationally and statistically separate
+    # until individual candidates earn their way into Master Log V2. Same
+    # empty-string-means-inert posture as google_master_log_sheet_id.
+    # See app/services/ucc_batch.py.
+    google_ucc_batch_sheet_id: str = ""
 
     # CME Globex MDP 3.0 futures data, via Databento (databento.com) -- a
     # licensed redistributor. Raw CME MDP 3.0 access requires a direct
@@ -88,6 +96,13 @@ class Settings(BaseSettings):
     apollo_api_key: str = ""
     openfda_api_key: str = ""  # optional -- openFDA works unauthenticated at low volume
     deepgram_api_key: str = ""
+    # FMCSA Company Snapshot / QCMobile -- confirmed free (login.gov
+    # account -> FMCSA Developer Site -> "My WebKeys" -> "Get a new
+    # WebKey"), appended as a webKey= query param on every call. No fee
+    # confirmed anywhere in FMCSA's own API Access docs. Empty ->
+    # adapter stays inert, same "no key -> no-op" posture as every other
+    # adapter here. See app/services/enrichment/fmcsa.py.
+    fmcsa_webkey: str = ""
 
     # MCA-fit revenue band -- services/silo_leadgen.py's CME Macro Funnel
     # waterfall uses this to filter/dismiss candidates once Apollo.io
@@ -130,6 +145,25 @@ class Settings(BaseSettings):
     geospatial_corroboration_tolerance_miles: float = 10.0
 
     brain_shadow_mode_lead_threshold: int = 1000
+    # The UCC Batch Silo's OWN shadow-mode threshold -- a deliberately
+    # separate population and counter from brain_shadow_mode_lead_
+    # threshold above, per the explicit request not to let a one-time
+    # bulk-sourced batch dilute or fast-track the organic Master Log
+    # population's calibration. Same default, independently tunable. See
+    # brain.py::ucc_batch_mode and current_mode (which now excludes this
+    # silo from its own count).
+    ucc_batch_shadow_mode_lead_threshold: int = 1000
+
+    # UCC Batch Silo tiering (services/ucc_batch.py::_score_candidate) --
+    # a 0-100 score from revenue-band fit (reuses mca_target_revenue_min/
+    # max_usd below), contact completeness (phone/email present on the
+    # source record), and logistics-keyword strength. Hot >= the first
+    # threshold, Medium >= the second, everything below is Cold. Reasoned
+    # starting bands, not measured -- same posture as every other
+    # threshold in this file; revisit once real call outcomes exist to
+    # validate against.
+    ucc_batch_hot_score_threshold: float = 70.0
+    ucc_batch_medium_score_threshold: float = 40.0
 
     # CesiumJS globe (templates/globe.html). Empty by default -- the
     # globe still renders (Cesium's bundled offline Natural Earth II

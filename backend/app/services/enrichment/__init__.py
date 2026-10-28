@@ -5,6 +5,7 @@ from app.services.enrichment.cme_globex import CMEGlobexEnrichmentAdapter
 from app.services.enrichment.cobalt_intelligence import CobaltIntelligenceAdapter
 from app.services.enrichment.datalastic import DatalasticEnrichmentAdapter
 from app.services.enrichment.deepgram_nova import DeepgramNovaAdapter
+from app.services.enrichment.fmcsa import FMCSAAdapter
 from app.services.enrichment.gdelt import GDELTEnrichmentAdapter
 from app.services.enrichment.gfw_4wings import GFW4WingsEnrichmentAdapter
 from app.services.enrichment.highergov import HigherGovEnrichmentAdapter
@@ -37,6 +38,7 @@ def all_enrichment_adapters() -> list[EnrichmentAdapter]:
         GDELTEnrichmentAdapter(api_key=settings.gdelt_api_key),
         DatalasticEnrichmentAdapter(api_key=settings.datalastic_api_key),
         VesselFinderEnrichmentAdapter(api_key=settings.vesselfinder_api_key),
+        FMCSAAdapter(api_key=settings.fmcsa_webkey),
     ]
 
 
@@ -57,5 +59,6 @@ __all__ = [
     "GDELTEnrichmentAdapter",
     "DatalasticEnrichmentAdapter",
     "VesselFinderEnrichmentAdapter",
+    "FMCSAAdapter",
     "all_enrichment_adapters",
 ]

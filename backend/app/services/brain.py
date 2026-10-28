@@ -61,11 +61,45 @@ def _call_signal(payload: dict) -> float:
 
 
 def current_mode(db: Session) -> tuple[BrainMode, int, int]:
+    """The organic Master Log population's mode -- deliberately excludes
+    UCC Batch Silo leads (see ucc_batch_mode below) so a one-time
+    bulk-sourced batch can never dilute or fast-track this count. A raw,
+    never-called UCC record has an empty feature vector (no call
+    sentiment, no deal terms, no activity) -- counting it here just to
+    clear the threshold faster would hurt calibration, not help it. The
+    UCC Batch Silo gets its own, independently-thresholded count instead,
+    and only ever enters either count once pipeline.
+    convert_or_update_silo_candidate has promoted it into a real
+    MasterLogEntry with at least one real human touchpoint behind it."""
     settings = get_settings()
-    total_leads = db.execute(select(func.count()).select_from(MasterLogEntry)).scalar_one()
+    total_leads = db.execute(
+        select(func.count()).select_from(MasterLogEntry).where(MasterLogEntry.source_silo != SiloName.UCC_BATCH_SILO)
+    ).scalar_one()
     threshold = settings.brain_shadow_mode_lead_threshold
     mode = BrainMode.LIVE if total_leads >= threshold else BrainMode.SHADOW
     return mode, total_leads, threshold
+
+
+def ucc_batch_mode(db: Session) -> tuple[BrainMode, int, int]:
+    """The UCC Batch Silo's own, separate shadow-mode population and
+    threshold -- see current_mode's docstring for why this is split out
+    rather than folded into the organic count. Every row here already
+    passed through pipeline.convert_or_update_silo_candidate (a real
+    caller touchpoint), so it's never empty-feature-vector noise; this
+    is purely about keeping a brand-new, unproven lead-source channel
+    from blending into the organic model's calibration before its own
+    conversion behavior is understood on its own terms."""
+    settings = get_settings()
+    total_leads = db.execute(
+        select(func.count()).select_from(MasterLogEntry).where(MasterLogEntry.source_silo == SiloName.UCC_BATCH_SILO)
+    ).scalar_one()
+    threshold = settings.ucc_batch_shadow_mode_lead_threshold
+    mode = BrainMode.LIVE if total_leads >= threshold else BrainMode.SHADOW
+    return mode, total_leads, threshold
+
+
+def _mode_for_lead(lead: MasterLogEntry, organic_mode: BrainMode, ucc_batch_mode_value: BrainMode) -> BrainMode:
+    return ucc_batch_mode_value if lead.source_silo == SiloName.UCC_BATCH_SILO else organic_mode
 
 
 def _lead_features(db: Session, leads: list[MasterLogEntry]) -> pd.DataFrame:
@@ -185,6 +219,7 @@ def _fit_model(db: Session) -> tuple[LogisticRegression | None, StandardScaler |
 
 def refresh_shadow_scores(db: Session) -> int:
     mode, total_leads, _ = current_mode(db)
+    ucc_mode, _, _ = ucc_batch_mode(db)
     model, scaler, training_set_size = _fit_model(db)
     model_version = MODEL_VERSION if model is not None else BASELINE_VERSION
 
@@ -215,7 +250,7 @@ def refresh_shadow_scores(db: Session) -> int:
                 lead_uid=lead.lead_uid,
                 predicted_funded_probability=round(float(probability), 4),
                 model_version=model_version,
-                mode=mode,
+                mode=_mode_for_lead(lead, mode, ucc_mode),
                 training_set_size=training_set_size,
             )
         )

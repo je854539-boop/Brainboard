@@ -43,6 +43,7 @@ import datetime as dt
 import logging
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -452,6 +453,70 @@ def pull_silo(db: Session, service, sheet_id: str, silo: SiloName) -> dict:
 
 def sync_all_silos(db: Session, service, sheet_id: str) -> dict[str, dict]:
     return {silo.value: pull_silo(db, service, sheet_id, silo) for silo in SiloName}
+
+
+def push_silo_candidate(service, sheet_id: str, tab_name: str, candidate: SiloCandidate) -> None:
+    """Write a single SiloCandidate to a named tab, matching on the UUID
+    in Column A -- same upsert-by-UUID shape as push_master_log_entry,
+    extended to take an explicit tab_name rather than deriving it from
+    candidate.silo, since the UCC Batch Silo's tiering splits one silo
+    across two tabs (Hot+Medium vs Cold) on its own separate sheet_id
+    (settings.google_ucc_batch_sheet_id) instead of the single tab every
+    other silo gets on the main macro-silo workbook."""
+    result = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=sheet_id, range=f"{tab_name}!A2:A")
+        .execute()
+    )
+    ids = [r[0] if r else "" for r in result.get("values", [])]
+    row_values = silo_candidate_to_row(candidate)
+
+    if str(candidate.candidate_uid) in ids:
+        row_number = ids.index(str(candidate.candidate_uid)) + 2
+        service.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"{tab_name}!A{row_number}:H{row_number}",
+            valueInputOption="RAW",
+            body={"values": [row_values]},
+        ).execute()
+    else:
+        service.spreadsheets().values().append(
+            spreadsheetId=sheet_id,
+            range=f"{tab_name}!A2:H",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [row_values]},
+        ).execute()
+
+
+# Tab layout on the UCC Batch Silo's own, separate spreadsheet
+# (settings.google_ucc_batch_sheet_id) -- Hot and Medium share one tab
+# (what the 3 callers actually dial off), Cold gets its own, per the
+# explicit request to split the sheet this way rather than mixing all
+# three tiers into one undifferentiated worklist.
+UCC_BATCH_HOT_MEDIUM_TAB = "Hot + Medium"
+UCC_BATCH_COLD_TAB = "Cold"
+
+
+def push_ucc_batch_candidates(db: Session, service, sheet_id: str) -> dict:
+    """Pushes every UCC Batch Silo candidate to its tier's tab on the
+    separate UCC batch sheet. Call after services/ucc_batch.py::
+    import_ucc_batch_csv (and again after enrich_pending_candidates, since
+    an FMCSA fleet-confirm can move a candidate's score across a tier
+    boundary) -- not wired into any automatic sweep yet, since this sheet
+    is genuinely separate from the continuous pulls the rest of this
+    module runs."""
+    settings = get_settings()
+    candidates = db.execute(select(SiloCandidate).where(SiloCandidate.silo == SiloName.UCC_BATCH_SILO)).scalars().all()
+
+    pushed = {"hot_medium": 0, "cold": 0}
+    for candidate in candidates:
+        score = candidate.score or 0.0
+        tab = UCC_BATCH_COLD_TAB if score < settings.ucc_batch_medium_score_threshold else UCC_BATCH_HOT_MEDIUM_TAB
+        push_silo_candidate(service, sheet_id, tab, candidate)
+        pushed["cold" if tab == UCC_BATCH_COLD_TAB else "hot_medium"] += 1
+    return pushed
 
 
 # ---------------------------------------------------------------------------
