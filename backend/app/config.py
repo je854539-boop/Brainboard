@@ -172,14 +172,18 @@ class Settings(BaseSettings):
 
     # MCA History Batch Silo (services/mca_history_batch.py) -- a
     # SEPARATE revenue floor from mca_target_revenue_min/max_usd above.
-    # $100K/mo+ ($1.2M/yr+) is the real stated floor for this specific
-    # 18K-contact list -- much lower than the $5M-$49M band the UCC
-    # batch and CME funnel use, and deliberately NOT forced through that
-    # band. Reuses mca_target_revenue_max_usd as the ceiling (no
-    # separate upper bound was given for this list). Its own shadow-mode
-    # threshold and tiering bands, same reasoned-not-measured posture as
-    # the UCC batch's.
-    mca_history_batch_revenue_min_usd: float = 1_200_000.0
+    # Corrected against the real file once it was actually uploaded
+    # (Big_Advanced_Cleaned_From_DNC.xlsx, 18,402 rows): every row's own
+    # monthly_revenue clears $200K/mo, i.e. the list is already
+    # pre-filtered at a $2.4M/yr floor -- higher than the "$100K/mo"
+    # verbal estimate this setting first shipped with. Still much lower
+    # than the $5M-$49M band the UCC batch and CME funnel use, and
+    # deliberately NOT forced through that band. Reuses
+    # mca_target_revenue_max_usd as the ceiling (no separate upper bound
+    # was given for this list). Its own shadow-mode threshold and
+    # tiering bands, same reasoned-not-measured posture as the UCC
+    # batch's.
+    mca_history_batch_revenue_min_usd: float = 2_400_000.0
     mca_history_batch_shadow_mode_lead_threshold: int = 1000
     mca_history_batch_hot_score_threshold: float = 70.0
     mca_history_batch_medium_score_threshold: float = 40.0
