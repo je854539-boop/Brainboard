@@ -539,6 +539,18 @@ Attach a real number pool + caller_connect_number to each one you're
 ready to run from the Dialer page once your SignalWire numbers are
 provisioned.
 
+**Loading a purchased batch list** (UCC Batch Silo or MCA History Batch
+Silo -- see `app/services/{ucc_batch,mca_history_batch}.py`): copy the
+.xlsx/.csv onto the box, then
+```
+docker compose exec api python scripts/import_mca_history_batch.py /path/to/list.xlsx
+```
+Stages every row as a `SiloCandidate` (not counted toward the Brain's
+threshold until a caller promotes one off the dialer) and prints a
+tier/dedupe summary. Push the result to that batch's own sheet once
+`GOOGLE_MCA_HISTORY_BATCH_SHEET_ID` is set, or work it straight off the
+Targets page without one.
+
 `docker-compose.yml` runs three services: Postgres (`pgvector/pgvector:pg16`),
 the API, and `caddy` -- a reverse proxy that auto-issues and renews a Let's
 Encrypt TLS cert for `DOMAIN` and proxies HTTPS traffic in to the API over
