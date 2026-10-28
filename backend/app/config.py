@@ -252,6 +252,18 @@ class Settings(BaseSettings):
     # leads -- a queue exceeding this just gets flagged visually so a
     # human decides what to do about it, nothing is enforced silently.
     dialer_daily_capacity: int = 50
+    # Real compliance guardrail, not advisory -- place_outbound_call
+    # refuses to dial outside this window (24h, server-local time),
+    # logging a FAILED attempt with a clear reason instead of silently
+    # skipping it. 8am-8pm is a reasoned, commonly-cited decent-hours
+    # default, not a legally-confirmed safe harbor -- this is server-
+    # local time, NOT the lead's own timezone (that would need an
+    # area-code/state -> timezone mapping this project doesn't build),
+    # so a nationwide campaign run from one server location is still an
+    # approximation. Narrow this window, not widen it, if operating
+    # across multiple US timezones from one server clock.
+    dialer_calling_hours_start_hour: int = 8
+    dialer_calling_hours_end_hour: int = 20
 
     # Brain shadow-mode scoring (services/brain.py) refreshes continuously
     # in the background instead of only on a manual "Recompute Scores"

@@ -151,6 +151,15 @@ INDUSTRY_INBOUND_GREETINGS: dict[str, str] = {
     "Trucking & Logistics": "Thanks for calling about fleet or equipment financing. Connecting you with someone who can help right now.",
     "Food Processing & Fabrication": "Thanks for calling about working capital for your business. Connecting you now.",
     "Heavy Machinery & Industrial Equipment": "Thanks for calling about equipment financing. Connecting you now.",
+    # Every other real industry category this build actually works --
+    # matches SiloName's own labels (minus "Silo"/"Funnel") so there's a
+    # tag available for every live silo, not just the UCC Batch subset.
+    "Tariff": "Thanks for calling about trade and tariff-related financing. Connecting you now.",
+    "Oil & Gas / Refining": "Thanks for calling about working capital for your operation. Connecting you with someone who can help right now.",
+    "Agriculture & Grain Handling": "Thanks for calling about financing for your operation. Connecting you now.",
+    "Healthcare & Pharma": "Thanks for calling about working capital for your practice or business. Connecting you now.",
+    "E-Commerce & Fulfillment": "Thanks for calling about working capital for your business. Connecting you now.",
+    "HigherGov": "Thanks for calling about financing against your government contract work. Connecting you now.",
 }
 
 
@@ -232,6 +241,33 @@ def _attempt_counts(db: Session, campaign_id: uuid.UUID) -> dict[uuid.UUID, tupl
     return counts
 
 
+def _globally_purged_entities(db: Session) -> set[uuid.UUID]:
+    """Real compliance gap this closes: _attempt_counts above only ever
+    looks at ONE campaign's own attempt history, so a lead or candidate
+    that was PURGEd (a real "don't call back" signal -- see
+    DialerDisposition's docstring) in Campaign A could still be dialed by
+    Campaign B if it happens to match B's filter too, since B has no idea
+    A ever called. A do-not-call signal has to hold across every
+    campaign, not just the one that recorded it -- this scans every
+    DialerCallAttempt regardless of campaign_id and returns every
+    lead_uid/silo_candidate_uid with a PURGE anywhere in its history.
+    Deliberately PURGE-only, not every disposition: ADVANCE just means
+    "this campaign converted/advanced it," which shouldn't silently
+    block an unrelated campaign (e.g. a later Status // Chase Docs
+    follow-up) from working that same lead on purpose."""
+    purged: set[uuid.UUID] = set()
+    rows = db.execute(
+        select(DialerCallAttempt.lead_uid, DialerCallAttempt.silo_candidate_uid)
+        .where(DialerCallAttempt.disposition == DialerDisposition.PURGE)
+    ).all()
+    for lead_uid, silo_candidate_uid in rows:
+        if lead_uid is not None:
+            purged.add(lead_uid)
+        if silo_candidate_uid is not None:
+            purged.add(silo_candidate_uid)
+    return purged
+
+
 def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEntry]:
     """Resolves campaign.lead_filter into concrete leads to call. All
     configured MasterLogEntry-side filters (calendar / master_log_statuses
@@ -241,6 +277,7 @@ def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEnt
     with an OR'd filter."""
     filt = campaign.lead_filter or {}
     attempts = _attempt_counts(db, campaign.id)
+    do_not_call = _globally_purged_entities(db)
     entries: list[DialQueueEntry] = []
 
     ml_conditions = []
@@ -265,6 +302,8 @@ def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEnt
         )
         source_label = "calendar" if filt.get("calendar") else "sheet_lead"
         for entry in db.execute(query).scalars().all():
+            if entry.lead_uid in do_not_call:
+                continue
             count, disposition = attempts.get(entry.lead_uid, (0, DialerDisposition.UNSET))
             if disposition != DialerDisposition.UNSET or count >= campaign.max_attempts_per_lead:
                 continue
@@ -304,6 +343,8 @@ def build_dial_queue(db: Session, campaign: DialerCampaign) -> list[DialQueueEnt
             .order_by(SiloCandidate.score.desc().nulls_last())
         )
         for candidate in db.execute(query).scalars().all():
+            if candidate.candidate_uid in do_not_call:
+                continue
             count, disposition = attempts.get(candidate.candidate_uid, (0, DialerDisposition.UNSET))
             if disposition != DialerDisposition.UNSET or count >= campaign.max_attempts_per_lead:
                 continue
@@ -346,6 +387,16 @@ def _select_local_number(db: Session, campaign: DialerCampaign, to_number: str) 
     return candidates[0]
 
 
+def _within_calling_hours(settings) -> bool:
+    """Server-local hour check -- see config.py's dialer_calling_hours_*
+    docstring for the honest caveat on what this isn't (the lead's own
+    timezone). Wraps correctly for a window that doesn't cross midnight
+    (the only shape these two settings are meant to express -- a
+    start < end business-hours band)."""
+    start, end = settings.dialer_calling_hours_start_hour, settings.dialer_calling_hours_end_hour
+    return start <= datetime.now().hour < end
+
+
 def place_outbound_call(
     db: Session, campaign: DialerCampaign, entry: DialQueueEntry, adapter: SignalWireAdapter | None = None
 ) -> DialerCallAttempt:
@@ -368,6 +419,15 @@ def place_outbound_call(
     )
     db.add(attempt)
     db.flush()
+
+    if not _within_calling_hours(settings):
+        attempt.status = DialerCallStatus.FAILED
+        attempt.error = (
+            f"outside configured calling-hours window "
+            f"({settings.dialer_calling_hours_start_hour:02d}:00-{settings.dialer_calling_hours_end_hour:02d}:00 server-local)"
+        )
+        db.commit()
+        return attempt
 
     if not entry.to_number:
         attempt.status = DialerCallStatus.FAILED
