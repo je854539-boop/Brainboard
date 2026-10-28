@@ -455,14 +455,46 @@ def sync_all_silos(db: Session, service, sheet_id: str) -> dict[str, dict]:
     return {silo.value: pull_silo(db, service, sheet_id, silo) for silo in SiloName}
 
 
+# The shared 8-column SILO_COLUMN_FIELDS (A-H, no contact_name/email)
+# is confirmed against the REAL, already-deployed macro-silo workbook --
+# not touched here, so the other 9 silos' live sheet layout doesn't
+# shift under them. The two purchased-batch silos live on their OWN,
+# not-yet-created spreadsheets, so they get a wider, batch-specific
+# layout instead: contact_name and email are real fields both importers
+# (ucc_batch.py, mca_history_batch.py) already capture on the
+# SiloCandidate row, and callers need them visible on the sheet itself
+# to do the "verify this is the right contact, confirm the email
+# resolves" work -- not just buried in Postgres. 10 columns: A=UUID
+# (anchor, same convention as every other sheet), B=company_name,
+# C=contact_name, D=phone, E=email, F=source_reference, G=notes,
+# H=dossier_drive_link, I=score, J=status.
+BATCH_SILO_COLUMN_COUNT = 10
+
+
+def batch_silo_candidate_to_row(candidate: SiloCandidate) -> list[str]:
+    return [
+        str(candidate.candidate_uid),
+        candidate.company_name or "",
+        candidate.contact_name or "",
+        candidate.phone or "",
+        candidate.email or "",
+        candidate.source_reference or "",
+        candidate.notes or "",
+        candidate.dossier_drive_link or "",
+        str(candidate.score) if candidate.score is not None else "",
+        candidate.status.value if candidate.status else "",
+    ]
+
+
 def push_silo_candidate(service, sheet_id: str, tab_name: str, candidate: SiloCandidate) -> None:
-    """Write a single SiloCandidate to a named tab, matching on the UUID
-    in Column A -- same upsert-by-UUID shape as push_master_log_entry,
-    extended to take an explicit tab_name rather than deriving it from
-    candidate.silo, since the UCC Batch Silo's tiering splits one silo
-    across two tabs (Hot+Medium vs Cold) on its own separate sheet_id
-    (settings.google_ucc_batch_sheet_id) instead of the single tab every
-    other silo gets on the main macro-silo workbook."""
+    """Write a single SiloCandidate to a named tab on a purchased-batch
+    sheet, matching on the UUID in Column A -- same upsert-by-UUID shape
+    as push_master_log_entry. Uses the wider 10-column batch layout
+    (batch_silo_candidate_to_row), NOT the shared 8-column
+    SILO_COLUMN_FIELDS the live macro-silo workbook uses -- this
+    function is only ever called against a batch's own separate
+    sheet_id (settings.google_ucc_batch_sheet_id /
+    google_mca_history_batch_sheet_id)."""
     result = (
         service.spreadsheets()
         .values()
@@ -470,20 +502,20 @@ def push_silo_candidate(service, sheet_id: str, tab_name: str, candidate: SiloCa
         .execute()
     )
     ids = [r[0] if r else "" for r in result.get("values", [])]
-    row_values = silo_candidate_to_row(candidate)
+    row_values = batch_silo_candidate_to_row(candidate)
 
     if str(candidate.candidate_uid) in ids:
         row_number = ids.index(str(candidate.candidate_uid)) + 2
         service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
-            range=f"{tab_name}!A{row_number}:H{row_number}",
+            range=f"{tab_name}!A{row_number}:J{row_number}",
             valueInputOption="RAW",
             body={"values": [row_values]},
         ).execute()
     else:
         service.spreadsheets().values().append(
             spreadsheetId=sheet_id,
-            range=f"{tab_name}!A2:H",
+            range=f"{tab_name}!A2:J",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": [row_values]},
