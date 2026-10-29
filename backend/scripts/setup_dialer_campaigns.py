@@ -27,6 +27,7 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.models.enums import SiloName
 from app.models.orm import DialerCampaign
+from app.services.dialer import HARD_MAX_LIST_SIZE
 
 # The generic per-silo loop below already creates one unfiltered
 # "Silo // UCC Batch Silo" campaign (every PENDING candidate, Cold
@@ -65,6 +66,35 @@ def _ucc_batch_caller_campaigns() -> list[dict]:
     ]
 
 
+# Same non-overlapping 3-way shard mechanism as the UCC Batch Silo above,
+# applied to the second purchased batch (16,598 real deduped rows after
+# the dry run -- see mca_history_batch.py). Capped at 500 each via
+# max_list_size rather than letting the shard's natural ~5.5k/caller
+# split stand -- a deliberate first-wave size smaller than even the
+# existing HARD_MAX_LIST_SIZE=1000 guardrail, not a relaxation of it.
+# Same CALLER NAME HONESTY NOTE as above: "Jose" is a campaign name only.
+# Tony and James are real CoBroker enum values; Jose is not, so this
+# shard will dial fine but nothing converted through it can be credited
+# via pipeline.convert_or_update_silo_candidate until that's resolved.
+def _mca_history_batch_caller_campaigns() -> list[dict]:
+    assert 500 <= HARD_MAX_LIST_SIZE
+    threshold = get_settings().mca_history_batch_medium_score_threshold
+    callers = ["Jose", "Tony", "James"]
+    return [
+        {
+            "name": f"MCA History Batch // {caller} (shard {i + 1}/{len(callers)}, first wave 500)",
+            "lead_filter": {
+                "silos": [SiloName.MCA_HISTORY_BATCH_SILO.value],
+                "min_score": threshold,
+                "shard": {"of": len(callers), "index": i},
+            },
+            "max_list_size": 500,
+            "max_attempts_per_lead": 3,
+        }
+        for i, caller in enumerate(callers)
+    ]
+
+
 SILO_CAMPAIGNS = [{"name": f"Silo // {silo.value}", "lead_filter": {"silos": [silo.value]}, "max_attempts_per_lead": 3} for silo in SiloName]
 
 STATUS_AND_CALENDAR_CAMPAIGNS = [
@@ -80,7 +110,7 @@ def main() -> None:
     try:
         existing_names = {name for (name,) in db.query(DialerCampaign.name).all()}
         created, skipped = 0, 0
-        for payload in SILO_CAMPAIGNS + STATUS_AND_CALENDAR_CAMPAIGNS + _ucc_batch_caller_campaigns():
+        for payload in SILO_CAMPAIGNS + STATUS_AND_CALENDAR_CAMPAIGNS + _ucc_batch_caller_campaigns() + _mca_history_batch_caller_campaigns():
             if payload["name"] in existing_names:
                 print(f"skip (already exists): {payload['name']}")
                 skipped += 1
