@@ -39,6 +39,7 @@ from app.models.orm import MasterLogEntry, SiloCandidate
 from app.services import entity_matching
 from app.services.enrichment.base import EnrichmentQuery
 from app.services.enrichment.fmcsa import FMCSAAdapter
+from app.services.industry_classifier import guess_industry_tag
 
 logger = logging.getLogger("brainboard.ucc_batch")
 
@@ -124,6 +125,16 @@ def score_candidate(row: dict) -> tuple[float, bool, list[str]]:
         score += 15.0
         notes.append("logistics/trucking keyword match -- eligible for free FMCSA fleet-size check")
 
+    # This source has no real Industry column at all (just business_name
+    # + an optional collateral_description) -- the free keyword
+    # classifier is this silo's ONLY industry signal, not a fallback
+    # onto a real one the way mca_history_batch.py uses it. See
+    # app/services/industry_classifier.py.
+    tag = guess_industry_tag(business_name, collateral)
+    if tag:
+        score += 5.0
+        notes.append(f"industry pool inferred from business name/collateral: {tag}")
+
     return max(0.0, min(100.0, score)), dismiss, notes
 
 
@@ -207,6 +218,7 @@ def import_ucc_batch_csv(db: Session, file_content: bytes) -> dict:
                 score=score,
                 status=status,
                 origin_source=TelemetrySource.UCC_BATCH_UPLOAD,
+                industry_tag=guess_industry_tag(business_name, row.get("collateral_description")),
             )
         )
         imported += 1

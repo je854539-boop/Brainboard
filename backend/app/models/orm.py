@@ -228,6 +228,18 @@ class SiloCandidate(Base):
     # not force-defaulted to a guess if it does.
     origin_source: Mapped[TelemetrySource | None] = mapped_column(_pg_enum(TelemetrySource, "telemetry_source"))
 
+    # Not a sheet column -- same precedent as origin_source/email above.
+    # Free text matching the dialer.INDUSTRY_INBOUND_GREETINGS /
+    # DialerNumberPool.industry_tag vocabulary, from either a real
+    # source-file Industry value or the free keyword classifier (see
+    # app/services/industry_classifier.py). NOT read by
+    # personalized_greeting_for_caller for an already-identified caller
+    # (that uses SIGNAL_PHRASES keyed by origin_source instead) -- this
+    # column's real jobs are sheet/notes transparency, ad-targeting
+    # segmentation, and picking which industry-tagged number pool a
+    # campaign for this segment should dial out from.
+    industry_tag: Mapped[str | None] = mapped_column(String(64))
+
     # Nullable, populated only when the identifying telemetry actually
     # carried real coordinates (currently: Regrid parcel GeoJSON geometry,
     # see silo_leadgen.py::_identify_via_regrid) -- most silos have no

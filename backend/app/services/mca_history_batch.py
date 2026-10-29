@@ -52,6 +52,7 @@ from app.config import get_settings
 from app.models.enums import SiloCandidateStatus, SiloName, TelemetrySource
 from app.models.orm import MasterLogEntry, SiloCandidate
 from app.services import entity_matching
+from app.services.industry_classifier import guess_industry_tag
 
 logger = logging.getLogger("brainboard.mca_history_batch")
 
@@ -165,6 +166,21 @@ def _parse_float(value) -> float | None:
         return None
 
 
+def resolve_industry_tag(row: dict) -> tuple[str | None, bool]:
+    """Returns (industry_tag, is_real_data). Prefers the real Industry
+    column (via industry_tag_for) when present; falls back to the free
+    keyword classifier against business_name only when it isn't -- see
+    app/services/industry_classifier.py for why this is a deliberately
+    conservative, no-guess-when-unsure pass. is_real_data distinguishes
+    a confirmed source-file value from an inferred one in notes/scoring,
+    same honesty posture as everything else in this module."""
+    real_tag = industry_tag_for(row.get("industry"))
+    if real_tag:
+        return real_tag, True
+    guessed = guess_industry_tag(row.get("business_name"))
+    return guessed, False
+
+
 def score_candidate(row: dict) -> tuple[float, bool, list[str]]:
     """0-100 tiering score plus a hard-dismiss flag and the notes
     explaining why. Only the FLOOR is enforced (this list's own
@@ -216,10 +232,14 @@ def score_candidate(row: dict) -> tuple[float, bool, list[str]]:
     if industry:
         score += 5.0
         notes.append(f"industry on file: {industry}")
-        tag = industry_tag_for(industry)
-        if tag:
-            score += 5.0
+
+    tag, is_real = resolve_industry_tag(row)
+    if tag:
+        score += 5.0
+        if is_real:
             notes.append(f"maps to industry pool: {tag}")
+        else:
+            notes.append(f"industry pool inferred from business name (no Industry value on file): {tag}")
 
     if row.get("line_type"):
         notes.append(f"line type: {row['line_type']}")
@@ -343,6 +363,7 @@ def import_mca_history_batch_file(db: Session, file_content: bytes, filename: st
         status = SiloCandidateStatus.DISMISSED if dismiss else SiloCandidateStatus.PENDING
         if dismiss:
             dismissed += 1
+        industry_tag, _ = resolve_industry_tag(row)
 
         notes_lines = [f"MCA history batch import, row {i + 1} ({filename}).", f"Tier: {tier.upper()} (score {score:.0f})."]
         notes_lines.extend(score_notes)
@@ -363,6 +384,7 @@ def import_mca_history_batch_file(db: Session, file_content: bytes, filename: st
                 score=score,
                 status=status,
                 origin_source=TelemetrySource.MCA_HISTORY_BATCH_UPLOAD,
+                industry_tag=industry_tag,
             )
         )
         imported += 1
